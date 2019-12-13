@@ -857,6 +857,15 @@ void fgArgTabEntry::Dump()
     {
         printf(", isStruct");
     }
+    if (passedByRef)
+    {
+        printf(", passedByRef");
+    }
+    if (onCallerStack)
+    {
+        printf(", onCallerStack");
+    }
+
     printf("]\n");
 }
 #endif
@@ -1041,6 +1050,8 @@ fgArgTabEntry* fgArgInfo::AddRegArg(unsigned          argNum,
     curArgTabEntry->isBackFilled  = false;
     curArgTabEntry->isNonStandard = false;
     curArgTabEntry->isStruct      = isStruct;
+    curArgTabEntry->passedByRef   = false;
+    curArgTabEntry->onCallerStack = false;
     curArgTabEntry->SetIsVararg(isVararg);
 
     hasRegArgs = true;
@@ -3463,6 +3474,64 @@ void Compiler::fgInitArgInfo(GenTreeCall* call)
         {
             newArgEntry->passedByRef = passStructByRef;
             newArgEntry->argType     = (structBaseType == TYP_UNKNOWN) ? argx->TypeGet() : structBaseType;
+
+            if (passStructByRef)
+            {
+                JITDUMP("...checking on caller stack for [%06u]\n", dspTreeID(argx));
+
+                // Anticipate later copy opt...
+                if (!call->IsTailCallViaHelper() && !fgMightHaveLoop() && opts.OptimizationEnabled())
+                {
+                    GenTreeLclVarCommon* lcl = nullptr;
+
+                    if (argx->OperIsLocal())
+                    {
+                        lcl = argx->AsLclVarCommon();
+                    }
+                    else if ((argx->OperGet() == GT_OBJ) && argx->AsIndir()->Addr()->OperIsLocal())
+                    {
+                        lcl = argx->AsObj()->Addr()->AsLclVarCommon();
+                    }
+                    else if ((argx->OperGet() == GT_OBJ) && argx->AsIndir()->Addr()->OperGet() == GT_ADDR &&
+                             argx->AsIndir()->Addr()->AsOp()->gtOp1->OperIsLocal())
+                    {
+                        lcl = argx->AsObj()->Addr()->AsOp()->gtOp1->AsLclVarCommon();
+                    }
+
+                    if (lcl != nullptr)
+                    {
+                        unsigned varNum = lcl->AsLclVarCommon()->GetLclNum();
+
+                        if (lvaIsImplicitByRefLocal(varNum))
+                        {
+                            LclVarDsc* varDsc = &lvaTable[varNum];
+
+                            if (varDsc->lvRefCnt(RCS_EARLY) == 1)
+                            {
+                                // Should be "must be onstack" maybe...
+                                JITDUMP(" ... yep, onstack \n");
+                                newArgEntry->onCallerStack = true;
+                            }
+                            else
+                            {
+                                JITDUMP(" ... no, rcs early\n");
+                            }
+                        }
+                        else
+                        {
+                            JITDUMP(" ... no, not implicit byref\n");
+                        }
+                    }
+                    else
+                    {
+                        JITDUMP(" ... no, can't resolve to LCL\n");
+                    }
+                }
+                else
+                {
+                    JITDUMP(" ... no, TC helper, loop, or not optimizing\n");
+                }
+            }
         }
         else
         {
@@ -4859,6 +4928,11 @@ void Compiler::fgMakeOutgoingStructArgCopy(GenTreeCall*         call,
         {
             lcl = argx->AsObj()->Addr()->AsLclVarCommon();
         }
+        else if ((argx->OperGet() == GT_OBJ) && argx->AsIndir()->Addr()->OperGet() == GT_ADDR &&
+                 argx->AsIndir()->Addr()->AsOp()->gtOp1->OperIsLocal())
+        {
+            lcl = argx->AsObj()->Addr()->AsOp()->gtOp1->AsLclVarCommon();
+        }
 
         if (lcl != nullptr)
         {
@@ -4872,7 +4946,8 @@ void Compiler::fgMakeOutgoingStructArgCopy(GenTreeCall*         call,
                 // struct parameters if they are passed as arguments to a tail call.
                 if (!call->IsTailCallViaHelper() && (varDsc->lvRefCnt(RCS_EARLY) == 1) && !fgMightHaveLoop())
                 {
-                    assert(!call->IsTailCall());
+                    // We're now cool with this being a tail call
+                    // assert(!call->IsTailCall());
 
                     varDsc->setLvRefCnt(0, RCS_EARLY);
                     args->SetNode(lcl);
@@ -6768,9 +6843,10 @@ bool Compiler::fgCanFastTailCall(GenTreeCall* callee, const char** failReason)
 
         if (arg->isStruct)
         {
-            // Byref struct arguments are not allowed to fast tail call as the information
-            // of the caller's stack is lost when the callee is compiled.
-            if (arg->passedByRef)
+            // Byref struct arguments are not allowed to fast tail call as in general
+            // the byref will refer to this method's stack. But sometimes, we know the
+            // byref points to the caller's stack...
+            if (arg->passedByRef && !arg->onCallerStack)
             {
                 hasByrefParameter = true;
                 break;
@@ -17182,7 +17258,21 @@ void Compiler::fgRetypeImplicitByRefArgs()
                 bool undoPromotion = (lvaGetPromotionType(newVarDsc) == PROMOTION_TYPE_DEPENDENT) ||
                                      (varDsc->lvRefCnt(RCS_EARLY) <= varDsc->lvFieldCnt);
 
-                if (!undoPromotion)
+                if (undoPromotion)
+                {
+                    JITDUMP("... undoing promotion of V%02u --", lclNum);
+                    if (lvaGetPromotionType(newVarDsc) == PROMOTION_TYPE_DEPENDENT)
+                    {
+                        JITDUMP(" dependent promotion");
+                    }
+                    else if (varDsc->lvRefCnt(RCS_EARLY) <= varDsc->lvFieldCnt)
+                    {
+                        JITDUMP(" unprofitable: ref count %d <= field count %d", varDsc->lvRefCnt(RCS_EARLY),
+                                varDsc->lvFieldCnt);
+                    }
+                    JITDUMP("\n");
+                }
+                else
                 {
                     // Insert IR that initializes the temp from the parameter.
                     // LHS is a simple reference to the temp.

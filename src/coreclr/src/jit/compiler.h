@@ -1394,6 +1394,7 @@ public:
     bool isStruct : 1;      // True if this is a struct arg
     bool _isVararg : 1;     // True if the argument is in a vararg context.
     bool passedByRef : 1;   // True iff the argument is passed by reference.
+    bool onCallerStack : 1; // True iff this is a byref arg that is on the caller's stack
 #ifdef FEATURE_ARG_SPLIT
     bool _isSplit : 1; // True when this argument is split between the registers and OutArg area
 #endif                 // FEATURE_ARG_SPLIT
