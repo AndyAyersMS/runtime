@@ -1182,22 +1182,32 @@ inline GenTree* Compiler::gtNewFieldRef(var_types typ, CORINFO_FIELD_HANDLE fldH
     }
     GenTree* tree = new (this, GT_FIELD) GenTreeField(typ, obj, fldHnd, offset);
 
-    // If "obj" is the address of a local, note that a field of that struct local has been accessed.
-    if (obj != nullptr && obj->OperGet() == GT_ADDR && varTypeIsStruct(obj->AsOp()->gtOp1) &&
-        obj->AsOp()->gtOp1->OperGet() == GT_LCL_VAR)
+    bool mightBeGlobalRef = false;
+
+    if (obj == nullptr)
     {
-        unsigned lclNum                  = obj->AsOp()->gtOp1->AsLclVarCommon()->GetLclNum();
-        lvaTable[lclNum].lvFieldAccessed = 1;
-#if defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
-        // These structs are passed by reference; we should probably be able to treat these
-        // as non-global refs, but downstream logic expects these to be marked this way.
-        if (lvaTable[lclNum].lvIsParam)
-        {
-            tree->gtFlags |= GTF_GLOB_REF;
-        }
-#endif // defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
+        mightBeGlobalRef = true;
     }
     else
+    {
+        GenTree*   lclTree          = nullptr;
+        const bool isAddressOfLocal = impIsAddressInLocal(obj, &lclTree);
+
+        if (!isAddressOfLocal)
+        {
+            mightBeGlobalRef = true;
+        }
+        else
+        {
+            LclVarDsc* lcl = lvaGetDesc(lclTree->AsLclVarCommon());
+
+            // Note that a field of that struct local has been accessed;
+            // this feeds into promotion decisions.
+            lcl->lvFieldAccessed = 1;
+        }
+    }
+
+    if (mightBeGlobalRef)
     {
         tree->gtFlags |= GTF_GLOB_REF;
     }

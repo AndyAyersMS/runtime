@@ -5903,8 +5903,8 @@ GenTree* Compiler::fgMorphField(GenTree* tree, MorphAddrContext* mac)
         fgMorphImplicitByRefArgs(objRef);
     }
 
-    noway_assert(((objRef != nullptr) && (objRef->IsLocalAddrExpr() != nullptr)) ||
-                 ((tree->gtFlags & GTF_GLOB_REF) != 0));
+//    noway_assert(((objRef != nullptr) && (objRef->IsLocalAddrExpr() != nullptr)) ||
+//                 ((tree->gtFlags & GTF_GLOB_REF) != 0));
 
     if (tree->AsField()->gtFldMayOverlap)
     {
@@ -16846,7 +16846,7 @@ void Compiler::fgMorphStructField(GenTree* tree, GenTree* parent)
     GenTreeField* field  = tree->AsField();
     GenTree*      objRef = field->gtFldObj;
     GenTree*      obj    = ((objRef != nullptr) && (objRef->gtOper == GT_ADDR)) ? objRef->AsOp()->gtOp1 : nullptr;
-    noway_assert((tree->gtFlags & GTF_GLOB_REF) || ((obj != nullptr) && (obj->gtOper == GT_LCL_VAR)));
+    // noway_assert((tree->gtFlags & GTF_GLOB_REF) || ((obj != nullptr) && (obj->gtOper == GT_LCL_VAR)));
 
     /* Is this an instance data member? */
 
