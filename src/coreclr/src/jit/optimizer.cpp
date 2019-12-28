@@ -4001,88 +4001,68 @@ bool Compiler::optReachWithoutCall(BasicBlock* topBB, BasicBlock* botBB)
     return true;
 }
 
-/*****************************************************************************
- *
- * Find the loop termination test at the bottom of the loop
- */
-
-static Statement* optFindLoopTermTest(BasicBlock* bottom)
-{
-    Statement* testStmt = bottom->firstStmt();
-
-    assert(testStmt != nullptr);
-
-    Statement* result = testStmt->GetPrevStmt();
-
-#ifdef DEBUG
-    while (testStmt->GetNextStmt() != nullptr)
-    {
-        testStmt = testStmt->GetNextStmt();
-    }
-
-    assert(testStmt == result);
-#endif
-
-    return result;
-}
-
-/*****************************************************************************
- * Optimize "jmp C; do{} C:while(cond);" loops to "if (cond){ do{}while(cond}; }"
- */
-
+//------------------------------------------------------------------------
+// fgOptWhileLoop: Optimize "jmp C; do{} C:while(cond);" loops to "if (cond){ do{}while(cond}; }"
+//
+// Arguments:
+//   block - non-loop block that might jump to what loosk like a loop exit test
+//
+// Notes:
+//   Uses a simple lexical screen to detect likely loops.
+//
+//   Optimize while loops into do { } while loop
+//   Our loop hoisting logic requires do { } while loops.
+//   Specifically, we're looking for the following case:
+//
+//           ...
+//           jmp test
+//   loop:
+//           ...
+//           ...
+//   test:
+//           ..stmts..
+//           cond
+//           jtrue   loop
+//
+//   If we find this, and the test block is simple enough, we change
+//   the loop to the following:
+//
+//           ...
+//           ..stmts..
+//           cond
+//           jfalse done
+//           // else fall-through
+//   loop:
+//           ...
+//           ...
+//   test:
+//           .. stmts..
+//           cond
+//           jtrue   loop
+//   done:
+//
 void Compiler::fgOptWhileLoop(BasicBlock* block)
 {
     noway_assert(opts.OptimizationEnabled());
     noway_assert(compCodeOpt() != SMALL_CODE);
 
-    /*
-        Optimize while loops into do { } while loop
-        Our loop hoisting logic requires do { } while loops.
-        Specifically, we're looking for the following case:
-
-                ...
-                jmp test
-        loop:
-                ...
-                ...
-        test:
-                cond
-                jtrue   loop
-
-        If we find this, and the condition is simple enough, we change
-        the loop to the following:
-
-                ...
-                cond
-                jfalse done
-                // else fall-through
-        loop:
-                ...
-                ...
-        test:
-                cond
-                jtrue   loop
-        done:
-
-     */
-
-    /* Does the BB end with an unconditional jump? */
-
+    // Does the BB end with an unconditional jump?
+    // Exclude blocks used for our exception magic
     if (block->bbJumpKind != BBJ_ALWAYS || (block->bbFlags & BBF_KEEP_BBJ_ALWAYS))
-    { // It can't be one of the ones we use for our exception magic
+    {
         return;
     }
 
     // It has to be a forward jump
     //  TODO-CQ: Check if we can also optimize the backwards jump as well.
     //
-    if (fgIsForwardBranch(block) == false)
+    if (!fgIsForwardBranch(block))
     {
         return;
     }
 
     // Get hold of the jump target
-    BasicBlock* bTest = block->bbJumpDest;
+    BasicBlock* const bTest = block->bbJumpDest;
 
     // Does the block consist of 'jtrue(cond) block' ?
     if (bTest->bbJumpKind != BBJ_COND)
@@ -4114,39 +4094,45 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
         return;
     }
 
-    Statement* condStmt = optFindLoopTermTest(bTest);
-
-    // bTest must only contain only a jtrue with no other stmts, we will only clone
-    // the conditional, so any other statements will not get cloned
-    //  TODO-CQ: consider cloning the whole bTest block as inserting it after block.
-    //
-    if (bTest->bbStmtList != condStmt)
-    {
-        return;
-    }
-
-    /* Get to the condition node from the statement tree */
-
-    GenTree* condTree = condStmt->GetRootNode();
+    // Verify the test block ends with a conditional that we can manipulate
+    GenTree* const condTree = bTest->lastNode();
     noway_assert(condTree->gtOper == GT_JTRUE);
-
-    condTree = condTree->AsOp()->gtOp1;
-
-    // The condTree has to be a RelOp comparison
-    //  TODO-CQ: Check if we can also optimize the backwards jump as well.
-    //
-    if (condTree->OperIsCompare() == false)
+    if (!condTree->AsOp()->gtOp1->OperIsCompare())
     {
         return;
     }
 
-    /* We call gtPrepareCost to measure the cost of duplicating this tree */
+    // Estimate the cost of cloning the entire test block.
+    //
+    // Also look for static helper calls.
+    //
+    // If bTest has a shared static helper, we really want this loop
+    // converted as not converting the loop will disable loop
+    // hoisting, meaning the shared helper will be executed on every
+    // loop iteration.
+    //
+    // Note: it would help throughput to compute the maximum cost
+    // first and early out for large bTest blocks, as we are doing two
+    // tree walks per tree. But because of this helper call scan, the
+    // maximum cost depends on the trees in the block.
+    //
+    // We might consider flagging blocks with hoistable helper calls
+    // during importation, so we can avoid the helper search and
+    // implement an early bail out for large blocks with no helper
+    // calls.
+    unsigned estDupCostSz   = 0;
+    int      countOfHelpers = 0;
 
-    gtPrepareCost(condTree);
-    unsigned estDupCostSz = condTree->GetCostSz();
+    for (Statement* stmt : bTest->Statements())
+    {
+        GenTree* tree = stmt->GetRootNode();
+        fgWalkTreePre(&tree, CountSharedStaticHelper, &countOfHelpers);
+        gtPrepareCost(tree);
+        // Original code did not cost out the jump, just the compare...
+        estDupCostSz += tree->GetCostSz();
+    }
 
-    double loopIterations = (double)BB_LOOP_WEIGHT;
-
+    double               loopIterations            = (double)BB_LOOP_WEIGHT;
     bool                 allProfileWeightsAreValid = false;
     BasicBlock::weight_t weightBlock               = block->bbWeight;
     BasicBlock::weight_t weightTest                = bTest->bbWeight;
@@ -4201,60 +4187,67 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
         maxDupCostSz *= 2;
     }
 
-    // If the loop condition has a shared static helper, we really want this loop converted
-    // as not converting the loop will disable loop hoisting, meaning the shared helper will
-    // be executed on every loop iteration.
-    int countOfHelpers = 0;
-    fgWalkTreePre(&condTree, CountSharedStaticHelper, &countOfHelpers);
-
+    // If we saw hoistable helpers, boost the threshold for cloning.
     if (countOfHelpers > 0 && compCodeOpt() != SMALL_CODE)
     {
         maxDupCostSz += 24 * min(countOfHelpers, (int)(loopIterations + 1.5));
     }
 
-    // If the compare has too high cost then we don't want to dup
-
+    // Check if we should clone.
     bool costIsTooHigh = (estDupCostSz > maxDupCostSz);
 
-#ifdef DEBUG
-    if (verbose)
-    {
-        printf("\nDuplication of loop condition [%06u] is %s, because the cost of duplication (%i) is %s than %i,"
-               "\n   loopIterations = %7.3f, countOfHelpers = %d, validProfileWeights = %s\n",
-               condTree->gtTreeID, costIsTooHigh ? "not done" : "performed", estDupCostSz,
-               costIsTooHigh ? "greater" : "less or equal", maxDupCostSz, loopIterations, countOfHelpers,
-               allProfileWeightsAreValid ? "true" : "false");
-    }
-#endif
+    JITDUMP("\nDuplication of loop test block " FMT_BB " is %s, because the cost of duplication (%i) is %s than %i,"
+            "\n   loopIterations = %7.3f, countOfHelpers = %d, validProfileWeights = %s\n",
+            bTest->bbNum, costIsTooHigh ? "not done" : "performed", estDupCostSz,
+            costIsTooHigh ? "greater" : "less or equal", maxDupCostSz, loopIterations, countOfHelpers,
+            allProfileWeightsAreValid ? "true" : "false");
 
     if (costIsTooHigh)
     {
         return;
     }
 
-    /* Looks good - duplicate the condition test */
+    bool foundCondTree = false;
 
-    condTree->gtFlags |= GTF_RELOP_ZTT;
-
-    condTree = gtCloneExpr(condTree);
-    gtReverseCond(condTree);
-
-    // Make sure clone expr copied the flag
-    assert(condTree->gtFlags & GTF_RELOP_ZTT);
-
-    condTree = gtNewOperNode(GT_JTRUE, TYP_VOID, condTree);
-
-    /* Create a statement entry out of the condition and
-       append the condition test at the end of 'block' */
-
-    Statement* copyOfCondStmt = fgNewStmtAtEnd(block, condTree);
-
-    copyOfCondStmt->SetCompilerAdded();
-
-    if (opts.compDbgInfo)
+    // Clone each statement in bTest and append to block.
+    for (Statement* stmt : bTest->Statements())
     {
-        copyOfCondStmt->SetILOffsetX(condStmt->GetILOffsetX());
+        GenTree* originalTree = stmt->GetRootNode();
+        GenTree* clonedTree   = gtCloneExpr(originalTree);
+
+        // Special case handling needed for the conditional jump tree
+        if (originalTree == condTree)
+        {
+            foundCondTree = true;
+
+            // Get the compare subtrees
+            GenTree* originalCompareTree = originalTree->AsOp()->gtOp1;
+            GenTree* clonedCompareTree   = clonedTree->AsOp()->gtOp1;
+            assert(originalCompareTree->OperIsCompare());
+            assert(clonedCompareTree->OperIsCompare());
+
+            // Flag compare and cloned copy so later we know this loop
+            // has a proper zero trip test.
+            originalCompareTree->gtFlags |= GTF_RELOP_ZTT;
+            clonedCompareTree->gtFlags |= GTF_RELOP_ZTT;
+
+            // The original test branches to remain in the loop.  The
+            // new cloned test will branch to avoid the loop.  So the
+            // cloned compare needs to reverse the branch condition.
+            gtReverseCond(clonedCompareTree);
+        }
+
+        Statement* clonedStmt = fgNewStmtAtEnd(block, clonedTree);
+
+        if (opts.compDbgInfo)
+        {
+            clonedStmt->SetILOffsetX(stmt->GetILOffsetX());
+        }
+
+        clonedStmt->SetCompilerAdded();
     }
+
+    assert(foundCondTree);
 
     // Flag the block that received the copy as potentially having an array/vtable
     // reference if the block copied from did; this is a conservative guess.
@@ -4264,9 +4257,9 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
     }
 
     // If we have profile data for all blocks and we know that we are cloning the
-    //  bTest block into block and thus changing the control flow from block so
-    //  that it no longer goes directly to bTest anymore, we have to adjust the
-    //  weight of bTest by subtracting out the weight of block.
+    // bTest block into block and thus changing the control flow from block so
+    // that it no longer goes directly to bTest anymore, we have to adjust the
+    // weight of bTest by subtracting out the weight of block.
     //
     if (allProfileWeightsAreValid)
     {
@@ -4280,7 +4273,6 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
             flowList* edgeToJump = fgGetPredForBlock(bTest->bbJumpDest, bTest);
 
             // Calculate the new weight for block bTest
-
             BasicBlock::weight_t newWeightTest =
                 (weightTest > weightBlock) ? (weightTest - weightBlock) : BB_ZERO_WEIGHT;
             bTest->bbWeight = newWeightTest;
@@ -4301,32 +4293,21 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
         }
     }
 
-    /* Change the block to end with a conditional jump */
-
+    // Change the block to end with a conditional jump
     block->bbJumpKind = BBJ_COND;
     block->bbJumpDest = bTest->bbNext;
 
-    /* Mark the jump dest block as being a jump target */
+    // Mark the jump dest block as being a jump target
     block->bbJumpDest->bbFlags |= BBF_JMP_TARGET | BBF_HAS_LABEL;
 
-    /* Update bbRefs and bbPreds for 'block->bbNext' 'bTest' and 'bTest->bbNext' */
-
+    // Update bbRefs and bbPreds for 'block->bbNext' 'bTest' and 'bTest->bbNext'
     fgAddRefPred(block->bbNext, block);
-
     fgRemoveRefPred(bTest, block);
     fgAddRefPred(bTest->bbNext, block);
 
-#ifdef DEBUG
-    if (verbose)
-    {
-        printf("\nDuplicating loop condition in " FMT_BB " for loop (" FMT_BB " - " FMT_BB ")", block->bbNum,
-               block->bbNext->bbNum, bTest->bbNum);
-        printf("\nEstimated code size expansion is %d\n ", estDupCostSz);
-
-        gtDispStmt(copyOfCondStmt);
-    }
-
-#endif
+    JITDUMP("\nDuplicating loop exit block at " FMT_BB " for loop (" FMT_BB " - " FMT_BB ")", block->bbNum,
+            block->bbNext->bbNum, bTest->bbNum);
+    JITDUMP("\nEstimated code size expansion is %d\n ", estDupCostSz);
 }
 
 /*****************************************************************************
