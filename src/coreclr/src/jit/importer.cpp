@@ -5844,6 +5844,23 @@ int Compiler::impBoxPatternMatch(CORINFO_RESOLVED_TOKEN* pResolvedToken, const B
                     // Skip the next unbox.any instruction
                     return 1 + sizeof(mdToken);
                 }
+
+                // See if the resolved tokens describe the same primtive value classes.
+                CorInfoType boxedInfoType = info.compCompHnd->getTypeForPrimitiveValueClass(pResolvedToken->hClass);
+
+                if (boxedInfoType != CORINFO_TYPE_UNDEF)
+                {
+                    CorInfoType unboxedInfoType =
+                        info.compCompHnd->getTypeForPrimitiveValueClass(unboxResolvedToken.hClass);
+
+                    if (boxedInfoType == unboxedInfoType)
+                    {
+                        JITDUMP("\n Importing BOX; UNBOX.ANY as NOP\n");
+                        printf("**** new pattern hit in %s\n", info.compFullName);
+                        // Skip the next unbox.any instruction
+                        return 1 + sizeof(mdToken);
+                    }
+                }
             }
             break;
 
