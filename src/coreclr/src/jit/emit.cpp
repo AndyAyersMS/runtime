@@ -4665,6 +4665,13 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
     /* Give the block addresses to the caller and other functions here */
 
+    const char* const name = emitComp->info.compMethodName;
+
+    if ((strcmp(name, "F") == 0) || (strcmp(name, "G") == 0))
+    {
+        printf("Code for %s is at %p\n", emitComp->info.compMethodName, codeBlock);
+    }
+
     *codeAddr = emitCodeBlock = codeBlock;
     *coldCodeAddr = emitColdCodeBlock = coldCodeBlock;
     *consAddr = emitConsBlock = consBlock;

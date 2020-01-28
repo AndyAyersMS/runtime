@@ -427,6 +427,15 @@ void CodeGen::genCodeForBBlist()
         }
 #endif // DEBUG
 
+#ifdef _TARGET_XARCH_
+        if ((block == compiler->fgFirstBB) && (JitConfig.JitAddNops() > 0) && compiler->compHasBackwardJump)
+        {
+            int nopSize = JitConfig.JitAddNops() % 16;
+            // printf("Adding %d nops to %s\n", nopSize, compiler->info.compMethodName); 
+            GetEmitter()->emitIns_Nop(nopSize);
+        }
+#endif
+
         IL_OFFSETX currentILOffset = BAD_IL_OFFSET;
         for (GenTree* node : LIR::AsRange(block).NonPhiNodes())
         {
