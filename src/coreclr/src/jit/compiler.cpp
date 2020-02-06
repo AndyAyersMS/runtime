@@ -1889,6 +1889,15 @@ void Compiler::compInit(ArenaAllocator* pAlloc, InlineInfo* inlineInfo)
 #endif // FEATURE_SIMD
 
     compUsesThrowHelper = false;
+
+#ifdef DEBUG
+    auditCheckBBList         = 0;
+    auditCheckBlockLinks     = 0;
+    auditCheckLinks          = 0;
+    auditCheckNodeLinks      = 0;
+    auditCheckNodeUniqueness = 0;
+    auditCheckStmtsList      = 0;
+#endif
 }
 
 /*****************************************************************************
@@ -5549,6 +5558,16 @@ void Compiler::compCompileFinish()
     m_inlineStrategy->DumpData();
     m_inlineStrategy->DumpXml();
 
+#endif
+
+#ifdef DEBUG
+    if (JitConfig.JitAuditChecks())
+    {
+        printf("AuditChecks: BBList %u, BlockLinks %u, Links %u, NodeLinks %u, NodeUniqueness %u, StmtsList %u for %s "
+               "(%s)\n",
+               auditCheckBBList, auditCheckBlockLinks, auditCheckLinks, auditCheckNodeLinks, auditCheckNodeUniqueness,
+               auditCheckStmtsList, info.compFullName, compGetTieringName());
+    }
 #endif
 
 #ifdef DEBUG

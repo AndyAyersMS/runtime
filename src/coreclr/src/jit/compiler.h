@@ -4351,6 +4351,15 @@ public:
     bool     fgPrintInlinedMethods;
 #endif
 
+#if defined(DEBUG)
+    unsigned auditCheckBBList;
+    unsigned auditCheckBlockLinks;
+    unsigned auditCheckLinks;
+    unsigned auditCheckNodeLinks;
+    unsigned auditCheckNodeUniqueness;
+    unsigned auditCheckStmtsList;
+#endif
+
     //-------------------------------------------------------------------------
 
     void fgInit();

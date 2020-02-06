@@ -20880,9 +20880,19 @@ static volatile int bbTraverseLabel = 1;
 void Compiler::fgDebugCheckBBlist(bool checkBBNum /* = false */, bool checkBBRefs /* = true  */)
 {
 #ifdef DEBUG
+
+    impInlineRoot()->auditCheckBBList++;
+
     if (verbose)
     {
-        printf("*************** In fgDebugCheckBBlist\n");
+        if (JitConfig.JitAuditChecks())
+        {
+            printf("*************** In fgDebugCheckBBlist [%u]\n", impInlineRoot()->auditCheckBBList);
+        }
+        else
+        {
+            printf("*************** In fgDebugCheckBBlist\n");
+        }
     }
 #endif // DEBUG
 
@@ -21506,6 +21516,12 @@ void Compiler::fgDebugCheckFlagsHelper(GenTree* tree, unsigned treeFlags, unsign
 // This calls an alternate method for FGOrderLinear.
 void Compiler::fgDebugCheckNodeLinks(BasicBlock* block, Statement* stmt)
 {
+    impInlineRoot()->auditCheckNodeLinks++;
+    if (JitConfig.JitAuditChecks())
+    {
+        JITDUMP("*************** In fgDebugCheckNodeLinks [%u]\n", impInlineRoot()->auditCheckNodeLinks);
+    }
+
     // LIR blocks are checked using BasicBlock::CheckLIR().
     if (block->IsLIR())
     {
@@ -21611,6 +21627,12 @@ void Compiler::fgDebugCheckNodeLinks(BasicBlock* block, Statement* stmt)
 
 void Compiler::fgDebugCheckLinks(bool morphTrees)
 {
+    impInlineRoot()->auditCheckLinks++;
+    if (JitConfig.JitAuditChecks())
+    {
+        JITDUMP("*************** In fgDebugCheckLinks [%u]\n", impInlineRoot()->auditCheckLinks);
+    }
+
     // This used to be only on for stress, and there was a comment stating that
     // it was "quite an expensive operation" but I did not find that to be true.
     // Set DO_SANITY_DEBUG_CHECKS to false to revert to that behavior.
@@ -21654,6 +21676,12 @@ void Compiler::fgDebugCheckLinks(bool morphTrees)
 
 void Compiler::fgDebugCheckStmtsList(BasicBlock* block, bool morphTrees)
 {
+    impInlineRoot()->auditCheckStmtsList++;
+    if (JitConfig.JitAuditChecks())
+    {
+        JITDUMP("*************** In fgDebugCheckStmtsList [%u]\n", impInlineRoot()->auditCheckStmtsList);
+    }
+
     for (Statement* stmt : block->Statements())
     {
         // Verify that bbStmtList is threaded correctly.
@@ -21716,6 +21744,12 @@ void Compiler::fgDebugCheckStmtsList(BasicBlock* block, bool morphTrees)
 // ensure that bbNext and bbPrev are consistent
 void Compiler::fgDebugCheckBlockLinks()
 {
+    impInlineRoot()->auditCheckBlockLinks++;
+
+    if (JitConfig.JitAuditChecks())
+    {
+        JITDUMP("*************** In fgDebugCheckBlockLinks [%u]\n", impInlineRoot()->auditCheckBlockLinks);
+    }
     assert(fgFirstBB->bbPrev == nullptr);
 
     for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
@@ -21818,6 +21852,13 @@ private:
 //
 void Compiler::fgDebugCheckNodesUniqueness()
 {
+    auditCheckNodeUniqueness++;
+
+    if (JitConfig.JitAuditChecks())
+    {
+        JITDUMP("*************** In fgDebugCheckNodeUniqueness [%u]\n", auditCheckNodeUniqueness);
+    }
+
     UniquenessCheckWalker walker(this);
 
     for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
