@@ -17114,6 +17114,18 @@ void Compiler::fgRetypeImplicitByRefArgs()
                         (lvaGetPromotionType(newVarDsc) == PROMOTION_TYPE_DEPENDENT) ? "dependent;" : "",
                         totalAppearances, nonCallAppearances, varDsc->lvFieldCnt);
 
+#ifdef DEBUG
+                // Above is a profitability heurisic; either value of
+                // undoPromotion should lead to correct code. So,
+                // under stress, make different decisions at times.
+                if (compStressCompile(STRESS_BYREF_PROMOTION, 25))
+                {
+                    undoPromotion = !undoPromotion;
+                    JITDUMP("Stress -- changing byref undo promotion for V%02u to %s undo\n", lclNum,
+                            undoPromotion ? "" : "NOT");
+                }
+#endif
+
                 if (!undoPromotion)
                 {
                     // Insert IR that initializes the temp from the parameter.

@@ -1951,13 +1951,22 @@ bool Compiler::StructPromotionHelper::ShouldPromoteStructVar(unsigned lclNum)
         }
     }
 
-    //
     // If the lvRefCnt is zero and we have a struct promoted parameter we can end up with an extra store of
     // the the incoming register into the stack frame slot.
     // In that case, we would like to avoid promortion.
     // However we haven't yet computed the lvRefCnt values so we can't do that.
-    //
     CLANG_FORMAT_COMMENT_ANCHOR;
+
+#ifdef DEBUG
+    // Above is (or should be) a profitability heuristic, either value
+    // of shouldPromote should lead to correct code. So under stress,
+    // make different decisions at times.
+    if (compiler->compStressCompile(STRESS_STRUCT_PROMOTION, 25))
+    {
+        shouldPromote = !shouldPromote;
+        JITDUMP("Stress -- changing struct promotion for V%02u to %s promote\n", lclNum, shouldPromote ? "" : "NOT");
+    }
+#endif // DEBUG
 
     return shouldPromote;
 }
