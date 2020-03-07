@@ -14756,20 +14756,27 @@ bool Compiler::fgFoldConditional(BasicBlock* block)
         /* Did we fold the conditional */
 
         noway_assert(lastStmt->GetRootNode()->AsOp()->gtOp1);
+        GenTree* condTree;
+        condTree = lastStmt->GetRootNode()->AsOp()->gtOp1;
         GenTree* cond;
-        cond = lastStmt->GetRootNode()->AsOp()->gtOp1;
+        cond = condTree->gtEffectiveVal(true);
 
         if (cond->OperKind() & GTK_CONST)
         {
-            /* Yupee - we folded the conditional!
-             * Remove the conditional statement */
-
+            // Yupee - we folded the conditional!
             noway_assert(cond->gtOper == GT_CNS_INT);
             noway_assert((block->bbNext->countOfInEdges() > 0) && (block->bbJumpDest->countOfInEdges() > 0));
 
-            /* remove the statement from bbTreelist - No need to update
-             * the reference counts since there are no lcl vars */
-            fgRemoveStmt(block, lastStmt);
+            if (condTree != cond)
+            {
+                // Preseve the potentially side effecting part of the comma
+                assert(condTree->OperIs(GT_COMMA));
+                lastStmt->SetRootNode(condTree->AsOp()->gtOp1);
+            }
+            else
+            {
+                fgRemoveStmt(block, lastStmt);
+            }
 
             // block is a BBJ_COND that we are folding the conditional for
             // bTaken is the path that will always be taken from block
