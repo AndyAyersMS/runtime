@@ -1856,6 +1856,34 @@ bool Compiler::StructPromotionHelper::CanPromoteStructVar(unsigned lclNum)
         return false;
     }
 
+    if (varDsc->lvIsParam && !compiler->lvaIsImplicitByRefLocal(lclNum))
+    {
+#if FEATURE_MULTIREG_STRUCT_PROMOTE
+        // Is this a variable holding a value with exactly two fields passed in
+        // multiple registers?
+        if ((structPromotionInfo.fieldCnt != 2) && compiler->lvaIsMultiregStruct(varDsc, compiler->info.compIsVarArgs))
+        {
+            JITDUMP("Not promoting multireg struct local V%02u, because lvIsParam is true and #fields != 2\n", lclNum);
+            return false;
+        }
+        else
+#endif // !FEATURE_MULTIREG_STRUCT_PROMOTE
+
+        // TODO-PERF - Implement struct promotion for incoming multireg structs
+        //             Currently it hits assert(lvFieldCnt==1) in lclvar.cpp line 4417
+        //             Also the implementation of jmp uses the 4 byte move to store
+        //             byte parameters to the stack, so that if we have a byte field
+        //             with something else occupying the same 4-byte slot, it will
+        //             overwrite other fields.
+        if (structPromotionInfo.fieldCnt != 1)
+        {
+            JITDUMP("Not promoting promotable struct local V%02u, because lvIsParam is true and #fields = "
+                "%d.\n",
+                lclNum, structPromotionInfo.fieldCnt);
+            return false;
+        }
+    }
+
     CORINFO_CLASS_HANDLE typeHnd = varDsc->lvVerTypeInfo.GetClassHandle();
     return CanPromoteStructType(typeHnd);
 }
@@ -1923,33 +1951,6 @@ bool Compiler::StructPromotionHelper::ShouldPromoteStructVar(unsigned lclNum)
         shouldPromote = false;
     }
 #endif // TARGET_AMD64 || TARGET_ARM64 || TARGET_ARM
-    else if (varDsc->lvIsParam && !compiler->lvaIsImplicitByRefLocal(lclNum))
-    {
-#if FEATURE_MULTIREG_STRUCT_PROMOTE
-        // Is this a variable holding a value with exactly two fields passed in
-        // multiple registers?
-        if ((structPromotionInfo.fieldCnt != 2) && compiler->lvaIsMultiregStruct(varDsc, compiler->info.compIsVarArgs))
-        {
-            JITDUMP("Not promoting multireg struct local V%02u, because lvIsParam is true and #fields != 2\n", lclNum);
-            shouldPromote = false;
-        }
-        else
-#endif // !FEATURE_MULTIREG_STRUCT_PROMOTE
-
-            // TODO-PERF - Implement struct promotion for incoming multireg structs
-            //             Currently it hits assert(lvFieldCnt==1) in lclvar.cpp line 4417
-            //             Also the implementation of jmp uses the 4 byte move to store
-            //             byte parameters to the stack, so that if we have a byte field
-            //             with something else occupying the same 4-byte slot, it will
-            //             overwrite other fields.
-            if (structPromotionInfo.fieldCnt != 1)
-        {
-            JITDUMP("Not promoting promotable struct local V%02u, because lvIsParam is true and #fields = "
-                    "%d.\n",
-                    lclNum, structPromotionInfo.fieldCnt);
-            shouldPromote = false;
-        }
-    }
 
     // If the lvRefCnt is zero and we have a struct promoted parameter we can end up with an extra store of
     // the the incoming register into the stack frame slot.
