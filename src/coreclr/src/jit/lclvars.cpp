@@ -1856,6 +1856,20 @@ bool Compiler::StructPromotionHelper::CanPromoteStructVar(unsigned lclNum)
         return false;
     }
 
+    // Done with simple var based checks, now look at the struct type.
+    CORINFO_CLASS_HANDLE typeHnd    = varDsc->lvVerTypeInfo.GetClassHandle();
+    bool                 canPromote = CanPromoteStructType(typeHnd);
+
+    if (!canPromote)
+    {
+        return false;
+    }
+
+    // One last set of legality checks for things the jit could
+    // support, but doesn't yet. Note we can't check this before
+    // calling CanPromoteStructType, as that method makes changes
+    // to structPromotionInfo.
+    //
     if (varDsc->lvIsParam && !compiler->lvaIsImplicitByRefLocal(lclNum))
     {
 #if FEATURE_MULTIREG_STRUCT_PROMOTE
@@ -1869,23 +1883,41 @@ bool Compiler::StructPromotionHelper::CanPromoteStructVar(unsigned lclNum)
         else
 #endif // !FEATURE_MULTIREG_STRUCT_PROMOTE
 
-        // TODO-PERF - Implement struct promotion for incoming multireg structs
-        //             Currently it hits assert(lvFieldCnt==1) in lclvar.cpp line 4417
-        //             Also the implementation of jmp uses the 4 byte move to store
-        //             byte parameters to the stack, so that if we have a byte field
-        //             with something else occupying the same 4-byte slot, it will
-        //             overwrite other fields.
-        if (structPromotionInfo.fieldCnt != 1)
+            // TODO-PERF - Implement struct promotion for incoming multireg structs
+            //             Currently it hits assert(lvFieldCnt==1) in lclvar.cpp line 4417
+            //             Also the implementation of jmp uses the 4 byte move to store
+            //             byte parameters to the stack, so that if we have a byte field
+            //             with something else occupying the same 4-byte slot, it will
+            //             overwrite other fields.
+            if (structPromotionInfo.fieldCnt != 1)
         {
             JITDUMP("Not promoting promotable struct local V%02u, because lvIsParam is true and #fields = "
-                "%d.\n",
-                lclNum, structPromotionInfo.fieldCnt);
+                    "%d.\n",
+                    lclNum, structPromotionInfo.fieldCnt);
             return false;
         }
     }
 
-    CORINFO_CLASS_HANDLE typeHnd = varDsc->lvVerTypeInfo.GetClassHandle();
-    return CanPromoteStructType(typeHnd);
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_ARM)
+    // TODO-PERF - Only do this when the LclVar is used in an argument context
+    // TODO-ARM64 - HFA support should also eliminate the need for this.
+    // TODO-ARM32 - HFA support should also eliminate the need for this.
+    // TODO-LSRA - Currently doesn't support the passing of floating point LCL_VARS in the integer registers
+    //
+    // For now we currently don't promote structs with a single float field
+    // Promoting it can cause us to shuffle it back and forth between the int and
+    // the float regs when it is used as a argument, which is very expensive for XARCH
+    //
+    if ((structPromotionInfo.fieldCnt == 1) && varTypeIsFloating(structPromotionInfo.fields[0].fldType))
+    {
+        JITDUMP("Not promoting promotable struct local V%02u: #fields = %d because it is a struct with "
+                "single float field.\n",
+                lclNum, structPromotionInfo.fieldCnt);
+        return false;
+    }
+#endif // TARGET_AMD64 || TARGET_ARM64 || TARGET_ARM
+
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------
@@ -1933,24 +1965,6 @@ bool Compiler::StructPromotionHelper::ShouldPromoteStructVar(unsigned lclNum)
                 structPromotionInfo.fieldCnt, varDsc->lvFieldAccessed);
         shouldPromote = false;
     }
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_ARM)
-    // TODO-PERF - Only do this when the LclVar is used in an argument context
-    // TODO-ARM64 - HFA support should also eliminate the need for this.
-    // TODO-ARM32 - HFA support should also eliminate the need for this.
-    // TODO-LSRA - Currently doesn't support the passing of floating point LCL_VARS in the integer registers
-    //
-    // For now we currently don't promote structs with a single float field
-    // Promoting it can cause us to shuffle it back and forth between the int and
-    //  the float regs when it is used as a argument, which is very expensive for XARCH
-    //
-    else if ((structPromotionInfo.fieldCnt == 1) && varTypeIsFloating(structPromotionInfo.fields[0].fldType))
-    {
-        JITDUMP("Not promoting promotable struct local V%02u: #fields = %d because it is a struct with "
-                "single float field.\n",
-                lclNum, structPromotionInfo.fieldCnt);
-        shouldPromote = false;
-    }
-#endif // TARGET_AMD64 || TARGET_ARM64 || TARGET_ARM
 
     // If the lvRefCnt is zero and we have a struct promoted parameter we can end up with an extra store of
     // the the incoming register into the stack frame slot.
