@@ -573,9 +573,10 @@ void SsaBuilder::AddPhiArg(
     }
 #endif // DEBUG
 
-    var_types type = m_pCompiler->lvaGetDesc(lclNum)->TypeGet();
+    LclVarDsc* const lclDsc = m_pCompiler->lvaGetDesc(lclNum);
+    var_types type = lclDsc->TypeGet();
+    GenTreePhiArg* const phiArg = new (m_pCompiler, GT_PHI_ARG) GenTreePhiArg(type, lclNum, ssaNum, pred);
 
-    GenTree* phiArg = new (m_pCompiler, GT_PHI_ARG) GenTreePhiArg(type, lclNum, ssaNum, pred);
     // Costs are not relevant for PHI args.
     phiArg->SetCosts(0, 0);
     // The argument order doesn't matter so just insert at the front of the list because
@@ -583,11 +584,14 @@ void SsaBuilder::AddPhiArg(
     // will be first in linear order as well.
     phi->gtUses = new (m_pCompiler, CMK_ASTNode) GenTreePhi::Use(phiArg, phi->gtUses);
 
-    GenTree* head = stmt->GetTreeList();
+    GenTree* const head = stmt->GetTreeList();
     assert(head->OperIs(GT_PHI, GT_PHI_ARG));
     stmt->SetTreeList(phiArg);
     phiArg->gtNext = head;
     head->gtPrev   = phiArg;
+
+    LclSsaVarDsc* const ssaDsc = lclDsc->lvPerSsaData.GetSsaDef(ssaNum);
+    ssaDsc->AddUse(phiArg);
 
 #ifdef DEBUG
     unsigned seqNum = 1;
@@ -749,16 +753,17 @@ void SsaBuilder::RenameDef(GenTreeOp* asgNode, BasicBlock* block)
 
     if (isLocal)
     {
-        unsigned lclNum = lclNode->GetLclNum();
+        const unsigned lclNum = lclNode->GetLclNum();
 
         if (m_pCompiler->lvaInSsa(lclNum))
         {
+            LclVarDsc* const lclDsc = m_pCompiler->lvaGetDesc(lclNum);
             // Promoted variables are not in SSA, only their fields are.
-            assert(!m_pCompiler->lvaGetDesc(lclNum)->lvPromoted);
+            assert(!lclDsc->lvPromoted);
             // This should have been marked as defintion.
             assert((lclNode->gtFlags & GTF_VAR_DEF) != 0);
 
-            unsigned ssaNum = m_pCompiler->lvaGetDesc(lclNum)->lvPerSsaData.AllocSsaNum(m_allocator, block, asgNode);
+            const unsigned ssaNum = lclDsc->lvPerSsaData.AllocSsaNum(m_allocator, block, asgNode);
 
             if (!isFullDef)
             {
@@ -769,6 +774,9 @@ void SsaBuilder::RenameDef(GenTreeOp* asgNode, BasicBlock* block)
                 // definition will be recorded in the m_opAsgnVarDefSsaNums map.
                 lclNode->SetSsaNum(m_renameStack.Top(lclNum));
                 m_pCompiler->GetOpAsgnVarDefSsaNums()->Set(lclNode, ssaNum);
+
+                LclSsaVarDsc* const ssaDsc = lclDsc->lvPerSsaData.GetSsaDef(ssaNum);
+                ssaDsc->AddUse(lclNode);
             }
             else
             {
@@ -873,6 +881,10 @@ void SsaBuilder::RenameLclUse(GenTreeLclVarCommon* lclNode)
     }
 
     lclNode->SetSsaNum(ssaNum);
+
+    LclVarDsc* const lclDsc = m_pCompiler->lvaGetDesc(lclNum);
+    LclSsaVarDsc* const ssaDsc = lclDsc->lvPerSsaData.GetSsaDef(ssaNum);
+    ssaDsc->AddUse(lclNode);
 }
 
 void SsaBuilder::AddDefToHandlerPhis(BasicBlock* block, unsigned lclNum, unsigned ssaNum)

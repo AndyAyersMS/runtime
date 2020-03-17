@@ -221,12 +221,15 @@ class LclSsaVarDsc
     // of uninitialized variables.
     GenTreeOp* m_asg;
 
+    // Number of uses seen, at the time SSA was built.
+    unsigned m_useCount;
+
 public:
-    LclSsaVarDsc() : m_block(nullptr), m_asg(nullptr)
+    LclSsaVarDsc() : m_block(nullptr), m_asg(nullptr), m_useCount(0)
     {
     }
 
-    LclSsaVarDsc(BasicBlock* block, GenTreeOp* asg) : m_block(block), m_asg(asg)
+    LclSsaVarDsc(BasicBlock* block, GenTreeOp* asg) : m_block(block), m_asg(asg), m_useCount(0)
     {
         assert((asg == nullptr) || asg->OperIs(GT_ASG));
     }
@@ -250,6 +253,16 @@ public:
     {
         assert((asg == nullptr) || asg->OperIs(GT_ASG));
         m_asg = asg;
+    }
+
+    unsigned GetUseCount() const
+    {
+        return m_useCount;
+    }
+
+    void AddUse(GenTreeLclVarCommon* use)
+    {
+        m_useCount++;
     }
 
     ValueNumPair m_vnPair;
