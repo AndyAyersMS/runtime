@@ -39,6 +39,7 @@ set( JIT_SOURCES
   emit.cpp
   error.cpp
   flowgraph.cpp
+  forwardsubstitution.cpp
   gcdecode.cpp
   gcencode.cpp
   gcinfo.cpp

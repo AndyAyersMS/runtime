@@ -573,8 +573,8 @@ void SsaBuilder::AddPhiArg(
     }
 #endif // DEBUG
 
-    LclVarDsc* const lclDsc = m_pCompiler->lvaGetDesc(lclNum);
-    var_types type = lclDsc->TypeGet();
+    LclVarDsc* const     lclDsc = m_pCompiler->lvaGetDesc(lclNum);
+    var_types            type   = lclDsc->TypeGet();
     GenTreePhiArg* const phiArg = new (m_pCompiler, GT_PHI_ARG) GenTreePhiArg(type, lclNum, ssaNum, pred);
 
     // Costs are not relevant for PHI args.
@@ -882,9 +882,12 @@ void SsaBuilder::RenameLclUse(GenTreeLclVarCommon* lclNode)
 
     lclNode->SetSsaNum(ssaNum);
 
-    LclVarDsc* const lclDsc = m_pCompiler->lvaGetDesc(lclNum);
-    LclSsaVarDsc* const ssaDsc = lclDsc->lvPerSsaData.GetSsaDef(ssaNum);
-    ssaDsc->AddUse(lclNode);
+    if (ssaNum != SsaConfig::RESERVED_SSA_NUM)
+    {
+        LclVarDsc* const    lclDsc = m_pCompiler->lvaGetDesc(lclNum);
+        LclSsaVarDsc* const ssaDsc = lclDsc->lvPerSsaData.GetSsaDef(ssaNum);
+        ssaDsc->AddUse(lclNode);
+    }
 }
 
 void SsaBuilder::AddDefToHandlerPhis(BasicBlock* block, unsigned lclNum, unsigned ssaNum)

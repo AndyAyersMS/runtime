@@ -70,6 +70,7 @@ CompPhaseNameMacro(PHASE_BUILD_SSA_DF,           "SSA: DF",                     
 CompPhaseNameMacro(PHASE_BUILD_SSA_INSERT_PHIS,  "SSA: insert phis",               "SSA-PHI",  false, PHASE_BUILD_SSA, false)
 CompPhaseNameMacro(PHASE_BUILD_SSA_RENAME,       "SSA: rename",                    "SSA-REN",  false, PHASE_BUILD_SSA, false)
 
+CompPhaseNameMacro(PHASE_FORWARD_SUBSTITUTION,   "Forward Substitution",           "FWD-SUB",  false, -1, false)
 CompPhaseNameMacro(PHASE_EARLY_PROP,             "Early Value Propagation",        "ERL-PROP", false, -1, false)
 CompPhaseNameMacro(PHASE_VALUE_NUMBER,           "Do value numbering",             "VAL-NUM",  false, -1, false)
 

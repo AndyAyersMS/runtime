@@ -6470,8 +6470,10 @@ public:
     GenTree* optPropGetValue(unsigned lclNum, unsigned ssaNum, optPropKind valueKind);
     GenTree* optEarlyPropRewriteTree(GenTree* tree, LocalNumberToNullCheckTreeMap* nullCheckMap);
     bool optDoEarlyPropForBlock(BasicBlock* block);
-    bool optDoEarlyPropForFunc();
-    void optEarlyProp();
+    bool     optDoEarlyPropForFunc();
+    void     optEarlyProp();
+    void     optForwardSubstitution();
+    GenTree* optForwardSubstitution(BasicBlock* block, Statement* statement, GenTree* tree);
     void optFoldNullCheck(GenTree* tree, LocalNumberToNullCheckTreeMap* nullCheckMap);
     GenTree* optFindNullCheckToFold(GenTree* tree, LocalNumberToNullCheckTreeMap* nullCheckMap);
     bool optIsNullCheckFoldingLegal(GenTree*    tree,

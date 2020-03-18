@@ -4712,6 +4712,7 @@ void Compiler::compCompile(void** methodCodePtr, ULONG* methodCodeSize, JitFlags
     if (opts.OptimizationEnabled())
     {
         bool doSsa           = true;
+        bool doForwardSub    = true;
         bool doEarlyProp     = true;
         bool doValueNum      = true;
         bool doLoopHoisting  = true;
@@ -4722,6 +4723,7 @@ void Compiler::compCompile(void** methodCodePtr, ULONG* methodCodeSize, JitFlags
 
 #if defined(OPT_CONFIG)
         doSsa           = (JitConfig.JitDoSsa() != 0);
+        doForwardSub    = (JitConfig.JitDoForwardSubstitution() != 0);
         doEarlyProp     = doSsa && (JitConfig.JitDoEarlyProp() != 0);
         doValueNum      = doSsa && (JitConfig.JitDoValueNumber() != 0);
         doLoopHoisting  = doValueNum && (JitConfig.JitDoLoopHoisting() != 0);
@@ -4742,6 +4744,11 @@ void Compiler::compCompile(void** methodCodePtr, ULONG* methodCodeSize, JitFlags
                 // Build up SSA form for the IR
                 //
                 DoPhase(this, PHASE_BUILD_SSA, &Compiler::fgSsaBuild);
+            }
+
+            if (doSsa && doForwardSub)
+            {
+                DoPhase(this, PHASE_FORWARD_SUBSTITUTION, &Compiler::optForwardSubstitution);
             }
 
             if (doEarlyProp)
