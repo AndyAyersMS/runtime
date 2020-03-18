@@ -25,16 +25,20 @@ void Compiler::optForwardSubstitution()
                 GenTree* newTree = optForwardSubstitution(block, stmt, tree);
                 if (newTree != nullptr)
                 {
-                    gtUpdateSideEffects(stmt, newTree);
                     madeChanges = true;
                 }
             }
 
-            // Update the evaluation order and the statement info if the stmt has been rewritten.
             if (madeChanges)
             {
-                gtSetStmtInfo(stmt);
-                fgSetStmtSeq(stmt);
+                gtUpdateStmtSideEffects(stmt);
+
+                // Don't remorph JTRUE/SWITCH for now, if they get folded things go wonky.
+                //
+                if (!stmt->GetRootNode()->OperIs(GT_JTRUE, GT_SWITCH))
+                {
+                    fgMorphBlockStmt(block, stmt DEBUGARG("optForwardSubstitution"));
+                }
             }
 
             stmt = next;
@@ -79,14 +83,6 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
         return nullptr;
     }
 
-    // Heuristic: where the local is defined in the same block
-    BasicBlock* const defBlock = lclSsaDesc->GetBlock();
-
-    if (defBlock != block)
-    {
-        return nullptr;
-    }
-
     // Where the definition is a tree
     GenTreeOp* const ssaAsgTree = lclSsaDesc->GetAssignment();
 
@@ -101,15 +97,76 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
         return nullptr;
     }
 
-    GenTree* const defTree = ssaAsgTree->gtGetOp2();
+    // Crossgen SPC: about 105K candidates at this point.
+    //
+    // Heuristic: where the local is defined in the same block
+    //
+    BasicBlock* const defBlock = lclSsaDesc->GetBlock();
 
-    // Heuristic: where the definition is not a PHI
-    if (defTree->OperIs(GT_PHI))
+    if (defBlock != block)
     {
         return nullptr;
     }
 
+    GenTree* const defTree = ssaAsgTree->gtGetOp2();
+
+    // Crossgen SPC: about 85K candidates at this point.
+    //
+    // Heuristic: the definition is not a PHI
+    // Legality: catch arg must not be forwarded.
+    //
+    if (defTree->OperIs(GT_PHI, GT_CATCH_ARG))
+    {
+        return nullptr;
+    }
+
+    // Crossgen SPC: about 70K candidates at this point.
+    //
+    // Heuristic: only if def is in the immediately preceeding statement.
+    // (this lets us bypass potentially costly legality checking, though
+    // given the number of opportunities this passes up, we may want to
+    // pay for it...)
+    //
+    Statement* prevStatement = statement->GetPrevStmt();
+
+    if (prevStatement->GetRootNode() != ssaAsgTree)
+    {
+        return nullptr;
+    }
+
+    // Crossgen SPC: about 20K candidates at this point.
+    //
     JITDUMP("Found FWD sub candidate: def [%06u] -> use [%06u]\n", dspTreeID(defTree), dspTreeID(tree));
 
-    return nullptr;
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("found use of an entire single-use tree:\n");
+        printf("---def---\n");
+        gtDispTree(ssaAsgTree);
+        printf("---in ---\n");
+        gtDispTree(statement->GetRootNode());
+        printf("\n");
+    }
+#endif // DEBUG
+
+    GenTree**      lclTreeUse = nullptr;
+    GenTree* const parent     = lclTree->gtGetParent(&lclTreeUse);
+
+    if ((parent == nullptr) || (lclTreeUse == nullptr))
+    {
+        return nullptr;
+    }
+
+    // Crossgen SPC: still about 20K candidates at this point,
+    // above checks should never fail.
+    //
+    // Make the tranformation.
+    //
+    assert(*lclTreeUse == lclTree);
+    *lclTreeUse = defTree;
+
+    fgRemoveStmt(block, prevStatement);
+
+    return defTree;
 }
