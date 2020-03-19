@@ -5786,6 +5786,8 @@ void Compiler::fgValueNumber()
             LclSsaVarDsc* ssaDef  = varDsc->GetPerSsaData(SsaConfig::FIRST_SSA_NUM);
             ssaDef->m_vnPair.SetBoth(initVal);
             ssaDef->SetBlock(fgFirstBB);
+
+            JITDUMP("Param V%02u initial value VN is: " FMT_VN "\n", lclNum, initVal);
         }
         else if (info.compInitMem || varDsc->lvMustInit ||
                  VarSetOps::IsMember(this, fgFirstBB->bbLiveIn, varDsc->lvVarIndex))
@@ -5853,6 +5855,8 @@ void Compiler::fgValueNumber()
             LclSsaVarDsc* ssaDef = varDsc->GetPerSsaData(SsaConfig::FIRST_SSA_NUM);
             ssaDef->m_vnPair.SetBoth(initVal);
             ssaDef->SetBlock(fgFirstBB);
+
+            JITDUMP("Zeroed local V%02u initial value VN is: " FMT_VN "\n", lclNum, initVal);
         }
     }
     // Give memory an initial value number (about which we know nothing).

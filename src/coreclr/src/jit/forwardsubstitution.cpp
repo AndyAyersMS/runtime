@@ -35,7 +35,12 @@ void Compiler::optForwardSubstitution()
 
                 // Don't remorph JTRUE/SWITCH for now, if they get folded things go wonky.
                 //
-                if (!stmt->GetRootNode()->OperIs(GT_JTRUE, GT_SWITCH))
+                if (stmt->GetRootNode()->OperIs(GT_JTRUE, GT_SWITCH))
+                {
+                    gtSetStmtInfo(stmt);
+                    fgSetStmtSeq(stmt);
+                }
+                else
                 {
                     fgMorphBlockStmt(block, stmt DEBUGARG("optForwardSubstitution"));
                 }
