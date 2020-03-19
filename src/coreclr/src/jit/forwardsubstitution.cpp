@@ -139,6 +139,34 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
         return nullptr;
     }
 
+    // Workaround: substituting into a return with mismatched
+    // types can cause issues in LSRA with BITCAST & containment.
+    // System.Numerics.Matrix3x2:get_Translation()
+    //
+    if (statement->GetRootNode()->OperIs(GT_RETURN))
+    {
+        if (statement->GetRootNode()->TypeGet() != defTree->TypeGet())
+        {
+            return nullptr;
+        }
+    }
+
+    // Workaround: skip SIMD12 for now.
+    // System.Numerics.Matrix4x4:CreateConstrainedBillboard
+    //
+    if (defTree->TypeGet() == TYP_SIMD12)
+    {
+        return nullptr;
+    }
+
+    // Workaround: don't propagate CALLs (probably good heuristic, too)
+    // System.Runtime.InteropServices.WindowsRuntime.EventRegistrationTokenTable`1[__Canon][System.__Canon]:RemoveEventHandler(System.__Canon):this
+    //
+    if (defTree->OperIs(GT_CALL))
+    {
+        return nullptr;
+    }
+
     // Crossgen SPC: about 20K candidates at this point.
     //
     JITDUMP("Found FWD sub candidate: def [%06u] -> use [%06u]\n", dspTreeID(defTree), dspTreeID(tree));
