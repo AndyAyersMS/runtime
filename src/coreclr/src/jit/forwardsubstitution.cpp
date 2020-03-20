@@ -7,6 +7,9 @@
 //------------------------------------------------------------------------------------------
 // optForwardSubstitution: propagate definition trees to uses
 //
+// Notes:
+//   If ssa defs pointed at their (only) use, we could streamline the walk we do here.
+//
 void Compiler::optForwardSubstitution()
 {
     // Requires SSA to do anything useful.
@@ -17,15 +20,21 @@ void Compiler::optForwardSubstitution()
         compCurBB = block;
         for (Statement* stmt = block->firstStmt(); stmt != nullptr;)
         {
-            Statement* next  = stmt->GetNextStmt();
-            compCurStmt      = stmt;
-            bool madeChanges = false;
+            Statement* next      = stmt->GetNextStmt();
+            compCurStmt          = stmt;
+            bool     madeChanges = false;
+            unsigned flags       = 0;
             for (GenTree* tree = stmt->GetTreeList(); tree != nullptr; tree = tree->gtNext)
             {
-                GenTree* newTree = optForwardSubstitution(block, stmt, tree);
+                GenTree* newTree = optForwardSubstitution(block, stmt, tree, &flags);
                 if (newTree != nullptr)
                 {
+                    flags |= (newTree->gtFlags & GTF_ALL_EFFECT);
                     madeChanges = true;
+                }
+                else
+                {
+                    flags |= (tree->gtFlags & GTF_ALL_EFFECT);
                 }
             }
 
@@ -33,7 +42,8 @@ void Compiler::optForwardSubstitution()
             {
                 gtUpdateStmtSideEffects(stmt);
 
-                // Don't remorph JTRUE/SWITCH for now, if they get folded things go wonky.
+                // Don't remorph JTRUE/SWITCH for now, if they get folded things go wonky,
+                // as fgMorphBlockStmt will modify the flow graph.
                 //
                 if (stmt->GetRootNode()->OperIs(GT_JTRUE, GT_SWITCH))
                 {
@@ -54,9 +64,18 @@ void Compiler::optForwardSubstitution()
 //------------------------------------------------------------------------------------------
 // optForwardSubstitution: propagate definition trees to uses
 //
-// Consider: key off of ssa, if we link defs & uses, we can avoid a lot of IR walking.
+// Arguments:
+//   block - current basic block
+//   statement - current statement (belongs to block)
+//   tree - current tree (part of statement)
+//   flags - cumulative side effects of all tree nodes that evaluate before tree in
+//     the current statement
 //
-GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statement, GenTree* tree)
+// Returns:
+//   nullptr if no changes made to tree
+//   new/modified tree otherwise.
+//
+GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statement, GenTree* tree, unsigned* flags)
 {
     // We only modfy GT_LCL_VAR trees.
     if (!tree->OperIs(GT_LCL_VAR))
@@ -139,6 +158,8 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
         return nullptr;
     }
 
+    // Crossgen SPC: about 20K candidates at this point.
+    //
     // Workaround: substituting into a return with mismatched
     // types can cause issues in LSRA with BITCAST & containment.
     // System.Numerics.Matrix3x2:get_Translation()
@@ -167,8 +188,59 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
         return nullptr;
     }
 
-    // Crossgen SPC: about 20K candidates at this point.
+    // Legality: see if def tree can be moved to use
+    // without reordering side effects.
     //
+    // Should probably rework driver to walk the statement in
+    // evaluation order, and accumulate any side effects/updated
+    // locals as we go.
+    //
+    if ((*flags != 0) && (defTree->gtFlags & GTF_ALL_EFFECT) != 0)
+    {
+        return false;
+    }
+
+    // Workaround: don't propagate struct zeros
+    // Microsoft.Diagnostics.Tracing.Extensions.ETWKernelControl:IsWin8orNewer():bool
+    //
+    if ((ssaAsgTree->TypeGet() == TYP_STRUCT) && (defTree->OperIs(GT_CNS_INT)))
+    {
+        return false;
+    }
+
+    GenTree**      lclTreeUse = nullptr;
+    GenTree* const parent     = lclTree->gtGetParent(&lclTreeUse);
+
+    if ((parent == nullptr) || (lclTreeUse == nullptr))
+    {
+        return nullptr;
+    }
+
+    // Workaround: don't propagate address-of-local into an indir unless we
+    // are tracking byref and heap memory separately. This check is probably
+    // not general enough yet... sigh.
+    //
+    // Seems to mainly impact small methods where during initial liveness we only see indirs with
+    // unknown base addresses.
+    //
+    // FastSerialization.Deserializer:ReadFloat():float:this
+    // System.Linq.Parallel.CancellationState:get_MergedCancellationToken():System.Threading.CancellationToken:this
+    //
+    if (byrefStatesMatchGcHeapStates && (defTree->IsLocalAddrExpr() != nullptr) && parent->OperIs(GT_IND))
+    {
+        return nullptr;
+    }
+
+    // Workaround: Similar check for assignments that initially looked like they might write to the heap.
+    // System.Data.Common.SqlBooleanStorage:Aggregate(System.Int32[],int):System.Object:this
+    //
+    unsigned memorySsaNum;
+    if (GetMemorySsaMap(GcHeap)->Lookup(statement->GetRootNode(), &memorySsaNum) &&
+        (defTree->IsLocalAddrExpr() != nullptr))
+    {
+        return nullptr;
+    }
+
     JITDUMP("Found FWD sub candidate: def [%06u] -> use [%06u]\n", dspTreeID(defTree), dspTreeID(tree));
 
 #ifdef DEBUG
@@ -183,22 +255,13 @@ GenTree* Compiler::optForwardSubstitution(BasicBlock* block, Statement* statemen
     }
 #endif // DEBUG
 
-    GenTree**      lclTreeUse = nullptr;
-    GenTree* const parent     = lclTree->gtGetParent(&lclTreeUse);
-
-    if ((parent == nullptr) || (lclTreeUse == nullptr))
-    {
-        return nullptr;
-    }
-
-    // Crossgen SPC: still about 20K candidates at this point,
-    // above checks should never fail.
-    //
     // Make the tranformation.
     //
     assert(*lclTreeUse == lclTree);
     *lclTreeUse = defTree;
 
+    // We no longer need the original def assignment, since this was the
+    // one and only use.
     fgRemoveStmt(block, prevStatement);
 
     return defTree;

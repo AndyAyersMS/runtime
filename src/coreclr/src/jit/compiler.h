@@ -6473,7 +6473,7 @@ public:
     bool     optDoEarlyPropForFunc();
     void     optEarlyProp();
     void     optForwardSubstitution();
-    GenTree* optForwardSubstitution(BasicBlock* block, Statement* statement, GenTree* tree);
+    GenTree* optForwardSubstitution(BasicBlock* block, Statement* statement, GenTree* tree, unsigned* flags);
     void optFoldNullCheck(GenTree* tree, LocalNumberToNullCheckTreeMap* nullCheckMap);
     GenTree* optFindNullCheckToFold(GenTree* tree, LocalNumberToNullCheckTreeMap* nullCheckMap);
     bool optIsNullCheckFoldingLegal(GenTree*    tree,
