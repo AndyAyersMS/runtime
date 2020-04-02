@@ -5104,7 +5104,7 @@ void Compiler::compCompile(void** methodCodePtr, ULONG* methodCodeSize, JitFlags
 //
 void Compiler::generatePatchpointInfo()
 {
-    if (!doesMethodHavePatchpoints())
+    if (!doesMethodHavePatchpoints() && !doesMethodHaveUncommonPatchpoints())
     {
         // Nothing to report
         return;

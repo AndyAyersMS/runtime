@@ -6713,6 +6713,7 @@ public:
 #define OMF_HAS_PATCHPOINT 0x00000100       // Method contains patchpoints
 #define OMF_NEEDS_GCPOLLS 0x00000200        // Method needs GC polls
 #define OMF_HAS_FROZEN_STRING 0x00000400    // Method has a frozen string (REF constant int), currently only on CoreRT.
+#define OMF_HAS_UNCOMMON_PATCHPOINT 0x00000800 // Method contains uncommon patchpoints
 
     bool doesMethodHaveFatPointer()
     {
@@ -6788,6 +6789,16 @@ public:
     void setMethodHasPatchpoint()
     {
         optMethodFlags |= OMF_HAS_PATCHPOINT;
+    }
+
+    bool doesMethodHaveUncommonPatchpoints()
+    {
+        return (optMethodFlags & OMF_HAS_UNCOMMON_PATCHPOINT) != 0;
+    }
+
+    void setMethodHasUncommonPatchpoint()
+    {
+        optMethodFlags |= OMF_HAS_UNCOMMON_PATCHPOINT;
     }
 
     unsigned optMethodFlags;
