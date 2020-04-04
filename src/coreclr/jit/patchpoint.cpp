@@ -49,14 +49,8 @@ public:
             compiler->fgEnsureFirstBBisScratch();
         }
 
-        BasicBlock* block = compiler->fgFirstBB;
-
-        if (compiler->doesMethodHavePatchpoints())
-        {
-            TransformEntry(block);
-        }
-
         int count = 0;
+
         for (BasicBlock* block = compiler->fgFirstBB->bbNext; block != nullptr; block = block->bbNext)
         {
             if (block->bbFlags & BBF_PATCHPOINT)
