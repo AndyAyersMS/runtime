@@ -12,10 +12,13 @@
 // Insert patchpoint checks into Tier0 methods, based on locations identified
 // during importation (see impImportBlockCode).
 //
-// Policy decisions implemented here:
+// There are now two diffrent types of patchpoints:
+//   * loop based: enable OSR transitions in loops
+//   * uncommon: allows partial compilation of original method
 //
+// Loop patchpoint policy decisions implemented here:
 //   * One counter per stack frame, regardless of the number of patchpoints.
-//   * Shared counter value initialized to zero in prolog.
+//   * Shared counter value initialized to a constant in the prolog.
 //   * Patchpoint trees fully expanded into jit IR. Deferring expansion could
 //       lead to more compact code and lessen size overhead for Tier0.
 //
@@ -212,6 +215,7 @@ private:
     //  ==>
     //
     //  call JIT_UNCOMMON_PATHCPOINT (ilOffset)
+    //  (S deleted)
     //
     void TransformUncommon(BasicBlock* block)
     {
