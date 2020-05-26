@@ -23538,18 +23538,51 @@ Statement* Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                    once) but the optimization cannot be applied.
                  */
 
-                GenTree* argSingleUseNode = argInfo.argBashTmpNode;
+                GenTree* const argSingleUseNode = argInfo.argBashTmpNode;
+                const bool argHasOnlyExceptionEffect = ((argNode->gtFlags & GTF_ALL_EFFECT) == GTF_EXCEPT);
+                const bool bashTempToArg = (argSingleUseNode != nullptr) && !(argSingleUseNode->gtFlags & GTF_VAR_CLONED) && argIsSingleDef;
+                const bool assignArgToTemp = !bashTempToArg || argHasOnlyExceptionEffect;
 
-                if ((argSingleUseNode != nullptr) && !(argSingleUseNode->gtFlags & GTF_VAR_CLONED) && argIsSingleDef)
+                GenTree* argAssignNode = argNode;
+
+                if (bashTempToArg && assignArgToTemp)
                 {
+                    argAssignNode = gtCloneExpr(argNode);
+                }
+
+                if (bashTempToArg)
+                {
+                    JITDUMP("Successful opportunistic forward sub: using tree [%06u] instead of temp V%02u for arg %u\n",
+                        dspTreeID(argNode), argInfo.argTmpNum, argNum);
+
                     // Change the temp in-place to the actual argument.
                     // We currently do not support this for struct arguments, so it must not be a GT_OBJ.
                     assert(argNode->gtOper != GT_OBJ);
                     argSingleUseNode->ReplaceWith(argNode, this);
-                    continue;
+
+                    // We need to know the block so we can propagate flags. Hmm.
+                    if (argHasOnlyExceptionEffect)
+                    {
+                        
+                    }
                 }
-                else
+
+                if (assignArgToTemp)
                 {
+                    // If we've also bashed, we need to clone the arg node.
+                    //
+                    if (bashTempToArg)
+                    {
+                        JITDUMP("Must also evaluate arg early for exception effect, so cloning as tree [%06u] before inline body\n",
+                            dspTreeID(argAssignNode));
+                    }
+                    else
+                    {
+                        JITDUMP("Failed opportunistic forward-sub, will assign tree [%06u] to temp V%02u or arg %u: %s\n",
+                            dspTreeID(argAssignNode), argInfo.argTmpNum, argNum, 
+                            (argSingleUseNode == nullptr) ? "multiple uses" : (argSingleUseNode->gtFlags & GTF_VAR_CLONED) ? "arg cloned" : "arg can be redefined");
+                    }
+
                     // We're going to assign the argument value to the
                     // temp we use for it in the inline body.
                     const unsigned  tmpNum  = argInfo.argTmpNum;
@@ -23560,7 +23593,7 @@ Statement* Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
 
                     if (varTypeIsStruct(argType))
                     {
-                        structHnd = gtGetStructHandleIfPresent(argNode);
+                        structHnd = gtGetStructHandleIfPresent(argAssignNode);
                         noway_assert((structHnd != NO_CLASS_HANDLE) || (argType != TYP_STRUCT));
                     }
 
@@ -23568,7 +23601,7 @@ Statement* Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                     // argTmpNum here since in-linee compiler instance
                     // would have iterated over these and marked them
                     // accordingly.
-                    impAssignTempGen(tmpNum, argNode, structHnd, (unsigned)CHECK_SPILL_NONE, &afterStmt, callILOffset,
+                    impAssignTempGen(tmpNum, argAssignNode, structHnd, (unsigned)CHECK_SPILL_NONE, &afterStmt, callILOffset,
                                      block);
 
                     // We used to refine the temp type here based on

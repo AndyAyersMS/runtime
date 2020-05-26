@@ -19491,9 +19491,15 @@ GenTree* Compiler::impInlineFetchArg(unsigned lclNum, InlArgInfo* inlArgInfo, In
             // inlined body may be modifying the global ref.
             // TODO-1stClassStructs: We currently do not reuse an existing lclVar
             // if it is a struct, because it requires some additional handling.
+            //
+            // If the only side effect of the arg is an exception, we can evaluate
+            // it both before the inlined body and within the inlined body and let
+            // DCE & CSE clean things up after us.
+            //
+            const bool argHasOnlyExceptionEffect = ((argInfo.argNode->gtFlags & GTF_ALL_EFFECT) == GTF_EXCEPT);
 
-            if (!varTypeIsStruct(lclTyp) && !argInfo.argHasSideEff && !argInfo.argHasGlobRef &&
-                !argInfo.argHasCallerLocalRef)
+            if (!varTypeIsStruct(lclTyp) && (!argInfo.argHasSideEff || argHasOnlyExceptionEffect) && !argInfo.argHasGlobRef &&
+                !argInfo.argHasCallerLocalRef && !argInfo.argNode->OperIs(GT_LCLHEAP))
             {
                 /* Get a *LARGE* LCL_VAR node */
                 op1 = gtNewLclLNode(tmpNum, genActualType(lclTyp) DEBUGARG(lclNum));
