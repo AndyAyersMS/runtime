@@ -2539,6 +2539,8 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
 
     compSetProcessor();
 
+    verbose = false;
+
 #ifdef DEBUG
     opts.dspOrder = false;
     if (compIsForInlining())
@@ -2765,6 +2767,33 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
     opts.compJitSaveFpLrWithCalleeSavedRegisters = 0;
 #endif // defined(TARGET_ARM64)
 
+    opts.dspGCtbls       = false;
+
+#ifdef DEBUG
+
+    if (JitConfig.JitGCDump().contains(info.compMethodName, info.compClassName, &info.compMethodInfo->args))
+    {
+        opts.dspGCtbls = true;
+    }
+
+#else
+
+    const char* className          = nullptr;
+    const char* namespaceName      = nullptr;
+    const char* enclosingClassName = nullptr;
+    const char* methodName =
+        info.compCompHnd->getMethodNameFromMetadata(info.compMethodHnd, &className, &namespaceName, &enclosingClassName);
+
+    if ((methodName != nullptr) && (className != nullptr))
+    {
+        if (JitConfig.JitGCDump().contains(methodName, className, nullptr))
+        {
+            opts.dspGCtbls = true;
+        }
+    }
+
+#endif
+
 #ifdef DEBUG
     opts.dspInstrs       = false;
     opts.dspEmit         = false;
@@ -2777,7 +2806,6 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
     opts.dspCode         = false;
     opts.dspEHTable      = false;
     opts.dspDebugInfo    = false;
-    opts.dspGCtbls       = false;
     opts.disAsm2         = false;
     opts.dspUnwind       = false;
     opts.compLongAddress = false;
@@ -2866,10 +2894,6 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
                     opts.dspOrder = true;
                 }
 
-                if (JitConfig.JitGCDump().contains(info.compMethodName, info.compClassName, &info.compMethodInfo->args))
-                {
-                    opts.dspGCtbls = true;
-                }
 
                 if (JitConfig.JitDisasm().contains(info.compMethodName, info.compClassName, &info.compMethodInfo->args))
                 {

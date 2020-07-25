@@ -2099,8 +2099,9 @@ class Compiler
 public:
     hashBvGlobalData hbvGlobalData; // Used by the hashBv bitvector package.
 
+        bool verbose;
 #ifdef DEBUG
-    bool verbose;
+
     bool verboseTrees;
     bool shouldUseVerboseTrees();
     bool asciiTrees; // If true, dump trees using only ASCII characters
@@ -8795,8 +8796,9 @@ public:
         bool dspDiffable;     // Makes the Jit Dump 'diff-able' (currently uses same COMPlus_* flag as disDiffable)
         bool compLongAddress; // Force using large pseudo instructions for long address
                               // (IF_LARGEJMP/IF_LARGEADR/IF_LARGLDC)
-        bool dspGCtbls;       // Display the GC tables
 #endif
+
+        bool dspGCtbls;       // Display the GC tables
 
 #ifdef LATE_DISASM
         bool doLateDisasm; // Run the late disassembler

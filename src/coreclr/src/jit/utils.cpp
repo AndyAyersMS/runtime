@@ -128,7 +128,7 @@ const char* varTypeName(var_types vt)
     return varTypeNames[vt];
 }
 
-#if defined(DEBUG) || defined(LATE_DISASM)
+#if 1
 /*****************************************************************************
  *
  *  Return the name of the given register.
@@ -164,9 +164,6 @@ const char* getRegName(unsigned reg,
 {
     return getRegName((regNumber)reg, isFloat);
 }
-#endif // defined(DEBUG) || defined(LATE_DISASM)
-
-#if defined(DEBUG)
 
 const char* getRegNameFloat(regNumber reg, var_types type)
 {
@@ -269,6 +266,10 @@ const char* getRegNameFloat(regNumber reg, var_types type)
     return regNamesFloat[reg];
 #endif
 }
+
+#endif // defined(DEBUG) || defined(LATE_DISASM)
+
+#if defined(DEBUG)
 
 /*****************************************************************************
  *

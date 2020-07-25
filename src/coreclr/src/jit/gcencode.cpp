@@ -3633,7 +3633,13 @@ void GCInfo::gcFindPtrsInFrame(const void* infoBlock, const void* codeBlock, uns
 template class JitHashTable<RegSlotIdKey, RegSlotIdKey, GcSlotId>;
 template class JitHashTable<StackSlotIdKey, StackSlotIdKey, GcSlotId>;
 
-#ifdef DEBUG
+#if 1
+
+const char* const GcStackSlotBaseNames[] = {
+    "caller.sp",
+    "sp",
+    "frame",
+};
 
 static const char* const GcSlotFlagsNames[] = {"",
                                                "(byref) ",
@@ -3649,11 +3655,13 @@ class GcInfoEncoderWithLogging
 {
     GcInfoEncoder* m_gcInfoEncoder;
     bool           m_doLogging;
+    DWORD          m_tid;
 
 public:
     GcInfoEncoderWithLogging(GcInfoEncoder* gcInfoEncoder, bool verbose)
-        : m_gcInfoEncoder(gcInfoEncoder), m_doLogging(verbose || JitConfig.JitGCInfoLogging() != 0)
+        : m_gcInfoEncoder(gcInfoEncoder), m_doLogging(verbose)
     {
+        m_tid = GetCurrentThreadId();
     }
 
     GcSlotId GetStackSlotId(INT32 spOffset, GcSlotFlags flags, GcStackSlotBase spBase = GC_CALLER_SP_REL)
@@ -3661,7 +3669,7 @@ public:
         GcSlotId newSlotId = m_gcInfoEncoder->GetStackSlotId(spOffset, flags, spBase);
         if (m_doLogging)
         {
-            printf("Stack slot id for offset %d (0x%x) (%s) %s= %d.\n", spOffset, spOffset,
+            printf("[0x%x] Stack slot id for offset %d (0x%x) (%s) %s= %d.\n", m_tid, spOffset, spOffset,
                    GcStackSlotBaseNames[spBase], GcSlotFlagsNames[flags & 7], newSlotId);
         }
         return newSlotId;
@@ -3672,7 +3680,7 @@ public:
         GcSlotId newSlotId = m_gcInfoEncoder->GetRegisterSlotId(regNum, flags);
         if (m_doLogging)
         {
-            printf("Register slot id for reg %s %s= %d.\n", getRegName(regNum), GcSlotFlagsNames[flags & 7], newSlotId);
+            printf("[0x%x] Register slot id for reg %s %s= %d.\n", m_tid, getRegName(regNum), GcSlotFlagsNames[flags & 7], newSlotId);
         }
         return newSlotId;
     }
@@ -3682,7 +3690,7 @@ public:
         m_gcInfoEncoder->SetSlotState(instructionOffset, slotId, slotState);
         if (m_doLogging)
         {
-            printf("Set state of slot %d at instr offset 0x%x to %s.\n", slotId, instructionOffset,
+            printf("[0x%x] Set state of slot %d at instr offset 0x%x to %s.\n", m_tid, slotId, instructionOffset,
                    (slotState == GC_SLOT_LIVE ? "Live" : "Dead"));
         }
     }
@@ -3692,10 +3700,10 @@ public:
         m_gcInfoEncoder->DefineCallSites(pCallSites, pCallSiteSizes, numCallSites);
         if (m_doLogging)
         {
-            printf("Defining %d call sites:\n", numCallSites);
+            printf("[0x%x] Defining %d call sites:\n", m_tid, numCallSites);
             for (UINT32 k = 0; k < numCallSites; k++)
             {
-                printf("    Offset 0x%x, size %d.\n", pCallSites[k], pCallSiteSizes[k]);
+                printf("[0x%x]   Offset 0x%x, size %d.\n", m_tid, pCallSites[k], pCallSiteSizes[k]);
             }
         }
     }
@@ -3705,7 +3713,7 @@ public:
         m_gcInfoEncoder->DefineInterruptibleRange(startInstructionOffset, length);
         if (m_doLogging)
         {
-            printf("Defining interruptible range: [0x%x, 0x%x).\n", startInstructionOffset,
+            printf("[0x%x] Defining interruptible range: [0x%x, 0x%x).\n", m_tid, startInstructionOffset,
                    startInstructionOffset + length);
         }
     }
@@ -3715,7 +3723,7 @@ public:
         m_gcInfoEncoder->SetCodeLength(length);
         if (m_doLogging)
         {
-            printf("Set code length to %d.\n", length);
+            printf("[0x%x] Set code length to %d.\n", m_tid, length);
         }
     }
 
@@ -3724,7 +3732,7 @@ public:
         m_gcInfoEncoder->SetReturnKind(returnKind);
         if (m_doLogging)
         {
-            printf("Set ReturnKind to %s.\n", ReturnKindToString(returnKind));
+            printf("[0x%x] Set ReturnKind to %s.\n", m_tid, ReturnKindToString(returnKind));
         }
     }
 
@@ -3733,7 +3741,7 @@ public:
         m_gcInfoEncoder->SetStackBaseRegister(registerNumber);
         if (m_doLogging)
         {
-            printf("Set stack base register to %s.\n", getRegName(registerNumber));
+            printf("[0x%x] Set stack base register to %s.\n", m_tid, getRegName(registerNumber));
         }
     }
 
@@ -3742,7 +3750,7 @@ public:
         m_gcInfoEncoder->SetPrologSize(prologSize);
         if (m_doLogging)
         {
-            printf("Set prolog size 0x%x.\n", prologSize);
+            printf("[0x%x] Set prolog size 0x%x.\n", m_tid, prologSize);
         }
     }
 
@@ -3751,7 +3759,7 @@ public:
         m_gcInfoEncoder->SetGSCookieStackSlot(spOffsetGSCookie, validRangeStart, validRangeEnd);
         if (m_doLogging)
         {
-            printf("Set GS Cookie stack slot to %d, valid from 0x%x to 0x%x.\n", spOffsetGSCookie, validRangeStart,
+            printf("[0x%x] Set GS Cookie stack slot to %d, valid from 0x%x to 0x%x.\n", m_tid, spOffsetGSCookie, validRangeStart,
                    validRangeEnd);
         }
     }
@@ -3761,7 +3769,7 @@ public:
         m_gcInfoEncoder->SetPSPSymStackSlot(spOffsetPSPSym);
         if (m_doLogging)
         {
-            printf("Set PSPSym stack slot to %d.\n", spOffsetPSPSym);
+            printf("[0x%x} Set PSPSym stack slot to %d.\n", m_tid, spOffsetPSPSym);
         }
     }
 
@@ -3770,7 +3778,7 @@ public:
         m_gcInfoEncoder->SetGenericsInstContextStackSlot(spOffsetGenericsContext, type);
         if (m_doLogging)
         {
-            printf("Set generic instantiation context stack slot to %d, type is %s.\n", spOffsetGenericsContext,
+            printf("[0x%x] Set generic instantiation context stack slot to %d, type is %s.\n", m_tid, spOffsetGenericsContext,
                    (type == GENERIC_CONTEXTPARAM_THIS
                         ? "THIS"
                         : (type == GENERIC_CONTEXTPARAM_MT ? "MT"
@@ -3783,7 +3791,7 @@ public:
         m_gcInfoEncoder->SetSecurityObjectStackSlot(spOffset);
         if (m_doLogging)
         {
-            printf("Set security object stack slot to %d.\n", spOffset);
+            printf("[0x%x] Set security object stack slot to %d.\n", m_tid, spOffset);
         }
     }
 
@@ -3792,7 +3800,7 @@ public:
         m_gcInfoEncoder->SetIsVarArg();
         if (m_doLogging)
         {
-            printf("SetIsVarArg.\n");
+            printf("[0x%x] SetIsVarArg.\n", m_tid);
         }
     }
 
@@ -3802,7 +3810,7 @@ public:
         m_gcInfoEncoder->SetWantsReportOnlyLeaf();
         if (m_doLogging)
         {
-            printf("Set WantsReportOnlyLeaf.\n");
+            printf("[0x%x] Set WantsReportOnlyLeaf.\n", m_tid);
         }
     }
 #elif defined(TARGET_ARMARCH)
@@ -3811,7 +3819,7 @@ public:
         m_gcInfoEncoder->SetHasTailCalls();
         if (m_doLogging)
         {
-            printf("Set HasTailCalls.\n");
+            printf("[0x%x] Set HasTailCalls.\n", m_tid);
         }
     }
 #endif // TARGET_AMD64
@@ -3821,7 +3829,7 @@ public:
         m_gcInfoEncoder->SetSizeOfStackOutgoingAndScratchArea(size);
         if (m_doLogging)
         {
-            printf("Set Outgoing stack arg area size to %d.\n", size);
+            printf("[0x%x] Set Outgoing stack arg area size to %d.\n", m_tid, size);
         }
     }
 };
@@ -3832,7 +3840,7 @@ public:
 
 #else // DEBUG
 
-#define GCENCODER_WITH_LOGGING(withLog, realEncoder) GcInfoEncoder* withLog = realEncoder;
+// #define GCENCODER_WITH_LOGGING(withLog, realEncoder) GcInfoEncoder* withLog = realEncoder;
 
 #endif // DEBUG
 
@@ -4006,7 +4014,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 #endif // DISPLAY_SIZES
 }
 
-#ifdef DEBUG
+#if 1
 #define Encoder GcInfoEncoderWithLogging
 #else
 #define Encoder GcInfoEncoder
