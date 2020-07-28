@@ -994,12 +994,17 @@ BasicBlock* CodeGen::genCreateTempLabel()
     return block;
 }
 
-void CodeGen::genLogLabel(BasicBlock* bb)
+void CodeGen::genLogLabel(BasicBlock* bb, bool temp)
 {
 #ifdef DEBUG
     if (compiler->opts.dspCode)
     {
-        printf("\n      L_M%03u_" FMT_BB ":\n", compiler->compMethodID, bb->bbNum);
+        printf("\n[0x%x]  L_M%03u_" FMT_BB "%s:\n", GetCurrentThreadId(), compiler->compMethodID, bb->bbNum, temp ? " (temp)" : "");
+    }
+#else
+    if (compiler->opts.dspGCtbls)
+    {
+        printf("\n[0x%x]  L_M%03u_" FMT_BB ":%s\n", GetCurrentThreadId(), 0, bb->bbNum, temp ? " (temp)" : "");
     }
 #endif
 }
@@ -1038,7 +1043,7 @@ void CodeGen::genDefineTempLabel(BasicBlock* label)
 //
 void CodeGen::genDefineInlineTempLabel(BasicBlock* label)
 {
-    genLogLabel(label);
+    genLogLabel(label, true);
     label->bbEmitCookie = GetEmitter()->emitAddInlineLabel();
 }
 

@@ -2443,6 +2443,13 @@ void* emitter::emitAddInlineLabel()
         emitNxtIG(true);
     }
 
+#if 1 
+    if (EMIT_GC_VERBOSE)
+    {
+        printf("[0x%x] Label: IG%02u -- inline\n", GetCurrentThreadId(), emitCurIG->igNum);
+    }
+#endif
+
     return emitCurIG;
 }
 

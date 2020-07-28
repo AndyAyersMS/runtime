@@ -245,7 +245,7 @@ protected:
     BasicBlock* genCreateTempLabel();
 
 private:
-    void genLogLabel(BasicBlock* bb);
+    void genLogLabel(BasicBlock* bb, bool temp = false);
 
 protected:
     void genDefineTempLabel(BasicBlock* label);
