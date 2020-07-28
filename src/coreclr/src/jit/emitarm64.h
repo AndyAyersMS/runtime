@@ -15,7 +15,7 @@ static bool strictArmAsm;
 /*         Routines that compute the size of / encode instructions      */
 /************************************************************************/
 
-#ifdef DEBUG
+#if 1
 
 /************************************************************************/
 /*             Debug-only routines to display instructions              */
@@ -24,6 +24,9 @@ static bool strictArmAsm;
 const char* emitFPregName(unsigned reg, bool varName = true);
 const char* emitVectorRegName(regNumber reg);
 
+#endif
+
+#ifdef DEBUG
 void emitDispInst(instruction ins);
 void emitDispImm(ssize_t imm, bool addComma, bool alwaysHex = false);
 void emitDispFloatZero();

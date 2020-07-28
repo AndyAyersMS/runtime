@@ -2419,10 +2419,10 @@ void* emitter::emitAddLabel(VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMas
     }
 #endif // defined(FEATURE_EH_FUNCLETS) && defined(TARGET_ARM)
 
-#ifdef DEBUG
+#if 1 
     if (EMIT_GC_VERBOSE)
     {
-        printf("Label: IG%02u, GCvars=%s ", emitCurIG->igNum, VarSetOps::ToString(emitComp, GCvars));
+        printf("[0x%x] Label: IG%02u, GCvars=%s ", GetCurrentThreadId(), emitCurIG->igNum, VarSetOps::ToString(emitComp, GCvars));
         dumpConvertedVarSet(emitComp, GCvars);
         printf(", gcrefRegs=");
         printRegMaskInt(gcrefRegs);
@@ -2531,9 +2531,9 @@ void emitter::emitSplit(emitLocation*         startLoc,
             // Is there a candidate?
             if (igLastCandidate == NULL)
             {
-#ifdef DEBUG
+#if 1
                 if (EMITVERBOSE)
-                    printf("emitSplit: can't split at IG%02u; we don't have a candidate to report\n", ig->igNum);
+                    printf("[0x%x] emitSplit: can't split at IG%02u; we don't have a candidate to report\n", GetCurrentThreadId(), ig->igNum);
 #endif
                 reportCandidate = false;
             }
@@ -2542,9 +2542,9 @@ void emitter::emitSplit(emitLocation*         startLoc,
             // initialized to igStart).
             if (igLastCandidate == igLastReported)
             {
-#ifdef DEBUG
+#if 1
                 if (EMITVERBOSE)
-                    printf("emitSplit: can't split at IG%02u; we already reported it\n", igLastCandidate->igNum);
+                    printf("[0x%x] emitSplit: can't split at IG%02u; we already reported it\n", GetCurrentThreadId(), igLastCandidate->igNum);
 #endif
                 reportCandidate = false;
             }
@@ -2552,10 +2552,10 @@ void emitter::emitSplit(emitLocation*         startLoc,
             // Report it!
             if (reportCandidate)
             {
-#ifdef DEBUG
+#if 1
                 if (EMITVERBOSE && (candidateSize >= maxSplitSize))
-                    printf("emitSplit: split at IG%02u is size %d, larger than requested maximum size of %d\n",
-                           igLastCandidate->igNum, candidateSize, maxSplitSize);
+                    printf("[0x%x] emitSplit: split at IG%02u is size %d, larger than requested maximum size of %d\n",
+                        GetCurrentThreadId(), igLastCandidate->igNum, candidateSize, maxSplitSize);
 #endif
 
                 // hand memory ownership to the callback function
@@ -2835,7 +2835,7 @@ unsigned emitter::emitGetInstructionSize(emitLocation* emitLoc)
 #endif // defined(TARGET_ARM)
 
 /*****************************************************************************/
-#ifdef DEBUG
+#if 1
 /*****************************************************************************
  *
  *  Returns the name for the register to use to access frame based variables
@@ -3478,7 +3478,7 @@ size_t emitter::emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp)
 #if DEBUG_EMIT
         if (EMITVERBOSE)
         {
-            printf("Instruction predicted size = %u, actual = %u\n", id->idCodeSize(), csz);
+            printf("[0x%x] Instruction predicted size = %u, actual = %u\n", GetCurrentThreadId(), id->idCodeSize(), csz);
         }
 #endif // DEBUG_EMIT
 
@@ -3497,11 +3497,12 @@ size_t emitter::emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp)
 #endif
     }
 
-#ifdef DEBUG
+#if DEBUG
     /* Make sure the instruction descriptor size also matches our expectations */
-    if (is != emitSizeOfInsDsc(id))
+    if (EMITVERBOSE && (is != emitSizeOfInsDsc(id)))
     {
-        printf("%s at %u: Expected size = %u , actual size = %u\n", emitIfName(id->idInsFmt()),
+        printf("[0x%x] %s at %u: Expected size = %u , actual size = %u\n", 
+            GetCurrentThreadId(), emitIfName(id->idInsFmt()),
                id->idDebugOnlyInfo()->idNum, is, emitSizeOfInsDsc(id));
         assert(is == emitSizeOfInsDsc(id));
     }
@@ -3768,10 +3769,10 @@ AGAIN:
                 {
                     lstIG = lstIG->igNext;
                     assert(lstIG);
-#ifdef DEBUG
+#if 1
                     if (EMITVERBOSE)
                     {
-                        printf("Adjusted offset of " FMT_BB " from %04X to %04X\n", lstIG->igNum, lstIG->igOffs,
+                        printf("[0x%x] Adjusted offset of " FMT_BB " from %04X to %04X\n", GetCurrentThreadId(), lstIG->igNum, lstIG->igOffs,
                                lstIG->igOffs - adjIG);
                     }
 #endif // DEBUG
@@ -4241,10 +4242,10 @@ AGAIN:
             {
                 break;
             }
-#ifdef DEBUG
+#if 1
             if (EMITVERBOSE)
             {
-                printf("Adjusted offset of " FMT_BB " from %04X to %04X\n", lstIG->igNum, lstIG->igOffs,
+                printf("[0x%x] Adjusted offset of " FMT_BB " from %04X to %04X\n", GetCurrentThreadId(), lstIG->igNum, lstIG->igOffs,
                        lstIG->igOffs - adjIG);
             }
 #endif // DEBUG
@@ -4266,7 +4267,7 @@ AGAIN:
 #else
         if (EMITVERBOSE)
         {
-            printf("Total shrinkage = %3u, min extra jump size = %3u\n", adjIG, minShortExtra);
+            printf("[0x%x] Total shrinkage = %3u, min extra jump size = %3u\n", GetCurrentThreadId(), adjIG, minShortExtra);
         }
 #endif
 #endif
@@ -4282,7 +4283,7 @@ AGAIN:
 #ifdef DEBUG
             if (EMITVERBOSE)
             {
-                printf("Iterating branch shortening. Iteration = %d\n", jmp_iteration);
+                printf("[0x%x] Iterating branch shortening. Iteration = %d\n", GetCurrentThreadId(), jmp_iteration);
             }
 #endif
 
@@ -5601,11 +5602,14 @@ CORINFO_FIELD_HANDLE emitter::emitFltOrDblConst(double constValue, emitAttr attr
 
 void emitter::emitOutputDataSec(dataSecDsc* sec, BYTE* dst)
 {
-#ifdef DEBUG
+#if 1
     if (EMITVERBOSE)
     {
-        printf("\nEmitting data sections: %u total bytes\n", sec->dsdOffs);
+        printf("\n[0x%x] Emitting data sections: %u total bytes\n", GetCurrentThreadId(), sec->dsdOffs);
     }
+#endif
+
+#ifdef DEBUG
 
     if (emitComp->opts.disAsm)
     {
@@ -5896,21 +5900,11 @@ void emitter::emitGCvarLiveSet(int offs, GCtype gcType, BYTE* addr, ssize_t disp
     assert(emitGCrFrameLiveTab[disp] == nullptr);
     emitGCrFrameLiveTab[disp] = desc;
 
-#ifdef DEBUG
+#if 1
     if (EMITVERBOSE)
     {
-        printf("[%08X] %s var born at [%s", dspPtr(desc), GCtypeStr(gcType), emitGetFrameReg());
-
-        if (offs < 0)
-        {
-            printf("-%02XH", -offs);
-        }
-        else if (offs > 0)
-        {
-            printf("+%02XH", +offs);
-        }
-
-        printf("]\n");
+        printf("[0x%x] [%p] %s var born at [%s%c%02XH]\n", GetCurrentThreadId(), desc, GCtypeStr(gcType), emitGetFrameReg(),
+            offs < 0 ? '-' : '+', offs < 0 ? -offs : offs);
     }
 #endif
 
@@ -5954,21 +5948,23 @@ void emitter::emitGCvarDeadSet(int offs, BYTE* addr, ssize_t disp)
     assert(desc->vpdEndOfs == 0xFACEDEAD);
     desc->vpdEndOfs = emitCurCodeOffs(addr);
 
-#ifdef DEBUG
+
     if (EMITVERBOSE)
     {
         GCtype gcType = (desc->vpdVarNum & byref_OFFSET_FLAG) ? GCT_BYREF : GCT_GCREF;
 #if !defined(JIT32_GCENCODER) || !defined(FEATURE_EH_FUNCLETS)
         bool isThis = (desc->vpdVarNum & this_OFFSET_FLAG) != 0;
 
-        printf("[%08X] %s%s var died at [%s", dspPtr(desc), GCtypeStr(gcType), isThis ? "this-ptr" : "",
-               emitGetFrameReg());
+        printf("[0x%x] [%p] %s%s var died at [%s%c%02XH]\n", GetCurrentThreadId(), desc, GCtypeStr(gcType), isThis ? "this-ptr" : "",
+            emitGetFrameReg(),             offs < 0 ? '-' : '+', offs < 0 ? -offs : offs);
 #else
+
+#ifdef DEBUG
         bool isPinned = (desc->vpdVarNum & pinned_OFFSET_FLAG) != 0;
 
         printf("[%08X] %s%s var died at [%s", dspPtr(desc), GCtypeStr(gcType), isPinned ? "pinned" : "",
                emitGetFrameReg());
-#endif
+
 
         if (offs < 0)
         {
@@ -5980,8 +5976,12 @@ void emitter::emitGCvarDeadSet(int offs, BYTE* addr, ssize_t disp)
         }
 
         printf("]\n");
-    }
+
 #endif
+
+#endif
+    }
+
 
     /* The "global" live GC variable mask is no longer up-to-date */
 
@@ -6010,10 +6010,10 @@ void emitter::emitUpdateLiveGCvars(VARSET_VALARG_TP vars, BYTE* addr)
         return;
     }
 
-#ifdef DEBUG
+#if 1
     if (EMIT_GC_VERBOSE)
     {
-        printf("New GC ref live vars=%s ", VarSetOps::ToString(emitComp, vars));
+        printf("[0x%x] New GC ref live vars=%s ", GetCurrentThreadId(), VarSetOps::ToString(emitComp, vars));
         dumpConvertedVarSet(emitComp, vars);
         printf("\n");
     }
@@ -6101,11 +6101,11 @@ void emitter::emitRecordGCcall(BYTE* codePos, unsigned char callInstrSize)
     }
 #endif // JIT32_GCENCODER
 
-#ifdef DEBUG
+#if 1
 
     if (EMIT_GC_VERBOSE)
     {
-        printf("; Call at %04X [stk=%u], GCvars=", offs - callInstrSize, emitCurStackLvl);
+        printf("[0x%x]; Call at %04X [stk=%u], GCvars=", GetCurrentThreadId(), offs - callInstrSize, emitCurStackLvl);
         emitDispVarSet();
         printf(", gcrefRegs=");
         printRegMaskInt(emitThisGCrefRegs);
@@ -6223,10 +6223,10 @@ void emitter::emitUpdateLiveGCregs(GCtype gcType, regMaskTP regs, BYTE* addr)
     regMaskTP dead;
     regMaskTP chg;
 
-#ifdef DEBUG
+#if 1
     if (EMIT_GC_VERBOSE)
     {
-        printf("New %sReg live regs=", GCtypeStr(gcType));
+        printf("[0x%x] New %sReg live regs=", GetCurrentThreadId(), GCtypeStr(gcType));
         printRegMaskInt(regs);
         emitDispRegSet(regs);
         printf("\n");
@@ -6593,10 +6593,10 @@ void emitter::emitGCregLiveUpd(GCtype gcType, regNumber reg, BYTE* addr)
 
         emitThisXXrefRegs |= regMask;
 
-#ifdef DEBUG
+#if 1
         if (EMIT_GC_VERBOSE)
         {
-            printf("%sReg +[%s]\n", GCtypeStr(gcType), emitRegName(reg));
+            printf("[0x%x] %sReg +[%s]\n", GetCurrentThreadId(), GCtypeStr(gcType), emitRegName(reg));
         }
 #endif
     }
@@ -6640,10 +6640,10 @@ void emitter::emitGCregDeadUpdMask(regMaskTP regs, BYTE* addr)
 
         emitThisGCrefRegs &= ~gcrefRegs;
 
-#ifdef DEBUG
+#if 1
         if (EMIT_GC_VERBOSE)
         {
-            printf("gcrReg ");
+            printf("[0x%x] gcrReg ", GetCurrentThreadId());
             printRegMaskInt(gcrefRegs);
             printf(" -");
             emitDispRegSet(gcrefRegs);
@@ -6667,10 +6667,10 @@ void emitter::emitGCregDeadUpdMask(regMaskTP regs, BYTE* addr)
 
         emitThisByrefRegs &= ~byrefRegs;
 
-#ifdef DEBUG
+#if 1
         if (EMIT_GC_VERBOSE)
         {
-            printf("byrReg ");
+            printf("[0x%x] byrReg ", GetCurrentThreadId());
             printRegMaskInt(byrefRegs);
             printf(" -");
             emitDispRegSet(byrefRegs);
@@ -6708,10 +6708,10 @@ void emitter::emitGCregDeadUpd(regNumber reg, BYTE* addr)
 
         emitThisGCrefRegs &= ~regMask;
 
-#ifdef DEBUG
+#if 1
         if (EMIT_GC_VERBOSE)
         {
-            printf("%s -[%s]\n", "gcrReg", emitRegName(reg));
+            printf("[0x%x] %s -[%s]\n", GetCurrentThreadId(), "gcrReg", emitRegName(reg));
         }
 #endif
     }
@@ -6724,10 +6724,10 @@ void emitter::emitGCregDeadUpd(regNumber reg, BYTE* addr)
 
         emitThisByrefRegs &= ~regMask;
 
-#ifdef DEBUG
+#if 1
         if (EMIT_GC_VERBOSE)
         {
-            printf("%s -[%s]\n", "byrReg", emitRegName(reg));
+            printf("[0x%x] %s -[%s]\n", GetCurrentThreadId(), "byrReg", emitRegName(reg));
         }
 #endif
     }
@@ -6765,10 +6765,10 @@ void emitter::emitGCvarLiveUpd(int offs, int varNum, GCtype gcType, BYTE* addr)
             regPtrNext->rpdArgType = (unsigned short)GCInfo::rpdARG_PUSH;
             regPtrNext->rpdIsThis  = FALSE;
 
-#ifdef DEBUG
+#if 1
             if (EMIT_GC_VERBOSE)
             {
-                printf("[%04X] %s arg write\n", offs, GCtypeStr(gcType));
+                printf("[0x%x] [%04X] %s arg write\n", GetCurrentThreadId(), offs, GCtypeStr(gcType));
             }
 #endif
         }
@@ -7219,10 +7219,10 @@ void emitter::emitStackPushLargeStk(BYTE* addr, GCtype gcType, unsigned count)
                 regPtrNext->rpdArgType = (unsigned short)GCInfo::rpdARG_PUSH;
                 regPtrNext->rpdIsThis  = FALSE;
 
-#ifdef DEBUG
+#if 1
                 if (EMIT_GC_VERBOSE)
                 {
-                    printf("[%08X] %s arg push %u\n", dspPtr(regPtrNext), GCtypeStr(gcType), level.Value());
+                    printf("[0x%x] [%p] %s arg push %u\n", GetCurrentThreadId(), regPtrNext, GCtypeStr(gcType), level.Value());
                 }
 #endif
             }
@@ -7358,10 +7358,10 @@ void emitter::emitStackPopLargeStk(BYTE* addr, bool isCall, unsigned char callIn
     regPtrNext->rpdArgType       = (unsigned short)GCInfo::rpdARG_POP;
     regPtrNext->rpdPtrArg        = argRecCnt.Value();
 
-#ifdef DEBUG
+#if 1
     if (EMIT_GC_VERBOSE)
     {
-        printf("[%08X] ptr arg pop  %u\n", dspPtr(regPtrNext), count);
+        printf("[0x%x] [%p] ptr arg pop  %u\n", GetCurrentThreadId(), regPtrNext, count);
     }
 #endif
 }
@@ -7445,10 +7445,10 @@ void emitter::emitStackKillArgs(BYTE* addr, unsigned count, unsigned char callIn
             regPtrNext->rpdArgType = (unsigned short)GCInfo::rpdARG_KILL;
             regPtrNext->rpdPtrArg  = gcCnt.Value();
 
-#ifdef DEBUG
+#if 1
             if (EMIT_GC_VERBOSE)
             {
-                printf("[%08X] ptr arg kill %u\n", dspPtr(regPtrNext), count);
+                printf("[0x%x] [%p] ptr arg kill %u\n", GetCurrentThreadId(), regPtrNext, count);
             }
 #endif
         }

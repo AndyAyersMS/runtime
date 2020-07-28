@@ -436,7 +436,7 @@ public:
         return BST(env, /*full*/ true);
     }
 
-#ifdef DEBUG
+#if 1
     static const char* ToString(Env env, BSTValArg bs)
     {
         return bs.ToString(env);

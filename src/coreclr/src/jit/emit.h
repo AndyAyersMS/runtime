@@ -20,16 +20,16 @@
 
 /*****************************************************************************/
 
-#if 0
-#define EMITVERBOSE 1
+#ifdef DEBUG
+#define EMITVERBOSE (emitComp->verbose || emitComp->opts.dspGCtbls)
 #else
-#define EMITVERBOSE (emitComp->verbose)
+#define EMITVERBOSE (emitComp->opts.dspGCtbls)
 #endif
 
-#if 0
-#define EMIT_GC_VERBOSE 0
+#ifdef DEBUG
+#define EMIT_GC_VERBOSE (emitComp->verbose || emitComp->opts.dspGCtbls)
 #else
-#define EMIT_GC_VERBOSE (emitComp->verbose)
+#define EMIT_GC_VERBOSE (emitComp->opts.dspGCtbls)
 #endif
 
 #if 1
@@ -81,7 +81,7 @@ inline bool needsGC(GCtype gcType)
 
 //-----------------------------------------------------------------------------
 
-#ifdef DEBUG
+#if 1
 
 inline bool IsValidGCtype(GCtype gcType)
 {
@@ -1479,13 +1479,14 @@ protected:
 
 #endif // defined(DEBUG) || EMITTER_STATS
 
-#ifdef DEBUG
-
-    unsigned emitVarRefOffs;
-
+#if 1
     const char* emitRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
-    const char* emitFloatRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
 
+#endif
+
+#ifdef DEBUG
+    unsigned emitVarRefOffs;
+    const char* emitFloatRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
     const char* emitFldName(CORINFO_FIELD_HANDLE fieldVal);
     const char* emitFncName(CORINFO_METHOD_HANDLE callVal);
 
@@ -2115,7 +2116,7 @@ public:
     void emitUpdateLiveGCvars(VARSET_VALARG_TP vars, BYTE* addr);
     void emitUpdateLiveGCregs(GCtype gcType, regMaskTP regs, BYTE* addr);
 
-#ifdef DEBUG
+#if 1
     const char* emitGetFrameReg();
     void emitDispRegSet(regMaskTP regs);
     void emitDispVarSet();

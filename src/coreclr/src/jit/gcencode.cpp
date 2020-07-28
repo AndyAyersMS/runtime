@@ -3635,11 +3635,13 @@ template class JitHashTable<StackSlotIdKey, StackSlotIdKey, GcSlotId>;
 
 #if 1
 
+#ifndef DEBUG
 const char* const GcStackSlotBaseNames[] = {
     "caller.sp",
     "sp",
     "frame",
 };
+#endif
 
 static const char* const GcSlotFlagsNames[] = {"",
                                                "(byref) ",

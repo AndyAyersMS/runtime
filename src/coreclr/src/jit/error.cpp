@@ -310,10 +310,13 @@ extern "C" void __cdecl assertAbort(const char* why, const char* file, unsigned 
 #endif
 }
 
+#endif
+
+#if 1
 /*********************************************************************/
 BOOL vlogf(unsigned level, const char* fmt, va_list args)
 {
-    return JitTls::GetLogEnv()->compHnd->logMsg(level, fmt, args);
+    return FALSE; // JitTls::GetLogEnv()->compHnd->logMsg(level, fmt, args);
 }
 
 int vflogf(FILE* file, const char* fmt, va_list args)
@@ -329,11 +332,6 @@ int vflogf(FILE* file, const char* fmt, va_list args)
     char      buffer[BUFF_SIZE];
     int       written = _vsnprintf_s(&buffer[0], BUFF_SIZE, _TRUNCATE, fmt, args);
 
-    if (JitConfig.JitDumpToDebugger())
-    {
-        OutputDebugStringA(buffer);
-    }
-
     // We use fputs here so that this executes as fast a possible
     fputs(&buffer[0], file);
     return written;
@@ -348,30 +346,13 @@ int flogf(FILE* file, const char* fmt, ...)
     return written;
 }
 
+
+
 /*********************************************************************/
 int logf(const char* fmt, ...)
 {
     va_list     args;
-    static bool logToEEfailed = false;
     int         written       = 0;
-    //
-    // We remember when the EE failed to log, because vlogf()
-    // is very slow in a checked build.
-    //
-    // If it fails to log an LL_INFO1000 message once
-    // it will always fail when logging an LL_INFO1000 message.
-    //
-    if (!logToEEfailed)
-    {
-        va_start(args, fmt);
-        if (!vlogf(LL_INFO1000, fmt, args))
-        {
-            logToEEfailed = true;
-        }
-        va_end(args);
-    }
-
-    if (logToEEfailed)
     {
         // if the EE refuses to log it, we try to send it to stdout
         va_start(args, fmt);
@@ -409,6 +390,10 @@ int logf(const char* fmt, ...)
 
     return written;
 }
+
+#endif
+
+#ifdef DEBUG
 
 /*********************************************************************/
 void gcDump_logf(const char* fmt, ...)

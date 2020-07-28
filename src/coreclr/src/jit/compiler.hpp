@@ -4632,12 +4632,22 @@ inline void* __cdecl operator new(size_t sz, void* p, const jitstd::placement_t&
 
 /*****************************************************************************/
 
-#ifdef DEBUG
+#if 1
 
 inline void printRegMask(regMaskTP mask)
 {
     printf(REG_MASK_ALL_FMT, mask);
 }
+
+
+inline void printRegMaskInt(regMaskTP mask)
+{
+    printf(REG_MASK_INT_FMT, (mask & RBM_ALLINT));
+}
+
+#endif
+
+#ifdef DEBUG
 
 inline char* regMaskToString(regMaskTP mask, Compiler* context)
 {
@@ -4647,11 +4657,6 @@ inline char* regMaskToString(regMaskTP mask, Compiler* context)
     sprintf_s(regmask, cchRegMask, REG_MASK_ALL_FMT, mask);
 
     return regmask;
-}
-
-inline void printRegMaskInt(regMaskTP mask)
-{
-    printf(REG_MASK_INT_FMT, (mask & RBM_ALLINT));
 }
 
 inline char* regMaskIntToString(regMaskTP mask, Compiler* context)

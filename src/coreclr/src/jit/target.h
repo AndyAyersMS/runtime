@@ -1621,10 +1621,6 @@ const char* getRegName(unsigned reg, bool isFloat = false); // this is for gcenc
                                                             // the regNumber type
 const char* getRegName(regNumber reg, bool isFloat = false);
 const char* getRegNameFloat(regNumber reg, var_types type);
-#endif // defined(DEBUG) || defined(LATE_DISASM)
-
-#ifdef DEBUG
-
 extern void dspRegMask(regMaskTP regMask, size_t minSiz = 0);
 #endif
 

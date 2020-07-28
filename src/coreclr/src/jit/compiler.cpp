@@ -2035,7 +2035,7 @@ unsigned char Compiler::compGetJitDefaultFill(Compiler* comp)
 #endif // DEBUG
 
 /*****************************************************************************/
-#ifdef DEBUG
+#if 1
 /*****************************************************************************/
 
 VarName Compiler::compVarName(regNumber reg, bool isFloatReg)
@@ -2049,6 +2049,7 @@ VarName Compiler::compVarName(regNumber reg, bool isFloatReg)
         assert(genIsValidReg(reg));
     }
 
+#ifdef DEBUG
     if ((info.compVarScopesCount > 0) && compCurBB && opts.varNames)
     {
         unsigned   lclNum;
@@ -2077,6 +2078,7 @@ VarName Compiler::compVarName(regNumber reg, bool isFloatReg)
         }
     }
 
+#endif
     return nullptr;
 }
 
@@ -2111,6 +2113,26 @@ const char* Compiler::compRegVarName(regNumber reg, bool displayVar, bool isFloa
 
     return getRegName(reg, isFloatReg);
 }
+
+
+const char* Compiler::compFPregVarName(unsigned fpReg, bool displayVar)
+{
+    const int   NAME_VAR_REG_BUFFER_LEN = 4 + 256 + 1;
+    static char nameVarReg[2][NAME_VAR_REG_BUFFER_LEN]; // to avoid overwriting the buffer when have 2 consecutive calls
+                                                        // before printing
+    static int index = 0;                               // for circular index into the name array
+
+    index = (index + 1) % 2; // circular reuse of index
+
+    /* no debug info required or no variable in that register
+       -> return standard name */
+
+    sprintf_s(nameVarReg[index], NAME_VAR_REG_BUFFER_LEN, "ST(%d)", fpReg);
+    return nameVarReg[index];
+}
+#endif
+
+#ifdef DEBUG
 
 const char* Compiler::compRegNameForSize(regNumber reg, size_t size)
 {
@@ -2149,22 +2171,6 @@ const char* Compiler::compRegNameForSize(regNumber reg, size_t size)
     assert(size == 1 || size == 2);
 
     return sizeNames[reg][size - 1];
-}
-
-const char* Compiler::compFPregVarName(unsigned fpReg, bool displayVar)
-{
-    const int   NAME_VAR_REG_BUFFER_LEN = 4 + 256 + 1;
-    static char nameVarReg[2][NAME_VAR_REG_BUFFER_LEN]; // to avoid overwriting the buffer when have 2 consecutive calls
-                                                        // before printing
-    static int index = 0;                               // for circular index into the name array
-
-    index = (index + 1) % 2; // circular reuse of index
-
-    /* no debug info required or no variable in that register
-       -> return standard name */
-
-    sprintf_s(nameVarReg[index], NAME_VAR_REG_BUFFER_LEN, "ST(%d)", fpReg);
-    return nameVarReg[index];
 }
 
 const char* Compiler::compLocalVarName(unsigned varNum, unsigned offs)
@@ -2789,9 +2795,10 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
         if (JitConfig.JitGCDump().contains(methodName, className, nullptr))
         {
             opts.dspGCtbls = true;
+            printf("[0x%x] START COMPILING %s.%s\n", GetCurrentThreadId(), className, methodName);
         }
     }
-
+    
 #endif
 
 #ifdef DEBUG
@@ -8170,7 +8177,7 @@ LPCWSTR Compiler::compJitFuncInfoFilename = nullptr;
 FILE* Compiler::compJitFuncInfoFile = nullptr;
 #endif // FUNC_INFO_LOGGING
 
-#ifdef DEBUG
+#if 1
 
 // dumpConvertedVarSet() dumps the varset bits that are tracked
 // variable indices, and we convert them to variable numbers, sort the variable numbers, and
@@ -8203,12 +8210,16 @@ void dumpConvertedVarSet(Compiler* comp, VARSET_VALARG_TP vars)
             {
                 printf(" ");
             }
-            printf("V%02u", varNum);
+            printf("V%02u", (unsigned) varNum);
             first = false;
         }
     }
     printf("}");
 }
+
+#endif
+
+#ifdef DEBUG
 
 /*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX

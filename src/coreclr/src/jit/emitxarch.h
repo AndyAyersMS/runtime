@@ -190,9 +190,13 @@ bool isPrefetch(instruction ins)
 /*             Debug-only routines to display instructions              */
 /************************************************************************/
 
+const char* emitXMMregName(unsigned reg);
+const char* emitYMMregName(unsigned reg);
+const char* emitFPregName(unsigned reg, bool varName = true);
+
 #ifdef DEBUG
 
-const char* emitFPregName(unsigned reg, bool varName = true);
+
 
 void emitDispReloc(ssize_t value);
 void emitDispAddrMode(instrDesc* id, bool noDetail = false);
@@ -207,8 +211,6 @@ void emitDispIns(instrDesc* id,
                  size_t     sz   = 0,
                  insGroup*  ig   = nullptr);
 
-const char* emitXMMregName(unsigned reg);
-const char* emitYMMregName(unsigned reg);
 
 #endif
 

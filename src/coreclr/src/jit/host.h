@@ -36,14 +36,16 @@ void logf(unsigned level, const char* fmt, ...);
 
 extern "C" void ANALYZER_NORETURN __cdecl assertAbort(const char* why, const char* file, unsigned line);
 
+
+#if DEBUG
 #undef assert
 #define assert(p) (void)((p) || (assertAbort(#p, __FILE__, __LINE__), 0))
-
 #else // DEBUG
-
 #undef assert
 #define assert(p) (void)0
 #endif // DEBUG
+
+#endif // 1
 
 /*****************************************************************************/
 #ifndef _HOST_H_

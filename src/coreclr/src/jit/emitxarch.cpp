@@ -7010,10 +7010,10 @@ void emitter::emitIns_Call(EmitCallType          callType,
     gcrefRegs &= savedSet;
     byrefRegs &= savedSet;
 
-#ifdef DEBUG
+#if 1
     if (EMIT_GC_VERBOSE)
     {
-        printf("\t\t\t\t\t\t\tCall: GCvars=%s ", VarSetOps::ToString(emitComp, ptrVars));
+        printf("[0x%x] \t\t\t\t\t\t\tCall: GCvars=%s ", GetCurrentThreadId(), VarSetOps::ToString(emitComp, ptrVars));
         dumpConvertedVarSet(emitComp, ptrVars);
         printf(", gcrefRegs=");
         printRegMaskInt(gcrefRegs);
@@ -7390,7 +7390,7 @@ size_t emitter::emitSizeOfInsDsc(instrDesc* id)
 }
 
 /*****************************************************************************/
-#ifdef DEBUG
+#if 1
 /*****************************************************************************
  *
  *  Return a string that represents the given register.
@@ -7616,6 +7616,10 @@ const char* emitter::emitYMMregName(unsigned reg)
 
     return regNames[reg];
 }
+
+#endif
+
+#ifdef DEBUG
 
 /*****************************************************************************
  *

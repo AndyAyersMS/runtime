@@ -2113,13 +2113,14 @@ public:
     bool doExtraSuperPmiQueries;
     void makeExtraStructQueries(CORINFO_CLASS_HANDLE structHandle, int level); // Make queries recursively 'level' deep.
 
+
+    DWORD expensiveDebugCheckLevel;
+#endif
+
     const char* VarNameToStr(VarName name)
     {
         return name;
     }
-
-    DWORD expensiveDebugCheckLevel;
-#endif
 
 #if FEATURE_MULTIREG_RET
     GenTree* impAssignMultiRegTypeToVar(GenTree* op, CORINFO_CLASS_HANDLE hClass);
@@ -9409,15 +9410,17 @@ public:
     bool compIsForInlining() const;
     bool compDonotInline();
 
+#if 1
+    const char* compRegVarName(regNumber reg, bool displayVar = false, bool isFloatReg = false);
+    const char* compFPregVarName(unsigned fpReg, bool displayVar = false);
+    VarName compVarName(regNumber reg, bool isFloatReg = false);
+#endif
+
 #ifdef DEBUG
     // Get the default fill char value we randomize this value when JitStress is enabled.
     static unsigned char compGetJitDefaultFill(Compiler* comp);
-
     const char* compLocalVarName(unsigned varNum, unsigned offs);
-    VarName compVarName(regNumber reg, bool isFloatReg = false);
-    const char* compRegVarName(regNumber reg, bool displayVar = false, bool isFloatReg = false);
     const char* compRegNameForSize(regNumber reg, size_t size);
-    const char* compFPregVarName(unsigned fpReg, bool displayVar = false);
     void compDspSrcLinesByNativeIP(UNATIVE_OFFSET curIP);
     void compDspSrcLinesByLineNum(unsigned line, bool seek = false);
 #endif // DEBUG
@@ -10948,7 +10951,7 @@ extern BasicBlock dummyBB;
 /*****************************************************************************/
 /*****************************************************************************/
 
-#ifdef DEBUG
+#if 1
 void dumpConvertedVarSet(Compiler* comp, VARSET_VALARG_TP vars);
 #endif // DEBUG
 

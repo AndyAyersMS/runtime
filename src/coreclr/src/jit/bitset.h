@@ -259,7 +259,7 @@ class BitSetOps
     // Returns true iff "bs1" and "bs2" are equal.
     static bool Equal(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2);
 
-#ifdef DEBUG
+#if 1
     // Returns a string representing the contents of "bs".  Allocates memory for the representation
     // using the Allocator of "env".
     static const char* ToString(Env env, BitSetValueArgType bs);
@@ -418,7 +418,7 @@ public:
         BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_Equal);
         return BSO::Equal(env, bs1, bs2);
     }
-#ifdef DEBUG
+#if 1
     static const char* ToString(Env env, BitSetValueArgType bs)
     {
         BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_ToString);

@@ -19,7 +19,7 @@ void* CompAllocBitSetTraits::Alloc(Compiler* comp, size_t byteSize)
     return comp->getAllocator(CMK_bitset).allocate<char>(byteSize);
 }
 
-#ifdef DEBUG
+#if 1
 // static
 void* CompAllocBitSetTraits::DebugAlloc(Compiler* comp, size_t byteSize)
 {
@@ -143,7 +143,7 @@ void* BitVecTraits::Alloc(BitVecTraits* b, size_t byteSize)
     return b->comp->getAllocator(CMK_bitset).allocate<char>(byteSize);
 }
 
-#ifdef DEBUG
+#if 1
 // static
 void* BitVecTraits::DebugAlloc(BitVecTraits* b, size_t byteSize)
 {
