@@ -61,7 +61,7 @@ private:
                               const BitSetShortLongRep def,
                               const BitSetShortLongRep use,
                               const BitSetShortLongRep out);
-#ifdef DEBUG
+#if 1
     static const char* ToStringLong(Env env, BitSetShortLongRep bs);
 #endif
 
@@ -395,7 +395,7 @@ public:
         }
     }
 
-#ifdef DEBUG
+#if 1
     // Returns a string valid until the allocator releases the memory.
     static const char* ToString(Env env, BitSetShortLongRep bs)
     {
@@ -893,7 +893,7 @@ bool BitSetOps</*BitSetType*/ BitSetShortLongRep,
     return true;
 }
 
-#ifdef DEBUG
+#if 1
 template <typename Env, typename BitSetTraits>
 const char* BitSetOps</*BitSetType*/ BitSetShortLongRep,
                       /*Brand*/ BSShortLong,

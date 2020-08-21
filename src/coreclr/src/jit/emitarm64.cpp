@@ -1249,7 +1249,7 @@ emitAttr emitter::emitInsLoadStoreSize(instrDesc* id)
 }
 
 /*****************************************************************************/
-#ifdef DEBUG
+#if 1
 
 // clang-format off
 static const char * const  xRegNames[] =

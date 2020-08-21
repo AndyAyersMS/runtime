@@ -20,14 +20,14 @@
 
 /*****************************************************************************/
 
-#if 0
-#define EMITVERBOSE 1
+#if 1
+#define EMITVERBOSE (JitConfig.JitGCInfoLogging() > 0)
 #else
 #define EMITVERBOSE (emitComp->verbose)
 #endif
 
-#if 0
-#define EMIT_GC_VERBOSE 0
+#if 1
+#define EMIT_GC_VERBOSE 1
 #else
 #define EMIT_GC_VERBOSE (emitComp->verbose)
 #endif
@@ -81,7 +81,7 @@ inline bool needsGC(GCtype gcType)
 
 //-----------------------------------------------------------------------------
 
-#ifdef DEBUG
+#if 1
 
 inline bool IsValidGCtype(GCtype gcType)
 {
@@ -1479,11 +1479,13 @@ protected:
 
 #endif // defined(DEBUG) || EMITTER_STATS
 
-#ifdef DEBUG
+#if 1
+    const char* emitRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
+#endif
+
+#if DEBUG
 
     unsigned emitVarRefOffs;
-
-    const char* emitRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
     const char* emitFloatRegName(regNumber reg, emitAttr size = EA_PTRSIZE, bool varName = true);
 
     const char* emitFldName(CORINFO_FIELD_HANDLE fieldVal);
@@ -2115,7 +2117,7 @@ public:
     void emitUpdateLiveGCvars(VARSET_VALARG_TP vars, BYTE* addr);
     void emitUpdateLiveGCregs(GCtype gcType, regMaskTP regs, BYTE* addr);
 
-#ifdef DEBUG
+#if 1
     const char* emitGetFrameReg();
     void emitDispRegSet(regMaskTP regs);
     void emitDispVarSet();

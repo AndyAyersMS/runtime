@@ -2112,13 +2112,14 @@ public:
     bool doExtraSuperPmiQueries;
     void makeExtraStructQueries(CORINFO_CLASS_HANDLE structHandle, int level); // Make queries recursively 'level' deep.
 
+
+    DWORD expensiveDebugCheckLevel;
+#endif
+
     const char* VarNameToStr(VarName name)
     {
         return name;
     }
-
-    DWORD expensiveDebugCheckLevel;
-#endif
 
 #if FEATURE_MULTIREG_RET
     GenTree* impAssignMultiRegTypeToVar(GenTree* op, CORINFO_CLASS_HANDLE hClass);
@@ -8845,7 +8846,7 @@ public:
     static MethodSet* s_pJitMethodSet;
 #endif // DEBUG
 
-#ifdef DEBUG
+#if 1
 // silence warning of cast to greater size. It is easier to silence than construct code the compiler is happy with, and
 // it is safe in this case
 #pragma warning(push)
@@ -8854,15 +8855,17 @@ public:
     template <typename T>
     T dspPtr(T p)
     {
-        return (p == ZERO) ? ZERO : (opts.dspDiffable ? T(0xD1FFAB1E) : p);
+        return p;
     }
 
     template <typename T>
     T dspOffset(T o)
     {
-        return (o == ZERO) ? ZERO : (opts.dspDiffable ? T(0xD1FFAB1E) : o);
+        return o;
     }
 #pragma warning(pop)
+#endif
+#ifdef DEBUG
 
     static int dspTreeID(GenTree* tree)
     {
@@ -9398,15 +9401,19 @@ public:
     bool compIsForInlining() const;
     bool compDonotInline();
 
+#if 1
+    const char* compRegVarName(regNumber reg, bool displayVar = false, bool isFloatReg = false);
+    VarName compVarName(regNumber reg, bool isFloatReg = false);
+    const char* compFPregVarName(unsigned fpReg, bool displayVar = false);
+#endif
+
 #ifdef DEBUG
     // Get the default fill char value we randomize this value when JitStress is enabled.
     static unsigned char compGetJitDefaultFill(Compiler* comp);
 
     const char* compLocalVarName(unsigned varNum, unsigned offs);
-    VarName compVarName(regNumber reg, bool isFloatReg = false);
-    const char* compRegVarName(regNumber reg, bool displayVar = false, bool isFloatReg = false);
+
     const char* compRegNameForSize(regNumber reg, size_t size);
-    const char* compFPregVarName(unsigned fpReg, bool displayVar = false);
     void compDspSrcLinesByNativeIP(UNATIVE_OFFSET curIP);
     void compDspSrcLinesByLineNum(unsigned line, bool seek = false);
 #endif // DEBUG
@@ -10937,7 +10944,7 @@ extern BasicBlock dummyBB;
 /*****************************************************************************/
 /*****************************************************************************/
 
-#ifdef DEBUG
+#if 1
 void dumpConvertedVarSet(Compiler* comp, VARSET_VALARG_TP vars);
 #endif // DEBUG
 

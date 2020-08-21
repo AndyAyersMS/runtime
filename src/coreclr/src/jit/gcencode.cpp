@@ -3633,7 +3633,7 @@ void GCInfo::gcFindPtrsInFrame(const void* infoBlock, const void* codeBlock, uns
 template class JitHashTable<RegSlotIdKey, RegSlotIdKey, GcSlotId>;
 template class JitHashTable<StackSlotIdKey, StackSlotIdKey, GcSlotId>;
 
-#ifdef DEBUG
+#if 1 // DEBUG
 
 static const char* const GcSlotFlagsNames[] = {"",
                                                "(byref) ",
@@ -3643,6 +3643,16 @@ static const char* const GcSlotFlagsNames[] = {"",
                                                "(byref, untracked) ",
                                                "(pinned, untracked) ",
                                                "(byref, pinned, untracked) "};
+
+#ifndef _DEBUG
+const char* const GcStackSlotBaseNames[] =
+{
+    "caller.sp",
+    "sp",
+    "frame",
+};
+#endif
+
 
 // I'm making a local wrapper class for GcInfoEncoder so that can add logging of my own (DLD).
 class GcInfoEncoderWithLogging
@@ -3827,12 +3837,11 @@ public:
 };
 
 #define GCENCODER_WITH_LOGGING(withLog, realEncoder)                                                                   \
-    GcInfoEncoderWithLogging  withLog##Var(realEncoder, compiler->verbose || compiler->opts.dspGCtbls);                \
+    GcInfoEncoderWithLogging  withLog##Var(realEncoder, false);                \
     GcInfoEncoderWithLogging* withLog = &withLog##Var;
 
 #else // DEBUG
-
-#define GCENCODER_WITH_LOGGING(withLog, realEncoder) GcInfoEncoder* withLog = realEncoder;
+// #define GCENCODER_WITH_LOGGING(withLog, realEncoder) GcInfoEncoder* withLog = realEncoder;
 
 #endif // DEBUG
 
@@ -4006,7 +4015,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 #endif // DISPLAY_SIZES
 }
 
-#ifdef DEBUG
+#if 1
 #define Encoder GcInfoEncoderWithLogging
 #else
 #define Encoder GcInfoEncoder

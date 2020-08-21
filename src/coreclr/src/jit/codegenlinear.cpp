@@ -189,11 +189,16 @@ void CodeGen::genCodeForBBlist()
 #ifdef DEBUG
         if (compiler->verbose)
         {
-            printf("\n=============== Generating ");
+            printf("\n[0x%x] =============== Generating ", GetCurrentThreaddId());
             block->dspBlockHeader(compiler, true, true);
             compiler->fgDispBBLiveness(block);
         }
-#endif // DEBUG
+#else
+        if (compiler->opts.dspGCtbls)
+        {
+            printf("[0x%x] =============== Generating " FMT_BB "\n", GetCurrentThreadId(), block->bbNum);
+        }
+#endif
 
         assert(LIR::AsRange(block).CheckLIR(compiler));
 
@@ -354,7 +359,7 @@ void CodeGen::genCodeForBBlist()
         if ((block->bbPrev != nullptr) && (block->bbPrev->bbJumpKind == BBJ_COND) &&
             (block->bbWeight != block->bbPrev->bbWeight))
         {
-            needLabel = true;
+            // needLabel = true;
         }
 #endif // DEBUG || LATE_DISASM
 

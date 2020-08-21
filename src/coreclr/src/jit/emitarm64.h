@@ -15,14 +15,18 @@ static bool strictArmAsm;
 /*         Routines that compute the size of / encode instructions      */
 /************************************************************************/
 
-#ifdef DEBUG
+
 
 /************************************************************************/
 /*             Debug-only routines to display instructions              */
 /************************************************************************/
 
+#if 1
 const char* emitFPregName(unsigned reg, bool varName = true);
 const char* emitVectorRegName(regNumber reg);
+
+#endif
+#ifdef DEBUG
 
 void emitDispInst(instruction ins);
 void emitDispImm(ssize_t imm, bool addComma, bool alwaysHex = false);

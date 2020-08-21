@@ -22,7 +22,7 @@ class CompAllocBitSetTraits
 public:
     static inline void* Alloc(Compiler* comp, size_t byteSize);
 
-#ifdef DEBUG
+#if 1
     static inline void* DebugAlloc(Compiler* comp, size_t byteSize);
 #endif // DEBUG
 };
@@ -112,7 +112,7 @@ public:
 
     static inline void* Alloc(BitVecTraits* b, size_t byteSize);
 
-#ifdef DEBUG
+#if 1
     static inline void* DebugAlloc(BitVecTraits* b, size_t byteSize);
 #endif // DEBUG
 
