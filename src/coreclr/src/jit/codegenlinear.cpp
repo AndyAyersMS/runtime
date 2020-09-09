@@ -427,11 +427,10 @@ void CodeGen::genCodeForBBlist()
         }
 #endif // DEBUG
 
-#ifdef _TARGET_XARCH_
+#if defined(_TARGET_XARCH_) || defined(_TARGET_ARM64_)
         if ((block == compiler->fgFirstBB) && (JitConfig.JitAddNops() > 0) && compiler->compHasBackwardJump)
         {
-            int nopSize = JitConfig.JitAddNops() % 16;
-            // printf("Adding %d nops to %s\n", nopSize, compiler->info.compMethodName); 
+            int nopSize = JitConfig.JitAddNops();
             GetEmitter()->emitIns_Nop(nopSize);
         }
 #endif

@@ -3605,6 +3605,24 @@ emitter::code_t emitter::emitInsCode(instruction ins, insFormat fmt)
 
 /*****************************************************************************
  *
+ *  Add a NOP instructions to pad the instruction stream by (size / 4) bytes.
+ */
+
+void emitter::emitIns_Nop(unsigned size)
+{
+    assert(size > 0);
+    // Max out at 28 bytes of nop... 
+    // 32 is the largest method entry alignment we support.
+    size = size % 32;
+    while (size > 0)
+    {
+        emitIns(INS_nop);
+        size -= 4;
+    }
+}
+
+/*****************************************************************************
+ *
  *  Add an instruction with no operands.
  */
 

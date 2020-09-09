@@ -2673,7 +2673,14 @@ void emitter::emitLoopAlign()
 
 void emitter::emitIns_Nop(unsigned size)
 {
-    assert(size <= 15);
+    assert(size > 0);
+    // We only have nop patterns for 1-15 bytes.
+    // Todo: handle up to 31 bytes.
+    size = size % 16;
+    if (size == 0)
+    {
+        return;
+    }
 
     instrDesc* id = emitNewInstr();
     id->idIns(INS_nop);

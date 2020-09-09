@@ -4611,8 +4611,8 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
     }
 #endif
 
-#ifdef TARGET_XARCH
-    // For x64/x86, align Tier1 methods to 32 byte boundaries if
+#if defined(TARGET_XARCH) || defined(TARGET_ARM64)
+    // For x64/x86/arm64, align Tier1 methods to 32 byte boundaries if
     // they are larger than 16 bytes and contain a loop.
     //
     if (emitComp->opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TIER1) && (emitTotalHotCodeSize > 16) && emitComp->fgHasLoops)
@@ -4664,13 +4664,6 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
     //     printf("Cons=%08X\n", consBlock);
 
     /* Give the block addresses to the caller and other functions here */
-
-    const char* const name = emitComp->info.compMethodName;
-
-    if ((strcmp(name, "F") == 0) || (strcmp(name, "G") == 0))
-    {
-        printf("Code for %s is at %p\n", emitComp->info.compMethodName, codeBlock);
-    }
 
     *codeAddr = emitCodeBlock = codeBlock;
     *coldCodeAddr = emitColdCodeBlock = coldCodeBlock;
