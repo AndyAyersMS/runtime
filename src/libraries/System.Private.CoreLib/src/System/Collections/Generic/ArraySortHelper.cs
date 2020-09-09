@@ -255,18 +255,20 @@ namespace System.Collections.Generic
 
         private static void InsertionSort(Span<T> keys, Comparison<T> comparer)
         {
-            for (int i = 0; i < keys.Length - 1; i++)
+            // Workaround for 41741. Copy span to local to allow promotion on ARM64
+            Span<T> _keys = keys;
+            for (int i = 0; i < _keys.Length - 1; i++)
             {
-                T t = keys[i + 1];
+                T t = _keys[i + 1];
 
                 int j = i;
-                while (j >= 0 && comparer(t, keys[j]) < 0)
+                while (j >= 0 && comparer(t, _keys[j]) < 0)
                 {
-                    keys[j + 1] = keys[j];
+                    _keys[j + 1] = _keys[j];
                     j--;
                 }
 
-                keys[j + 1] = t;
+                _keys[j + 1] = t;
             }
         }
     }
@@ -541,18 +543,20 @@ namespace System.Collections.Generic
 
         private static void InsertionSort(Span<T> keys)
         {
-            for (int i = 0; i < keys.Length - 1; i++)
+            // Workaround for 41741. Copy span to local to allow promotion on ARM64
+            Span<T> _keys = keys;
+            for (int i = 0; i < _keys.Length - 1; i++)
             {
-                T t = Unsafe.Add(ref MemoryMarshal.GetReference(keys), i + 1);
+                T t = Unsafe.Add(ref MemoryMarshal.GetReference(_keys), i + 1);
 
                 int j = i;
-                while (j >= 0 && (t == null || LessThan(ref t, ref Unsafe.Add(ref MemoryMarshal.GetReference(keys), j))))
+                while (j >= 0 && (t == null || LessThan(ref t, ref Unsafe.Add(ref MemoryMarshal.GetReference(_keys), j))))
                 {
-                    Unsafe.Add(ref MemoryMarshal.GetReference(keys), j + 1) = Unsafe.Add(ref MemoryMarshal.GetReference(keys), j);
+                    Unsafe.Add(ref MemoryMarshal.GetReference(_keys), j + 1) = Unsafe.Add(ref MemoryMarshal.GetReference(_keys), j);
                     j--;
                 }
 
-                Unsafe.Add(ref MemoryMarshal.GetReference(keys), j + 1) = t!;
+                Unsafe.Add(ref MemoryMarshal.GetReference(_keys), j + 1) = t!;
             }
         }
 
