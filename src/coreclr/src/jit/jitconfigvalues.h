@@ -455,6 +455,7 @@ CONFIG_INTEGER(JitSaveFpLrWithCalleeSavedRegisters, W("JitSaveFpLrWithCalleeSave
 CONFIG_INTEGER(JitDoOldStructRetyping, W("JitDoOldStructRetyping"), 0) // Allow Jit to retype structs as primitive types
                                                                        // when possible.
 CONFIG_INTEGER(JitAddNops, W("JitAddNops"), 0)
+CONFIG_METHODSET(JitNopMethods, W("JitNopMethods"))
 
 #undef CONFIG_INTEGER
 #undef CONFIG_STRING

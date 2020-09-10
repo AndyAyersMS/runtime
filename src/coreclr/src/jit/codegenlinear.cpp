@@ -427,8 +427,9 @@ void CodeGen::genCodeForBBlist()
         }
 #endif // DEBUG
 
-#if defined(_TARGET_XARCH_) || defined(_TARGET_ARM64_)
-        if ((block == compiler->fgFirstBB) && (JitConfig.JitAddNops() > 0) && compiler->compHasBackwardJump)
+#if defined(DEBUG) && (defined(TARGET_XARCH) || defined(TARGET_ARM64))
+        const bool padWithNops = JitConfig.JitNopMethods().contains(compiler->info.compMethodName, compiler->info.compClassName, &compiler->info.compMethodInfo->args);
+        if (padWithNops && (block == compiler->fgFirstBB) && (JitConfig.JitAddNops() > 0))
         {
             int nopSize = JitConfig.JitAddNops();
             GetEmitter()->emitIns_Nop(nopSize);
