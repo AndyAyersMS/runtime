@@ -20330,14 +20330,11 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
     {
         if (createDotFile)
         {
-            if (block->bbFlags & BBF_INTERNAL)
-            {
-                fprintf(fgxFile, "    BB%02u [color = \"grey\"", block->bbNum);
-            }
-            else
-            {
-                fprintf(fgxFile, "    BB%02u [label = \"BB%02u\\n", block->bbNum, block->bbNum);
+            fprintf(fgxFile, "    BB%02u [label = \"BB%02u\\n", block->bbNum, block->bbNum);
 
+            // IL offsets
+            if ((block->bbFlags & BBF_INTERNAL) == 0)
+            {
                 if (block->bbCodeOffs != BAD_IL_OFFSET)
                 {
                     fprintf(fgxFile, "[%03X..", block->bbCodeOffs);
@@ -20346,18 +20343,30 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
                 {
                     fprintf(fgxFile, "[???..");
                 }
-
+                
                 if (block->bbCodeOffsEnd != BAD_IL_OFFSET)
                 {
                     // brace-matching editor workaround for following line: (
-                    fprintf(fgxFile, "%03X)\"", block->bbCodeOffsEnd);
+                    fprintf(fgxFile, "%03X)\\n", block->bbCodeOffsEnd);
                 }
                 else
                 {
                     // brace-matching editor workaround for following line: (
-                    fprintf(fgxFile, "???)\"");
+                    fprintf(fgxFile, "???)\\n");
                 }
             }
+
+            // "Raw" Profile weight
+            if (block->hasProfileWeight())
+            {
+                fprintf(fgxFile, "%7.2f", ((double)block->getBBWeight(this)) / BB_UNITY_WEIGHT);
+            }
+            
+            // end of block label
+            fprintf(fgxFile, "\"");
+
+            // other node attributes
+            // may want to add semantic ones here to aid in correlation
 
             if (block == fgFirstBB) 
             {
@@ -20370,6 +20379,10 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
             else if (block->bbJumpKind == BBJ_THROW)
             {
                 fprintf(fgxFile, "; shape = \"trapezium\"");
+            }
+            else if (block->bbFlags & BBF_INTERNAL)
+            {
+                fprintf(fgxFile, "; shape = \"note\"");
             }
 
             fprintf(fgxFile, "];\n");
