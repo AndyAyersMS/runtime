@@ -23,7 +23,31 @@ void PgoManager::Initialize()
         (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_WritePGOData) > 0) ||
         (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_TieredPGO) > 0))
     {
-        s_PgoData = new ICorJitInfo::BlockCounts[BUFFER_SIZE];
+        // (todo: optionally) Use a mapped file.
+        HANDLE hFile = WszCreateFile((LPCWSTR) L"c:\\home\\pgo.map",
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL);
+
+        // Seek to establish length.
+        const size_t size = BUFFER_SIZE * sizeof(ICorJitInfo::BlockCounts);
+        SetFilePointer(hFile, size, 0, FILE_BEGIN);
+
+        // Open the mapping
+        HANDLE hMapping = WszCreateFileMapping(hFile,
+                                               NULL,
+                                               PAGE_READWRITE,
+                                               0,
+                                               size,
+                                               L"Profile.Map");
+
+        // Open the map
+        void* view = MapViewOfFile(hMapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+
+        s_PgoData = (ICorJitInfo::BlockCounts*) view;
         s_PgoIndex = 0;
     }
 
