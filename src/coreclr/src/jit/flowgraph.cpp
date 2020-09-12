@@ -20370,19 +20370,19 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
 
             if (block == fgFirstBB) 
             {
-                fprintf(fgxFile, "; shape = \"house\"");
+                fprintf(fgxFile, ", shape = \"house\"");
             }
             else if (block->bbJumpKind == BBJ_RETURN)
             {
-                fprintf(fgxFile, "; shape = \"invhouse\"");
+                fprintf(fgxFile, ", shape = \"invhouse\"");
             }
             else if (block->bbJumpKind == BBJ_THROW)
             {
-                fprintf(fgxFile, "; shape = \"trapezium\"");
+                fprintf(fgxFile, ", shape = \"trapezium\"");
             }
             else if (block->bbFlags & BBF_INTERNAL)
             {
-                fprintf(fgxFile, "; shape = \"note\"");
+                fprintf(fgxFile, ", shape = \"note\"");
             }
 
             fprintf(fgxFile, "];\n");
@@ -20468,7 +20468,7 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
                 }
                 else if ((bSource->bbNum + 1) == bTarget->bbNum)
                 {
-                    fprintf(fgxFile, " [color=blue; weight=20]\n");
+                    fprintf(fgxFile, " [color=blue, weight=20]\n");
                 }
                 else
                 {
