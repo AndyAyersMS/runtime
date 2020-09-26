@@ -22,9 +22,12 @@ public:
     static HRESULT allocMethodBlockCounts(MethodDesc* pMD, UINT32 count,
         ICorJitInfo::BlockCounts** pBlockCounts, unsigned ilSize);
 
-    // Retreive the profile block count buffer for a method
+    // Retrieve the profile block count buffer for a method
     static HRESULT getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT32* pCount,
         ICorJitInfo::BlockCounts** pBlockCounts, UINT32* pNumRuns);
+
+    // Retrieve the most likely class for a particular call
+    static CORINFO_CLASS_HANDLE getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset);
 
 #ifdef FEATURE_PGO
 

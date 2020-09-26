@@ -342,6 +342,191 @@ HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT3
     return E_NOTIMPL;
 }
 
+struct ClassProfileEntry
+{
+    uint ilOffset;
+    uint count;
+    MethodTable* table[4];
+};
+
+struct HistogramEntry
+{
+    MethodTable* m_mt;
+    uint         m_count;
+};
+
+CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset)
+{
+    // Bail if there's no profile data.
+    //
+    if (s_PgoData == NULL)
+    {
+        return NULL;
+    }
+
+    // See if we can find profile data for this method in the profile buffer.
+    //
+    const unsigned maxIndex = s_PgoIndex;
+    const unsigned token    = pMD->IsDynamicMethod() ? 0 : pMD->GetMemberDef();
+    const unsigned hash     = pMD->GetStableHash();
+
+    unsigned index = 0;
+    unsigned methodsChecked = 0;
+
+    while (index < maxIndex)
+    {
+        // The first two "records" of each entry are actually header data
+        // to identify the method.
+        //
+        Header* const header = (Header*)&s_PgoData[index];
+
+        // Sanity check that header data looks reasonable. If not, just
+        // fail the lookup.
+        //
+        if ((header->recordCount < MIN_RECORD_COUNT) || (header->recordCount > MAX_RECORD_COUNT))
+        {
+            break;
+        }
+
+        // See if the header info matches the current method.
+        //
+        if ((header->token == token) && (header->hash == hash) && (header->ilSize == ilSize))
+        {
+            // Yep, found data. See if there is a suitable class profile.
+            //
+            // This bit is currently somewhat hacky ... we scan the records, the count records come
+            // first and are in increasing IL offset order. So when we see an entry with
+            // decreasting iL offset, it's going to be an class profile.
+            //
+            // Note if there are no count probes in a method we may fail to find class profiles.
+            //
+            unsigned countILOffset = 0;
+            unsigned j = 2;
+
+            // Skip past all the count entries
+            //
+            while (j < header->recordCount)
+            {
+                if (&s_PgoData[index + j].IlOffset >= countILOffset)
+                {
+                    countILOffset = &s_PgoData[index + j].IlOffset;
+                    j++;
+                    continue;
+                }
+            }
+
+            // Now we're in the "class profile" portion of the slab for this method.
+            // Look for the one that has the right IL offset.
+            //
+            while (j < header->recordCount)
+            {
+                if (&s_PgoData[index + j].IlOffset != ilOffset)
+                {
+                    j += 5;     // make this a global constant
+                    continue;
+                }
+
+                // This is the entry we want. Form a histogram...
+                //
+                // Currently table holds 4 entries that may be null
+                // or may be method table values.
+                // 
+                ClassProfileEntry* profileEntry = (ClassProfileEntry*)&s_PgoData[index + j];
+
+                // Build the histogram
+                //
+                HistogramEntry histogram[4];
+                int histogramCount = 0;
+
+                for (int k = 0; k < 4; k++)
+                {
+                    CORINFO_CLASS_HANDLE currentEntry = profileEntry->table[k];
+
+                    if (currentEntry == NULL)
+                    {
+                        continue;
+                    }
+
+                    bool found = false;
+                    for (int h = 0; h < histogramCount; h++)
+                    {
+                        if (histogram[h].m_mt == currentEntry)
+                        {
+                            histogram[h].m_count++;
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!found)
+                    {
+                        histogram[h].m_mt = currentEntry;
+                        histogram[h].m_count = 1;
+                        h++;
+                    }
+                }
+
+                // Now pick the most frequently occurring type.
+
+                if (histogramCount == 1)
+                {
+                    // only ever saw one class
+                    return histogram[0].m_mt;
+                }
+                else if (histogramCount == 2)
+                {
+                    // counts could be {3/1}, 2/2, {2/1}, 1/1
+                    // Since there is secondary backup (VSD or HW prediction), 
+                    // we should guess even if there's a tie.
+                    //
+                    if (histogram[0].m_count >= histogram[1].m_count)
+                    {
+                        return histogram[0].m_mt;
+                    }
+                    else
+                    {
+                        return histogram[1].m_mt;
+                    }
+                }
+                else if (histogramCount == 3)
+                {
+                    // Counts could be 1/1/1 or {2/1/1}
+                    //
+                    // If any entry has majority of counts, return it.
+                    //
+                    for (int m = 0; m < 3; m++)
+                    {
+                        if (histogram[m].m_count > 1)
+                        {
+                            return histogram[m].m_mt;
+                        }
+                    }
+
+                    // Othewise, don't guess...? May still pay off
+                    // to pick one of the three.
+                    return NULL;
+                }
+                else
+                {
+                    // 0 cases: we never hit this case at tier0.
+                    //
+                    // 4 cases... counts must be 1/1/1/1, no clear winner
+                    return NULL;
+                }
+            }
+
+            // Failed to find a class profile entry
+            return NULL;
+        }
+
+        index += header->recordCount;
+        methodsChecked++;
+    }
+
+    // Failed to find any sort of profile data
+    return NULL;
+}
+
 #else
 
 // Stub version for !FEATURE_PGO builds
@@ -362,6 +547,13 @@ HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT3
     pCount = 0;
     pNumRuns = 0;
     return E_NOTIMPL;
+}
+
+// Stub version for !FEATURE_PGO builds
+//
+CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset)
+{
+    return NULL;
 }
 
 #endif // FEATURE_PGO

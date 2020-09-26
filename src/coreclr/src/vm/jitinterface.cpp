@@ -11927,6 +11927,50 @@ HRESULT CEEJitInfo::getMethodBlockCounts (
     return hr;
 }
 
+CORINFO_CLASS_HANDLE CEEJitInfo::getLikelyClass(
+                     CORINFO_METHOD_HANDLE ftnHnd,
+                     CORINFO_CLASS_HANDLE  baseHnd,
+                     UINT32                ilOffset
+)
+{
+    CONTRACTL {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_PREEMPTIVE;
+    } CONTRACTL_END;
+
+    JIT_TO_EE_TRANSITION();
+
+    CORINFO_CLASS_HANDLE result = NULL;
+
+    // If TieredPGO is enabled we may have per call site class profiles.
+
+#ifdef FEATURE_PGO
+
+    MethodDesc* pMD = (MethodDesc*)ftnHnd;
+    unsigned codeSize = 0;
+    if (pMD->IsDynamicMethod())
+    {
+        unsigned stackSize, ehSize;
+        CorInfoOptions options;
+        DynamicResolver * pResolver = m_pMethodBeingCompiled->AsDynamicMethodDesc()->GetResolver();
+        pResolver->GetCodeInfo(&codeSize, &stackSize, &options, &ehSize);
+    }
+    else if (pMD->HasILHeader())
+    {
+        COR_ILMETHOD_DECODER decoder(pMD->GetILHeader());
+        codeSize = decoder.GetCodeSize();
+    }
+
+    result = PgoManager::getLikelyClass(pMD, codeSize, ilOffset);
+
+#endif
+
+    EE_TO_JIT_TRANSITION();
+
+    return result;
+}
+
 void CEEJitInfo::allocMem (
     ULONG               hotCodeSize,    /* IN */
     ULONG               coldCodeSize,   /* IN */
@@ -14137,6 +14181,15 @@ HRESULT CEEInfo::getMethodBlockCounts(
     UNREACHABLE_RET();      // only called on derived class.
 }
 
+CORINFO_CLASS_HANDLE CEEInfo::getLikelyClass(
+                     CORINFO_METHOD_HANDLE ftnHnd,
+                     CORINFO_CLASS_HANDLE  baseHnd,
+                     UINT32                ilOffset
+)
+{
+    LIMITED_METHOD_CONTRACT;
+    UNREACHABLE_RET();      // only called on derived class.
+}
 
 void CEEInfo::recordCallSite(
         ULONG                 instrOffset,  /* IN */
