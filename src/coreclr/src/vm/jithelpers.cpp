@@ -5319,6 +5319,18 @@ void JIT_Patchpoint(int* counter, int ilOffset)
 
 #endif // FEATURE_ON_STACK_REPLACEMENT
 
+// table points at an entry of 5 x 8 = 40 bytes.
+//
+// The first 8 bytes are reserved, so for x64 we will
+// have 4 8 byte entries to use to sample method table values.
+
+struct ClassProfileEntry
+{
+    uint ilOffset;
+    uint count;
+    MethodTable* table[4];
+};
+
 HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
 {
     FCALL_CONTRACT;
@@ -5329,11 +5341,63 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
     HELPER_METHOD_FRAME_BEGIN_1(objRef);
 
     MethodTable* pMT = objRef->GetMethodTable();
+    ClassProfileEntry* entry = (ClassProfileEntry*) tableAddress;
 
-    printf("*** class profile MT=%p (%s), table=%p\n", pMT, pMT->GetDebugClassName(), 
-        tableAddress);
+    const int SIZE = 4;
+    int count = entry->count++;
+    bool updated = false;
 
-    // Stub...
+    // If table is not yet full, just add entries in.
+
+    if (count < SIZE)
+    {
+        entry->table[count] = pMT;
+        updated = true;
+    }
+    else
+    {
+        // generate a random number (xorshift32)
+        //
+        // intentionally simple so we can have multithreaded
+        // access w/o tearing state.
+        static unsigned s_rng = 100;
+        
+        unsigned x = s_rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        s_rng = x;
+        
+        // N is the sampling window size,
+        // it should be much larger than the table size.
+        //
+        // If N == count then we are building an entire
+        // run sample, but likely we don't need that and
+        // would prefer something that is more weighted
+        // to recent observations.
+        //
+        const int N = 128;
+        
+        if ((x % N) < SIZE)
+        {
+            int i = x % SIZE + 1;
+            entry->table[i] = pMT;
+            updated = true;
+        }
+    }
+
+    if (updated)
+    {
+        // hack: use il offset as update count for now
+        entry->ilOffset++;
+        printf("*** class profile table=%p il=%u count=%u\n", entry, entry->ilOffset, entry->count);
+
+        for (int j = 0; j < SIZE; j++)
+        {
+            MethodTable* pTableMT = entry->table[j];
+            printf("    entry[%d] = %p (%s)\n", j, pTableMT, pTableMT == NULL ? "" : pTableMT->GetDebugClassName());
+        }
+    }
 
     HELPER_METHOD_FRAME_END();
 }

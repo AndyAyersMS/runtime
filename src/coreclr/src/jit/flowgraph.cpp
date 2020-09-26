@@ -439,13 +439,13 @@ void Compiler::fgInstrumentMethod()
     // Allocate the profile buffer
     //
     // Buffer size is one entry for each block, and N entries for each call.
-    // For now we'll use N=3
+    // For now we'll use N=5 -- that is 40 bytes per class profile probe.
     //
-    const unsigned entriesPerCall = 3;
+    const unsigned entriesPerCall = 5;
     const unsigned totalEntries = countOfBlocks + entriesPerCall * countOfCalls;
     ICorJitInfo::BlockCounts* profileBlockCountsStart = nullptr;
 
-    HRESULT res = info.compCompHnd->allocMethodBlockCounts(countOfBlocks, &profileBlockCountsStart);
+    HRESULT res = info.compCompHnd->allocMethodBlockCounts(totalEntries, &profileBlockCountsStart);
 
     if (!SUCCEEDED(res))
     {
@@ -621,6 +621,7 @@ void Compiler::fgInstrumentMethod()
 
     // Zero the remainder of the count slab (which will hold class profile data)
     //
+    JITDUMP("Zeroing from %p to %p\n", currentBlockCounts, profileEnd);
     while (currentBlockCounts < profileEnd)
     {
         currentBlockCounts->ILOffset       = 0;
