@@ -5319,6 +5319,26 @@ void JIT_Patchpoint(int* counter, int ilOffset)
 
 #endif // FEATURE_ON_STACK_REPLACEMENT
 
+HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    HELPER_METHOD_FRAME_BEGIN_1(objRef);
+
+    MethodTable* pMT = objRef->GetMethodTable();
+
+    printf("*** class profile MT=%p (%s), table=%p\n", pMT, pMT->GetDebugClassName(), 
+        tableAddress);
+
+    // Stub...
+
+    HELPER_METHOD_FRAME_END();
+}
+HCIMPLEND
+
 //========================================================================
 //
 //      INTEROP HELPERS

@@ -20367,9 +20367,37 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
     // This should be a virtual vtable or virtual stub call.
     assert(call->IsVirtual());
 
-    // Bail if not optimizing
+    // Possibly instrument, if not optimizing.
+    //
     if (opts.OptimizationDisabled())
     {
+        // During importation, optionally flag this block as one that
+        // contains calls requiring class profiling. Ideally perhaps
+        // we'd just keep track of the calls themselves, so we don't
+        // have to search for them later.
+        //
+        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_BBINSTR) && !opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT) && (JitConfig.JitClassProfiling() > 0) && !isLateDevirtualization)
+        {
+            JITDUMP("\n ... marking [%06u] in " FMT_BB " for class profile instrumentation\n", dspTreeID(call), compCurBB->bbNum);
+            ClassProfileCandidateInfo* pInfo = new (this, CMK_Inlining) ClassProfileCandidateInfo;
+            
+            // Need to tunnel the call's IL offset here. Or find some other keying scheme.
+            //
+            pInfo->ilOffset = 0;
+            pInfo->probeIndex = info.compClassProbeCount++;
+            pInfo->stubAddr = call->gtStubCallStubAddr;
+
+            // note this overwrites gtCallStubAddr, so it needs to be undone
+            // during the instrumentation phase, or we won't generate proper
+            // code for vsd calls.
+            //
+            call->gtClassProfileCandidateInfo = pInfo;
+
+            // Flag block as needing scrutiny
+            //
+            compCurBB->bbFlags |= BBF_HAS_VIRTUAL_CALL;
+        }
+
         return;
     }
 

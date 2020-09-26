@@ -6576,6 +6576,7 @@ public:
 #define OMF_HAS_EXPRUNTIMELOOKUP 0x00000100 // Method contains a runtime lookup to an expandable dictionary.
 #define OMF_HAS_PATCHPOINT 0x00000200       // Method contains patchpoints
 #define OMF_NEEDS_GCPOLLS 0x00000400        // Method needs GC polls
+#define OMF_HAS_VIRTUAL_CALL 0x00000800     // Method contains call that needs a class profile
 
     bool doesMethodHaveFatPointer()
     {
@@ -9175,6 +9176,10 @@ public:
 #define CPU_ARM64 0x0400 // The generic ARM64 CPU
 
         unsigned genCPU; // What CPU are we running on
+
+        // Number of class profile probes in this method
+        unsigned compClassProbeCount;
+
     } info;
 
     // Returns true if the method being compiled returns a non-void and non-struct value.
