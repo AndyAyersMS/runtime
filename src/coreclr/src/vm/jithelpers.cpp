@@ -5388,14 +5388,12 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
 
     if (updated)
     {
-        // hack: use il offset as update count for now
-        entry->ilOffset++;
-        printf("*** class profile table=%p il=%u count=%u\n", entry, entry->ilOffset, entry->count);
+        printf("*** class profile table=0x%p il=0x%X count=%u\n", entry, entry->ilOffset, entry->count);
 
         for (int j = 0; j < SIZE; j++)
         {
             MethodTable* pTableMT = entry->table[j];
-            printf("    entry[%d] = %p (%s)\n", j, pTableMT, pTableMT == NULL ? "" : pTableMT->GetDebugClassName());
+            printf("    entry[%d] = 0x%p (%s)\n", j, pTableMT, pTableMT == NULL ? "" : pTableMT->GetDebugClassName());
         }
     }
 

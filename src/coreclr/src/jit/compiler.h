@@ -3665,7 +3665,8 @@ public:
                              CORINFO_CONTEXT_HANDLE* contextHandle,
                              CORINFO_CONTEXT_HANDLE* exactContextHandle,
                              bool                    isLateDevirtualization,
-                             bool                    isExplicitTailCall);
+                             bool                    isExplicitTailCall,
+                             IL_OFFSETX              ilOffset = BAD_IL_OFFSET);
 
     //=========================================================================
     //                          PROTECTED

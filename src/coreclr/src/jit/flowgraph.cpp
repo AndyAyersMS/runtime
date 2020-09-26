@@ -505,8 +505,9 @@ void Compiler::fgInstrumentMethod()
                             GenTreeCall* const call = node->AsCall();
                             if (call->IsVirtual())
                             {
-                                JITDUMP("Found [%06u] with probe index %d\n", m_compiler->dspTreeID(call),
-                                    call->gtClassProfileCandidateInfo->probeIndex);
+                                JITDUMP("Found call [%06u] with probe index %d and ilOffset 0x%X\n", m_compiler->dspTreeID(call),
+                                    call->gtClassProfileCandidateInfo->probeIndex, 
+                                    call->gtClassProfileCandidateInfo->ilOffset);
 
                                 m_count++;
 
@@ -551,6 +552,14 @@ void Compiler::fgInstrumentMethod()
 
                                 JITDUMP("Modified call is now\n");
                                 DISPTREE(call);
+
+                                // Set up the profile table. Entry 0 is a header, the rest are data entries.
+                                //
+                                for (int i = 0; i < m_tableSize; i++)
+                                {
+                                    tableAddress[i].ILOffset = (i == 0) ? jitGetILoffs(call->gtClassProfileCandidateInfo->ilOffset) : 0;
+                                    tableAddress[i].ExecutionCount = 0;
+                                }
 
                                 // Restore the stub address on call
                                 //
@@ -619,16 +628,6 @@ void Compiler::fgInstrumentMethod()
     noway_assert(countOfCalls == 0);
     assert(currentBlockCounts == profileBlockCountsEnd);
 
-    // Zero the remainder of the count slab (which will hold class profile data)
-    //
-    JITDUMP("Zeroing from %p to %p\n", currentBlockCounts, profileEnd);
-    while (currentBlockCounts < profileEnd)
-    {
-        currentBlockCounts->ILOffset       = 0;
-        currentBlockCounts->ExecutionCount = 0;
-        currentBlockCounts++;
-    }
-        
     // When prejitting, add the method entry callback node
     if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT))
     {

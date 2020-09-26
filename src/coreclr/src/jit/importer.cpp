@@ -8565,7 +8565,7 @@ var_types Compiler::impImportCall(OPCODE                  opcode,
             const bool isExplicitTailCall     = (tailCallFlags & PREFIX_TAILCALL_EXPLICIT) != 0;
             const bool isLateDevirtualization = false;
             impDevirtualizeCall(call->AsCall(), &callInfo->hMethod, &callInfo->methodFlags, &callInfo->contextHandle,
-                                &exactContextHnd, isLateDevirtualization, isExplicitTailCall);
+                                &exactContextHnd, isLateDevirtualization, isExplicitTailCall, rawILOffset);
         }
 
         if (impIsThis(obj))
@@ -20323,6 +20323,7 @@ bool Compiler::IsMathIntrinsic(GenTree* tree)
 //     exactContextHnd -- [OUT] updated context handle iff call devirtualized
 //     isLateDevirtualization -- if devirtualization is happening after importation
 //     isExplicitTailCalll -- [IN] true if we plan on using an explicit tail call
+//     ilOffset -- IL offset of the call
 //
 // Notes:
 //     Virtual calls in IL will always "invoke" the base class method.
@@ -20357,7 +20358,8 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
                                    CORINFO_CONTEXT_HANDLE* contextHandle,
                                    CORINFO_CONTEXT_HANDLE* exactContextHandle,
                                    bool                    isLateDevirtualization,
-                                   bool                    isExplicitTailCall)
+                                   bool                    isExplicitTailCall,
+                                   IL_OFFSETX              ilOffset)
 {
     assert(call != nullptr);
     assert(method != nullptr);
@@ -20381,9 +20383,9 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
             JITDUMP("\n ... marking [%06u] in " FMT_BB " for class profile instrumentation\n", dspTreeID(call), compCurBB->bbNum);
             ClassProfileCandidateInfo* pInfo = new (this, CMK_Inlining) ClassProfileCandidateInfo;
             
-            // Need to tunnel the call's IL offset here. Or find some other keying scheme.
+            // Record some info needed for the class profiling probe.
             //
-            pInfo->ilOffset = 0;
+            pInfo->ilOffset = ilOffset;
             pInfo->probeIndex = info.compClassProbeCount++;
             pInfo->stubAddr = call->gtStubCallStubAddr;
 
