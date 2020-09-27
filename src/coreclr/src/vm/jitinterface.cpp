@@ -11939,14 +11939,14 @@ CORINFO_CLASS_HANDLE CEEJitInfo::getLikelyClass(
         MODE_PREEMPTIVE;
     } CONTRACTL_END;
 
-    JIT_TO_EE_TRANSITION();
-
     CORINFO_CLASS_HANDLE result = NULL;
 
-    // If TieredPGO is enabled we may have per call site class profiles.
+    JIT_TO_EE_TRANSITION();
 
 #ifdef FEATURE_PGO
 
+    // If TieredPGO is enabled, query the per call site class profile.
+    //
     MethodDesc* pMD = (MethodDesc*)ftnHnd;
     unsigned codeSize = 0;
     if (pMD->IsDynamicMethod())

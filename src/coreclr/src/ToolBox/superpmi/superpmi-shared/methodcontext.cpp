@@ -922,7 +922,7 @@ void MethodContext::recInitClass(CORINFO_FIELD_HANDLE   field,
 
     InitClass->Add(key, (DWORD)result);
     DEBUG_REC(dmpInitClass(key, (DWORD)result));
-o}
+}
 void MethodContext::dmpInitClass(const Agnostic_InitClass& key, DWORD value)
 {
     printf("InitClass key fld-%016llX meth-%016llX con-%016llX, value res-%u", key.field, key.method,
@@ -5231,14 +5231,14 @@ void MethodContext::recGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLAS
 
     Agnostic_GetLikelyClass key;
     ZeroMemory(&key, sizeof(Agnostic_GetLikelyClass));
-    key.ftnHnd = ftnHnd;
-    key.baseHnd = baseHnd;
-    key.ilOffset = ilOffset;
+    key.ftnHnd = (DWORDLONG) ftnHnd;
+    key.baseHnd = (DWORDLONG) baseHnd;
+    key.ilOffset = (DWORD) ilOffset;
 
-    GetMethodClass->Add(key, (DWORDLONG)result);
+    GetLikelyClass->Add(key, (DWORDLONG)result);
     DEBUG_REC(dmpGetLikelyClass(info, (DWORDLONG)result));
 }
-void MethodContext::dmpGetLikelyClass(Agnostic_GetLikelyClass key, DWORDLONG value)
+void MethodContext::dmpGetLikelyClass(const Agnostic_GetLikelyClass& key, DWORDLONG value)
 {
     printf("GetLikelyClass key ftn-%016llX base-%016llX il-%u, class%016llX", key.ftnHnd, key.baseHnd, key.ilOffset, value);
 }
@@ -5246,11 +5246,11 @@ CORINFO_CLASS_HANDLE MethodContext::repGetLikelyClass(CORINFO_METHOD_HANDLE ftnH
 {
     Agnostic_GetLikelyClass key;
     ZeroMemory(&key, sizeof(Agnostic_GetLikelyClass));
-    key.ftnHnd = ftnHnd;
-    key.baseHnd = baseHnd;
-    key.ilOffset = ilOffset;
-    CORINFO_CLASS_HANDLE value = GetMethodClass->Get(key);
-    DEBUG_REP(dmpGetMethodClass(key, (DWORDLONG)value));
+    key.ftnHnd = (DWORDLONG) ftnHnd;
+    key.baseHnd = (DWORDLONG) baseHnd;
+    key.ilOffset = (DWORD) ilOffset;
+    CORINFO_CLASS_HANDLE value = (CORINFO_CLASS_HANDLE) GetLikelyClass->Get(key);
+    DEBUG_REP(dmpGetLikelyClass(key, (DWORDLONG)value));
     return value;
 }
 

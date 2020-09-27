@@ -440,7 +440,7 @@ public:
     {
         DWORDLONG ftnHnd;
         DWORDLONG baseHnd;
-        DOWORD    ilOffset;
+        DWORD     ilOffset;
     };
 
     struct Agnostic_GetProfilingHandle
@@ -1197,6 +1197,10 @@ public:
                                     ICorJitInfo::BlockCounts**   pBlockCounts,
                                     UINT32 *                     pNumRuns);
 
+    void recGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset, CORINFO_CLASS_HANDLE result);
+    void dmpGetLikelyClass(const Agnostic_GetLikelyClass& key, DWORDLONG value);
+    CORINFO_CLASS_HANDLE repGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset);
+
     void recMergeClasses(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE cls2, CORINFO_CLASS_HANDLE result);
     void dmpMergeClasses(DLDL key, DWORDLONG value);
     CORINFO_CLASS_HANDLE repMergeClasses(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE cls2);
@@ -1352,7 +1356,7 @@ private:
 };
 
 // ********************* Please keep this up-to-date to ease adding more ***************
-// Highest packet number: 179
+// Highest packet number: 181
 // *************************************************************************************
 enum mcPackets
 {
@@ -1451,7 +1455,7 @@ enum mcPackets
     Packet_GetJitFlags                                   = 154, // Added 2/3/2016
     Packet_GetJitTimeLogFilename                         = 67,
     Packet_GetJustMyCodeHandle                           = 68,
-    Packet_GetLikelyClass                                = 179, // Added 9/27/2020
+    Packet_GetLikelyClass                                = 181, // Added 9/27/2020
     Packet_GetLocationOfThisType                         = 69,
     Packet_GetMethodAttribs                              = 70,
     Packet_GetMethodClass                                = 71,

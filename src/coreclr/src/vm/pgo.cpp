@@ -346,13 +346,13 @@ struct ClassProfileEntry
 {
     uint ilOffset;
     uint count;
-    MethodTable* table[4];
+    CORINFO_CLASS_HANDLE table[4];
 };
 
 struct HistogramEntry
 {
-    MethodTable* m_mt;
-    uint         m_count;
+    CORINFO_CLASS_HANDLE m_mt;
+    uint                 m_count;
 };
 
 CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset)
@@ -407,9 +407,9 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                if (&s_PgoData[index + j].IlOffset >= countILOffset)
+                if (s_PgoData[index + j].ILOffset >= countILOffset)
                 {
-                    countILOffset = &s_PgoData[index + j].IlOffset;
+                    countILOffset = s_PgoData[index + j].ILOffset;
                     j++;
                     continue;
                 }
@@ -420,7 +420,7 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                if (&s_PgoData[index + j].IlOffset != ilOffset)
+                if (s_PgoData[index + j].ILOffset != ilOffset)
                 {
                     j += 5;     // make this a global constant
                     continue;
@@ -448,7 +448,8 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                     }
 
                     bool found = false;
-                    for (int h = 0; h < histogramCount; h++)
+                    int h = 0;
+                    for(; h < histogramCount; h++)
                     {
                         if (histogram[h].m_mt == currentEntry)
                         {
