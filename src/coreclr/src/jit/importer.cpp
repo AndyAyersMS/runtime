@@ -20557,46 +20557,41 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
             return;
         }
 
-        CORINFO_CLASS_HANDLE uniqueImplementingClass = NO_CLASS_HANDLE;
+        // pass objClass here, or baseClass?
+        // always query, or do so under condition?
+        //
+        CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.compMethodHnd,
+            baseClass, ilOffset);
 
-        // info.compCompHnd->getUniqueImplementingClass(objClass);
-
-        if (uniqueImplementingClass == NO_CLASS_HANDLE)
+        if (likelyImplementingClass == NO_CLASS_HANDLE)
         {
-            JITDUMP("No unique implementor of interface %p (%s), sorry\n", dspPtr(objClass), objClassName);
+            JITDUMP("No likely implementor of interface %p (%s), sorry\n", dspPtr(objClass), objClassName);
             return;
         }
-
-        JITDUMP("Only known implementor of interface %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
-                uniqueImplementingClass, eeGetClassName(uniqueImplementingClass));
-
-        bool guessUniqueInterface = true;
-
-        INDEBUG(guessUniqueInterface = (JitConfig.JitGuardedDevirtualizationGuessUniqueInterface() > 0););
-
-        if (!guessUniqueInterface)
+        else
         {
-            JITDUMP("Guarded devirt for unique interface implementor is not enabled, sorry\n");
-            return;
+            JITDUMP("Likely implementor of interface %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
+                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
         }
 
-        // Ask the runtime to determine the method that would be called based on the guessed-for type.
+        // Ask the runtime to determine the method that would be called based on the likely type.
+        //
         CORINFO_CONTEXT_HANDLE ownerType = *contextHandle;
-        CORINFO_METHOD_HANDLE  uniqueImplementingMethod =
-            info.compCompHnd->resolveVirtualMethod(baseMethod, uniqueImplementingClass, ownerType);
+        CORINFO_METHOD_HANDLE  likelyImplementingMethod =
+            info.compCompHnd->resolveVirtualMethod(baseMethod, likelyImplementingClass, ownerType);
 
-        if (uniqueImplementingMethod == nullptr)
+        if (likelyImplementingMethod == nullptr)
         {
             JITDUMP("Can't figure out which method would be invoked, sorry\n");
             return;
         }
 
-        JITDUMP("Interface call would invoke method %s\n", eeGetMethodName(uniqueImplementingMethod, nullptr));
-        DWORD uniqueMethodAttribs = info.compCompHnd->getMethodAttribs(uniqueImplementingMethod);
-        DWORD uniqueClassAttribs  = info.compCompHnd->getClassAttribs(uniqueImplementingClass);
+        JITDUMP("Interface call would invoke method %s\n", eeGetMethodName(likelyImplementingMethod, nullptr));
+        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyImplementingMethod);
+        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyImplementingClass);
 
-        addGuardedDevirtualizationCandidate(call, uniqueImplementingMethod, uniqueImplementingClass,
-                                            uniqueMethodAttribs, uniqueClassAttribs);
+        addGuardedDevirtualizationCandidate(call, likelyImplementingMethod, likelyImplementingClass,
+                                            likelyMethodAttribs, likelyClassAttribs);
         return;
     }
 
@@ -20662,15 +20657,50 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
     if (!canDevirtualize)
     {
         JITDUMP("    Class not final or exact%s\n", isInterface ? "" : ", and method not final");
+        JITDUMP("     ... todo -- fix this for likely class\n");
+        return;
 
-        // Have we enabled guarded devirtualization by guessing the jit's best class?
-        bool guessJitBestClass = true;
-        INDEBUG(guessJitBestClass = (JitConfig.JitGuardedDevirtualizationGuessBestClass() > 0););
+#if 0
+        // We need to go back through some of the path above with the likely implementing
+        // class...
+        //
+        // pass objClass here, or baseClass?
+        // always query, or do so under condition?
+        //
+        CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.xxx, 
+            baseClass, ilOffset);
+        CORINFO_METHOD_BNANDLE likelyMethod = NO_METHOD_HANDLE;
 
-        if (!guessJitBestClass)
+        if (likelyImplementingClass == NO_CLASS_HANDLE)
         {
-            JITDUMP("No guarded devirt: guessing for jit best class disabled\n");
-            return;
+            JITDUMP("No likely implementor for class %p (%s)\n", dspPtr(objClass), objClassName);
+        }
+        else
+        {
+            JITDUMP("Likely implementor for class %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
+                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
+
+            likelyMethod = 
+        }
+
+        if (likelyImplementingClass == NO_CLASS_HANDLE)
+        {
+            // Have we enabled guarded devirtualization by guessing the jit's best class?
+            bool guessJitBestClass = true;
+            INDEBUG(guessJitBestClass = (JitConfig.JitGuardedDevirtualizationGuessBestClass() > 0););
+
+            if (!guessJitBestClass)
+            {
+                JITDUMP("No guarded devirt: no likely class and guessing for jit best class disabled\n");
+                return;
+            }
+
+            // We will use the class that introduced the method as our guess
+            // for the runtime class of othe object.
+            likelyImplementingClass = info.compCompHnd->getMethodClass(derivedMethod);
+
+            JITDUMP("Will guess implementing class for class %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
+                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
         }
 
         // Don't try guarded devirtualiztion when we're doing late devirtualization.
@@ -20680,13 +20710,18 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
             return;
         }
 
-        // We will use the class that introduced the method as our guess
-        // for the runtime class of othe object.
-        CORINFO_CLASS_HANDLE derivedClass = info.compCompHnd->getMethodClass(derivedMethod);
+        // Some of these may be redundant
+        //
+        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyImplementingMethod);
+        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyImplementingClass);
 
         // Try guarded devirtualization.
-        addGuardedDevirtualizationCandidate(call, derivedMethod, derivedClass, derivedMethodAttribs, objClassAttribs);
+        //
+        addGuardedDevirtualizationCandidate(call, derivedMethod, likelyImplementingClass, derivedMethodAttribs, objClassAttribs);
         return;
+
+#endif
+
     }
 
     // All checks done. Time to transform the call.

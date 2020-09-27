@@ -5381,8 +5381,9 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
         if ((x % N) < SIZE)
         {
             int i = x % SIZE + 1;
+
+            updated = (entry->table[i] != pMT);
             entry->table[i] = pMT;
-            updated = true;
         }
     }
 

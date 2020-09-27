@@ -442,7 +442,7 @@ void Compiler::fgInstrumentMethod()
     // For now we'll use N=5 -- that is 40 bytes per class profile probe.
     //
     const unsigned entriesPerCall = 5;
-    const unsigned totalEntries = countOfBlocks + entriesPerCall * countOfCalls;
+    const unsigned totalEntries = countOfBlocks + entriesPerCall * countOfCalls + 2; // hack
     ICorJitInfo::BlockCounts* profileBlockCountsStart = nullptr;
 
     HRESULT res = info.compCompHnd->allocMethodBlockCounts(totalEntries, &profileBlockCountsStart);
