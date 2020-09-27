@@ -435,6 +435,14 @@ public:
         DWORD numRuns;
         DWORD result;
     };
+
+    struct Agnostic_GetLikelyClass
+    {
+        DWORDLONG ftnHnd;
+        DWORDLONG baseHnd;
+        DOWORD    ilOffset;
+    };
+
     struct Agnostic_GetProfilingHandle
     {
         DWORD     bHookFunction;
@@ -1344,7 +1352,7 @@ private:
 };
 
 // ********************* Please keep this up-to-date to ease adding more ***************
-// Highest packet number: 178
+// Highest packet number: 179
 // *************************************************************************************
 enum mcPackets
 {
@@ -1443,6 +1451,7 @@ enum mcPackets
     Packet_GetJitFlags                                   = 154, // Added 2/3/2016
     Packet_GetJitTimeLogFilename                         = 67,
     Packet_GetJustMyCodeHandle                           = 68,
+    Packet_GetLikelyClass                                = 179, // Added 9/27/2020
     Packet_GetLocationOfThisType                         = 69,
     Packet_GetMethodAttribs                              = 70,
     Packet_GetMethodClass                                = 71,

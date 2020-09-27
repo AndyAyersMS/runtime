@@ -313,6 +313,11 @@ public:
             ICorJitInfo::BlockCounts ** pBlockCounts,
             UINT32 * pNumRuns);
 
+    CORINFO_CLASS_HANDLE getLikelyClass(
+            CORINFO_METHOD_HANDLE ftnHnd,
+            CORINFO_CLASS_HANDLE  baseHnd,
+            UINT32                ilOffset);
+
     DWORD getJitFlags(CORJIT_FLAGS* jitFlags, DWORD sizeInBytes);
 
     bool runWithErrorTrap(void (*function)(void*), void* param);

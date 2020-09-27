@@ -922,7 +922,7 @@ void MethodContext::recInitClass(CORINFO_FIELD_HANDLE   field,
 
     InitClass->Add(key, (DWORD)result);
     DEBUG_REC(dmpInitClass(key, (DWORD)result));
-}
+o}
 void MethodContext::dmpInitClass(const Agnostic_InitClass& key, DWORD value)
 {
     printf("InitClass key fld-%016llX meth-%016llX con-%016llX, value res-%u", key.field, key.method,
@@ -5222,6 +5222,36 @@ HRESULT MethodContext::repGetMethodBlockCounts(CORINFO_METHOD_HANDLE        ftnH
     *pNumRuns      = (UINT32)tempValue.numRuns;
     HRESULT result = (HRESULT)tempValue.result;
     return result;
+}
+
+void MethodContext::recGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE baseHnd, UINT32 ilOffset, CORINFO_CLASS_HANDLE result)
+{
+    if (GetLikelyClass == nullptr)
+        GetLikelyClass = new LightWeightMap<Agnostic_GetLikelyClass, DWORDLONG>();
+
+    Agnostic_GetLikelyClass key;
+    ZeroMemory(&key, sizeof(Agnostic_GetLikelyClass));
+    key.ftnHnd = ftnHnd;
+    key.baseHnd = baseHnd;
+    key.ilOffset = ilOffset;
+
+    GetMethodClass->Add(key, (DWORDLONG)result);
+    DEBUG_REC(dmpGetLikelyClass(info, (DWORDLONG)result));
+}
+void MethodContext::dmpGetLikelyClass(Agnostic_GetLikelyClass key, DWORDLONG value)
+{
+    printf("GetLikelyClass key ftn-%016llX base-%016llX il-%u, class%016llX", key.ftnHnd, key.baseHnd, key.ilOffset, value);
+}
+CORINFO_CLASS_HANDLE MethodContext::repGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE baseHnd, UINT32 ilOffset)
+{
+    Agnostic_GetLikelyClass key;
+    ZeroMemory(&key, sizeof(Agnostic_GetLikelyClass));
+    key.ftnHnd = ftnHnd;
+    key.baseHnd = baseHnd;
+    key.ilOffset = ilOffset;
+    CORINFO_CLASS_HANDLE value = GetMethodClass->Get(key);
+    DEBUG_REP(dmpGetMethodClass(key, (DWORDLONG)value));
+    return value;
 }
 
 void MethodContext::recMergeClasses(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE cls2, CORINFO_CLASS_HANDLE result)
