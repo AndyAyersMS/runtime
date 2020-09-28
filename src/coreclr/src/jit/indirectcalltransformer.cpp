@@ -506,7 +506,7 @@ private:
     {
     public:
         GuardedDevirtualizationTransformer(Compiler* compiler, BasicBlock* block, Statement* stmt)
-            : Transformer(compiler, block, stmt), returnTemp(BAD_VAR_NUM)
+            : Transformer(compiler, block, stmt), returnTemp(BAD_VAR_NUM), likelihood(0)
         {
         }
 
@@ -545,6 +545,9 @@ private:
                 }
                 return;
             }
+
+            likelihood = origCall->gtGuardedDevirtualizationCandidateInfo->likelihood;
+            assert((likelihood >= 0) && (likelihood <= 100));
 
             Transform();
         }
@@ -686,6 +689,7 @@ private:
         {
             thenBlock = CreateAndInsertBasicBlock(BBJ_ALWAYS, checkBlock);
             thenBlock->bbFlags |= currBlock->bbFlags & BBF_SPLIT_GAINED;
+            thenBlock->inheritWeightPercentage(checkBlock, likelihood);
 
             InlineCandidateInfo* inlineInfo = origCall->gtInlineCandidateInfo;
             CORINFO_CLASS_HANDLE clsHnd     = inlineInfo->clsHandle;
@@ -760,6 +764,8 @@ private:
         {
             elseBlock = CreateAndInsertBasicBlock(BBJ_NONE, thenBlock);
             elseBlock->bbFlags |= currBlock->bbFlags & BBF_SPLIT_GAINED;
+            elseBlock->inheritWeightPercentage(checkBlock, 100 - likelihood);
+
             GenTreeCall* call    = origCall;
             Statement*   newStmt = compiler->gtNewStmt(call);
 
@@ -794,6 +800,7 @@ private:
 
     private:
         unsigned returnTemp;
+        unsigned likelihood;
     };
 
     // Runtime lookup with dynamic dictionary expansion transformer,

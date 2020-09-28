@@ -20563,6 +20563,10 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
         CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.compMethodHnd,
             baseClass, ilOffset);
 
+        // todo: get this from PGO too
+        //
+        unsigned likelihood = 80;
+
         if (likelyImplementingClass == NO_CLASS_HANDLE)
         {
             JITDUMP("No likely implementor of interface %p (%s), sorry\n", dspPtr(objClass), objClassName);
@@ -20591,7 +20595,7 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
         DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyImplementingClass);
 
         addGuardedDevirtualizationCandidate(call, likelyImplementingMethod, likelyImplementingClass,
-                                            likelyMethodAttribs, likelyClassAttribs);
+                                            likelyMethodAttribs, likelyClassAttribs, likelihood);
         return;
     }
 
@@ -21121,12 +21125,14 @@ void Compiler::addFatPointerCandidate(GenTreeCall* call)
 //    classHandle - class that will be tested for at runtime
 //    methodAttr - attributes of the method
 //    classAttr - attributes of the class
+//    likelihood - odds that this class is the class seen at runtime
 //
 void Compiler::addGuardedDevirtualizationCandidate(GenTreeCall*          call,
                                                    CORINFO_METHOD_HANDLE methodHandle,
                                                    CORINFO_CLASS_HANDLE  classHandle,
                                                    unsigned              methodAttr,
-                                                   unsigned              classAttr)
+                                                   unsigned              classAttr,
+                                                   unsigned              likelihood)
 {
     // This transformation only makes sense for virtual calls
     assert(call->IsVirtual());
@@ -21182,6 +21188,7 @@ void Compiler::addGuardedDevirtualizationCandidate(GenTreeCall*          call,
 
     pInfo->guardedMethodHandle = methodHandle;
     pInfo->guardedClassHandle  = classHandle;
+    pInfo->likelihood          = likelihood;
 
     // Save off the stub address since it shares a union with the candidate info.
     if (call->IsVirtualStub())

@@ -592,7 +592,7 @@ struct BasicBlock : private LIR::Range
 
     // Similar to inheritWeight(), but we're splitting a block (such as creating blocks for qmark removal).
     // So, specify a percentage (0 to 99; if it's 100, just use inheritWeight()) of the weight that we're
-    // going to inherit. Since the number isn't exact, clear the BBF_PROF_WEIGHT flag.
+    // going to inherit.
     void inheritWeightPercentage(BasicBlock* bSrc, unsigned percentage)
     {
         assert(0 <= percentage && percentage < 100);
@@ -607,7 +607,14 @@ struct BasicBlock : private LIR::Range
             this->bbWeight = bSrc->bbWeight * percentage / 100;
         }
 
-        this->bbFlags &= ~BBF_PROF_WEIGHT;
+        if (bSrc->hasProfileWeight())
+        {
+            this->bbFlags |= BBF_PROF_WEIGHT;
+        }
+        else
+        {
+            this->bbFlags &= ~BBF_PROF_WEIGHT;
+        }
 
         if (this->bbWeight == 0)
         {
