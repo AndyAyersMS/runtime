@@ -286,6 +286,8 @@ HRESULT PgoManager::allocMethodBlockCounts(MethodDesc* pMD, UINT32 count,
 HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT32* pCount,
     ICorJitInfo::BlockCounts** pBlockCounts, UINT32* pNumRuns)
 {
+    // printf("**** getMethodBlockCounts for %p (ilSize=%u)\n", pMD, ilSize);
+
     // Initialize our out params
     *pCount = 0;
     *pBlockCounts = NULL;
@@ -315,6 +317,8 @@ HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT3
         //
         Header* const header = (Header*)&s_PgoData[index];
 
+        // printf("... checking entry %u at %p\n", index, header);
+
         // Sanity check that header data looks reasonable. If not, just
         // fail the lookup.
         //
@@ -327,6 +331,8 @@ HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT3
         //
         if ((header->token == token) && (header->hash == hash) && (header->ilSize == ilSize))
         {
+            // printf(" ... found match\n");
+
             // Yep, found data.
             //
             *pBlockCounts = &s_PgoData[index + 2];
@@ -357,12 +363,12 @@ struct HistogramEntry
 
 CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset)
 {
-    printf("**** getLikelyClass for %p (ilSize=%u) at offset %u\n", pMD, ilSize, ilOffset);
+    // printf("**** getLikelyClass for %p (ilSize=%u) at offset %u\n", pMD, ilSize, ilOffset);
     // Bail if there's no profile data.
     //
     if (s_PgoData == NULL)
     {
-        printf("... no pgo data, sorry\n");
+        // printf("... no pgo data, sorry\n");
         return NULL;
     }
 
@@ -382,6 +388,8 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
         //
         Header* const header = (Header*)&s_PgoData[index];
 
+        // printf("... checking entry %u at %p\n", index, header);
+
         // Sanity check that header data looks reasonable. If not, just
         // fail the lookup.
         //
@@ -394,7 +402,8 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
         //
         if ((header->token == token) && (header->hash == hash) && (header->ilSize == ilSize))
         {
-            printf("... found counts for method\n");
+            // printf("... found match for method\n");
+
             // Yep, found data. See if there is a suitable class profile.
             //
             // This bit is currently somewhat hacky ... we scan the records, the count records come
@@ -410,12 +419,15 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                if (s_PgoData[index + j].ILOffset >= countILOffset)
+                // printf("... at %p, il offset is %u\n", &s_PgoData[index + j], s_PgoData[index + j].ILOffset);
+
+                if (s_PgoData[index + j].ILOffset < countILOffset)
                 {
-                    countILOffset = s_PgoData[index + j].ILOffset;
-                    j++;
-                    continue;
+                    break;
                 }
+
+                countILOffset = s_PgoData[index + j].ILOffset;
+                j++;
             }
 
             // Now we're in the "class profile" portion of the slab for this method.
@@ -423,7 +435,7 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                printf("... class profile at entry %u is for offset %u\n", j, s_PgoData[index + j].ILOffset);
+                // printf("... class profile at entry %u is for offset %u\n", j, s_PgoData[index + j].ILOffset);
                 if (s_PgoData[index + j].ILOffset != ilOffset)
                 {
                     j += 5;     // make this a global constant
@@ -437,13 +449,13 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                 // 
                 ClassProfileEntry* profileEntry = (ClassProfileEntry*)&s_PgoData[index + j];
 
-                printf("... class profile table=0x%p il=0x%X count=%u\n", profileEntry, profileEntry->ilOffset, profileEntry->count);
+                // printf("... class profile table=0x%p il=0x%X count=%u\n", profileEntry, profileEntry->ilOffset, profileEntry->count);
                 
                 for (int j = 0; j < 4; j++)
                 {
                     TypeHandle th(profileEntry->table[j]);
                     MethodTable* pMT = th.AsMethodTable();
-                    printf("    entry[%d] = 0x%p (%s)\n", j, pMT, pMT == NULL ? "" : pMT->GetDebugClassName());
+                    // printf("    entry[%d] = 0x%p (%s)\n", j, pMT, pMT == NULL ? "" : pMT->GetDebugClassName());
                 }
 
                 // Build the histogram
@@ -476,11 +488,11 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                     {
                         histogram[h].m_mt = currentEntry;
                         histogram[h].m_count = 1;
-                        h++;
+                        histogramCount++;
                     }
                 }
 
-                printf("... histogram has %u entries!\n", histogramCount);
+                // printf("... histogram has %u entries!\n", histogramCount);
 
                 // Now pick the most frequently occurring type.
 
@@ -527,12 +539,17 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                     // 0 cases: we never hit this case at tier0.
                     //
                     // 4 cases... counts must be 1/1/1/1, no clear winner
+                    //
+                    // data shows we can win if there's one case that
+                    // is 0.3 or higher, we don't have that (though
+                    // admittedly we don't have a lot of precision with
+                    // 4 entries either).
                     return NULL;
                 }
             }
 
             // Failed to find a class profile entry
-            printf("... no class profile data for this method, sorry\n");
+            // printf("... no class profile data for this method, sorry\n");
             return NULL;
         }
 
@@ -541,7 +558,7 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
     }
 
     // Failed to find any sort of profile data
-    printf("... no pgo data for this method, sorry\n");
+    // printf("... no pgo data for this method, sorry\n");
     return NULL;
 }
 

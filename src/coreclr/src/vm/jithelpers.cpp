@@ -5387,6 +5387,7 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
         }
     }
 
+#if 0
     if (updated)
     {
         printf("*** class profile table=0x%p il=0x%X count=%u\n", entry, entry->ilOffset, entry->count);
@@ -5397,6 +5398,7 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
             printf("    entry[%d] = 0x%p (%s)\n", j, pTableMT, pTableMT == NULL ? "" : pTableMT->GetDebugClassName());
         }
     }
+#endif
 
     HELPER_METHOD_FRAME_END();
 }
