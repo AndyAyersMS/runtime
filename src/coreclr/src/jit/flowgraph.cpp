@@ -387,7 +387,7 @@ bool Compiler::fgGetProfileWeightForBasicBlock(IL_OFFSET offset, unsigned* weigh
 // Note:
 //
 //   By default this instruments each non-internal block with
-//   a counter probe. 
+//   a counter probe.
 //
 //   Probes data is held in a runtime-allocated slab of Entries, with
 //   each Entry an (IL offset, count) pair. This method determines
@@ -395,7 +395,7 @@ bool Compiler::fgGetProfileWeightForBasicBlock(IL_OFFSET offset, unsigned* weigh
 //
 //   Options (many not yet implemented):
 //   * suppress count instrumentation for methods with
-//     a single block, or 
+//     a single block, or
 //   * instrument internal blocks (requires same internal expansions
 //     for BBOPT and BBINSTR, not yet guaranteed)
 //   * use spanning tree for minimal count probing
@@ -410,7 +410,7 @@ void Compiler::fgInstrumentMethod()
     // Optionally, count up the number of calls that need probing.
     //
     int         countOfBlocks = 0;
-    int         countOfCalls = info.compClassProbeCount;
+    int         countOfCalls  = info.compClassProbeCount;
     BasicBlock* block;
     for (block = fgFirstBB; (block != nullptr); block = block->bbNext)
     {
@@ -441,8 +441,8 @@ void Compiler::fgInstrumentMethod()
     // Buffer size is one entry for each block, and N entries for each call.
     // For now we'll use N=5 -- that is 40 bytes per class profile probe.
     //
-    const unsigned entriesPerCall = 5;
-    const unsigned totalEntries = countOfBlocks + entriesPerCall * countOfCalls + 2; // hack
+    const unsigned            entriesPerCall          = 5;
+    const unsigned            totalEntries            = countOfBlocks + entriesPerCall * countOfCalls + 2; // hack
     ICorJitInfo::BlockCounts* profileBlockCountsStart = nullptr;
 
     HRESULT res = info.compCompHnd->allocMethodBlockCounts(totalEntries, &profileBlockCountsStart);
@@ -462,18 +462,18 @@ void Compiler::fgInstrumentMethod()
         }
     }
 
-    ICorJitInfo::BlockCounts* profileBlockCountsEnd = &profileBlockCountsStart[countOfBlocks]; 
-    ICorJitInfo::BlockCounts* profileEnd = &profileBlockCountsStart[totalEntries];
+    ICorJitInfo::BlockCounts* profileBlockCountsEnd = &profileBlockCountsStart[countOfBlocks];
+    ICorJitInfo::BlockCounts* profileEnd            = &profileBlockCountsStart[totalEntries];
 
     // For each BasicBlock (non-Internal)
     //  1. Assign the blocks bbCodeOffs to the ILOffset field of this blocks profile data.
     //  2. Add an operation that increments the ExecutionCount field at the beginning of the block.
-    
+
     // Each (non-Internal) block has it own BlockCounts tuple [ILOffset, ExecutionCount]
     // To start we initialize our current one with the first one that we allocated
     //
     ICorJitInfo::BlockCounts* currentBlockCounts = profileBlockCountsStart;
-    
+
     for (block = fgFirstBB; (block != nullptr); block = block->bbNext)
     {
         if (JitConfig.JitClassProfiling() > 0)
@@ -491,12 +491,20 @@ void Compiler::fgInstrumentMethod()
                 class ClassProbeVisitor final : public GenTreeVisitor<ClassProbeVisitor>
                 {
                 public:
-                    enum { DoPreOrder = true };
-                    int m_count;
-                    int m_tableSize;
+                    enum
+                    {
+                        DoPreOrder = true
+                    };
+                    int                       m_count;
+                    int                       m_tableSize;
                     ICorJitInfo::BlockCounts* m_countsEnd;
-                    ClassProbeVisitor(Compiler* compiler, int tableSize, ICorJitInfo::BlockCounts* countsEnd) : 
-                        GenTreeVisitor<ClassProbeVisitor>(compiler), m_count(0), m_tableSize(tableSize), m_countsEnd(countsEnd) {}
+                    ClassProbeVisitor(Compiler* compiler, int tableSize, ICorJitInfo::BlockCounts* countsEnd)
+                        : GenTreeVisitor<ClassProbeVisitor>(compiler)
+                        , m_count(0)
+                        , m_tableSize(tableSize)
+                        , m_countsEnd(countsEnd)
+                    {
+                    }
                     Compiler::fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
                     {
                         GenTree* const node = *use;
@@ -505,9 +513,9 @@ void Compiler::fgInstrumentMethod()
                             GenTreeCall* const call = node->AsCall();
                             if (call->IsVirtual())
                             {
-                                JITDUMP("Found call [%06u] with probe index %d and ilOffset 0x%X\n", m_compiler->dspTreeID(call),
-                                    call->gtClassProfileCandidateInfo->probeIndex, 
-                                    call->gtClassProfileCandidateInfo->ilOffset);
+                                JITDUMP("Found call [%06u] with probe index %d and ilOffset 0x%X\n",
+                                        m_compiler->dspTreeID(call), call->gtClassProfileCandidateInfo->probeIndex,
+                                        call->gtClassProfileCandidateInfo->ilOffset);
 
                                 m_count++;
 
@@ -525,7 +533,8 @@ void Compiler::fgInstrumentMethod()
                                 assert(call->gtCallThisArg->GetNode()->TypeGet() == TYP_REF);
 
                                 // Figure out where the table is located. Each probe uses tableSize entries.
-                                ICorJitInfo::BlockCounts* tableAddress = &m_countsEnd[m_tableSize * call->gtClassProfileCandidateInfo->probeIndex];
+                                ICorJitInfo::BlockCounts* tableAddress =
+                                    &m_countsEnd[m_tableSize * call->gtClassProfileCandidateInfo->probeIndex];
 
                                 // assert(tableAddress < profileEnd);
 
@@ -536,16 +545,21 @@ void Compiler::fgInstrumentMethod()
 
                                 // Generate the IR...
                                 //
-                                GenTree* const tableAddressNode = m_compiler->gtNewIconNode((ssize_t) tableAddress, TYP_I_IMPL);
-                                GenTree* const tmpNode = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
-                                GenTreeCall::Use* const args = m_compiler->gtNewCallArgs(tmpNode, tableAddressNode);
-                                GenTree* const helperCallNode = m_compiler->gtNewHelperCallNode(CORINFO_HELP_CLASSPROFILE, TYP_VOID, args);
+                                GenTree* const tableAddressNode =
+                                    m_compiler->gtNewIconNode((ssize_t)tableAddress, TYP_I_IMPL);
+                                GenTree* const          tmpNode = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
+                                GenTreeCall::Use* const args    = m_compiler->gtNewCallArgs(tmpNode, tableAddressNode);
+                                GenTree* const          helperCallNode =
+                                    m_compiler->gtNewHelperCallNode(CORINFO_HELP_CLASSPROFILE, TYP_VOID, args);
                                 GenTree* const tmpNode2 = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
-                                GenTree* const callCommaNode = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, helperCallNode, tmpNode2);
+                                GenTree* const callCommaNode =
+                                    m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, helperCallNode, tmpNode2);
                                 GenTree* const tmpNode3 = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
-                                GenTree* const asgNode = m_compiler->gtNewOperNode(GT_ASG, TYP_REF, tmpNode3, call->gtCallThisArg->GetNode());
-                                GenTree* const asgCommaNode = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, asgNode, callCommaNode);
-                                
+                                GenTree* const asgNode  = m_compiler->gtNewOperNode(GT_ASG, TYP_REF, tmpNode3,
+                                                                                   call->gtCallThisArg->GetNode());
+                                GenTree* const asgCommaNode =
+                                    m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, asgNode, callCommaNode);
+
                                 // Update the call
                                 //
                                 call->gtCallThisArg->SetNode(asgCommaNode);
@@ -557,7 +571,8 @@ void Compiler::fgInstrumentMethod()
                                 //
                                 for (int i = 0; i < m_tableSize; i++)
                                 {
-                                    tableAddress[i].ILOffset = (i == 0) ? jitGetILoffs(call->gtClassProfileCandidateInfo->ilOffset) : 0;
+                                    tableAddress[i].ILOffset =
+                                        (i == 0) ? jitGetILoffs(call->gtClassProfileCandidateInfo->ilOffset) : 0;
                                     tableAddress[i].ExecutionCount = 0;
                                 }
 
@@ -566,7 +581,7 @@ void Compiler::fgInstrumentMethod()
                                 call->gtStubCallStubAddr = call->gtClassProfileCandidateInfo->stubAddr;
                             }
                         }
-                            
+
                         return Compiler::WALK_CONTINUE;
                     }
                 };
@@ -595,29 +610,28 @@ void Compiler::fgInstrumentMethod()
         {
             continue;
         }
-        
+
         // Assign the current block's IL offset into the profile data
         currentBlockCounts->ILOffset       = block->bbCodeOffs;
         currentBlockCounts->ExecutionCount = 0;
-        
+
         size_t addrOfCurrentExecutionCount = (size_t)&currentBlockCounts->ExecutionCount;
-        
+
         // Read Basic-Block count value
-        GenTree* valueNode =
-            gtNewIndOfIconHandleNode(TYP_INT, addrOfCurrentExecutionCount, GTF_ICON_BBC_PTR, false);
-        
+        GenTree* valueNode = gtNewIndOfIconHandleNode(TYP_INT, addrOfCurrentExecutionCount, GTF_ICON_BBC_PTR, false);
+
         // Increment value by 1
         GenTree* rhsNode = gtNewOperNode(GT_ADD, TYP_INT, valueNode, gtNewIconNode(1));
-        
+
         // Write new Basic-Block count value
         GenTree* lhsNode = gtNewIndOfIconHandleNode(TYP_INT, addrOfCurrentExecutionCount, GTF_ICON_BBC_PTR, false);
         GenTree* asgNode = gtNewAssignNode(lhsNode, rhsNode);
-        
+
         fgNewStmtAtBeg(block, asgNode);
-        
+
         // Advance to the next BlockCounts tuple [ILOffset, ExecutionCount]
         currentBlockCounts++;
-        
+
         // One less block
         countOfBlocks--;
     }
@@ -632,20 +646,20 @@ void Compiler::fgInstrumentMethod()
     if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT))
     {
         GenTree* arg;
-        
+
 #ifdef FEATURE_READYTORUN_COMPILER
         if (opts.IsReadyToRun())
         {
             mdMethodDef currentMethodToken = info.compCompHnd->getMethodDefFromMethod(info.compMethodHnd);
-            
+
             CORINFO_RESOLVED_TOKEN resolvedToken;
             resolvedToken.tokenContext = MAKE_METHODCONTEXT(info.compMethodHnd);
             resolvedToken.tokenScope   = info.compScopeHnd;
             resolvedToken.token        = currentMethodToken;
             resolvedToken.tokenType    = CORINFO_TOKENKIND_Method;
-            
+
             info.compCompHnd->resolveToken(&resolvedToken);
-            
+
             arg = impTokenToHandle(&resolvedToken);
         }
         else
@@ -653,22 +667,22 @@ void Compiler::fgInstrumentMethod()
         {
             arg = gtNewIconEmbMethHndNode(info.compMethodHnd);
         }
-        
+
         GenTreeCall::Use* args = gtNewCallArgs(arg);
         GenTree*          call = gtNewHelperCallNode(CORINFO_HELP_BBT_FCN_ENTER, TYP_VOID, args);
-        
+
         // Get the address of the first blocks ExecutionCount
         size_t addrOfFirstExecutionCount = (size_t)&profileBlockCountsStart->ExecutionCount;
-        
+
         // Read Basic-Block count value
         GenTree* valueNode = gtNewIndOfIconHandleNode(TYP_INT, addrOfFirstExecutionCount, GTF_ICON_BBC_PTR, false);
-        
+
         // Compare Basic-Block count value against zero
         GenTree*   relop = gtNewOperNode(GT_NE, TYP_INT, valueNode, gtNewIconNode(0, TYP_INT));
         GenTree*   colon = new (this, GT_COLON) GenTreeColon(TYP_VOID, gtNewNothingNode(), call);
         GenTree*   cond  = gtNewQmarkNode(TYP_VOID, relop, colon);
         Statement* stmt  = gtNewStmt(cond);
-        
+
         fgEnsureFirstBBisScratch();
         fgInsertStmtAtEnd(fgFirstBB, stmt);
     }

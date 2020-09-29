@@ -20378,16 +20378,18 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
         // we'd just keep track of the calls themselves, so we don't
         // have to search for them later.
         //
-        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_BBINSTR) && !opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT) && (JitConfig.JitClassProfiling() > 0) && !isLateDevirtualization)
+        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_BBINSTR) && !opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT) &&
+            (JitConfig.JitClassProfiling() > 0) && !isLateDevirtualization)
         {
-            JITDUMP("\n ... marking [%06u] in " FMT_BB " for class profile instrumentation\n", dspTreeID(call), compCurBB->bbNum);
+            JITDUMP("\n ... marking [%06u] in " FMT_BB " for class profile instrumentation\n", dspTreeID(call),
+                    compCurBB->bbNum);
             ClassProfileCandidateInfo* pInfo = new (this, CMK_Inlining) ClassProfileCandidateInfo;
-            
+
             // Record some info needed for the class profiling probe.
             //
-            pInfo->ilOffset = ilOffset;
+            pInfo->ilOffset   = ilOffset;
             pInfo->probeIndex = info.compClassProbeCount++;
-            pInfo->stubAddr = call->gtStubCallStubAddr;
+            pInfo->stubAddr   = call->gtStubCallStubAddr;
 
             // note this overwrites gtCallStubAddr, so it needs to be undone
             // during the instrumentation phase, or we won't generate proper
@@ -20557,46 +20559,55 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
             return;
         }
 
+        // Don't try guarded devirtualiztion when we're doing late devirtualization.
+        //
+        if (isLateDevirtualization)
+        {
+            JITDUMP("No guarded devirt during late devirtualization\n");
+            return;
+        }
+
+        JITDUMP("Consdering guarded devirt...\n");
+
         // pass objClass here, or baseClass?
         // always query, or do so under condition?
         //
-        unsigned likelihood = 0;
-        unsigned numberOfClasses = 0;
-        CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.compMethodHnd,
-            baseClass, ilOffset, &likelihood, &numberOfClasses);
+        unsigned             likelihood      = 0;
+        unsigned             numberOfClasses = 0;
+        CORINFO_CLASS_HANDLE likelyClass =
+            info.compCompHnd->getLikelyClass(info.compMethodHnd, baseClass, ilOffset, &likelihood, &numberOfClasses);
 
-        if (likelyImplementingClass == NO_CLASS_HANDLE)
+        if (likelyClass == NO_CLASS_HANDLE)
         {
             JITDUMP("No likely implementor of interface %p (%s), sorry\n", dspPtr(objClass), objClassName);
             return;
         }
         else
         {
-            JITDUMP("Likely implementor of interface %p (%s) is %p (%s) [likelihood:%u classes seen:%u]\n", 
-                dspPtr(objClass), objClassName, likelyImplementingClass, eeGetClassName(likelyImplementingClass),
-                likelihood, numberOfClasses);
+            JITDUMP("Likely implementor of interface %p (%s) is %p (%s) [likelihood:%u classes seen:%u]\n",
+                    dspPtr(objClass), objClassName, likelyClass, eeGetClassName(likelyClass), likelihood,
+                    numberOfClasses);
         }
 
         // Todo: some heuristic using likelihood, number of classes, and the profile count for this block.
 
         // Ask the runtime to determine the method that would be called based on the likely type.
         //
-        CORINFO_CONTEXT_HANDLE ownerType = *contextHandle;
-        CORINFO_METHOD_HANDLE  likelyImplementingMethod =
-            info.compCompHnd->resolveVirtualMethod(baseMethod, likelyImplementingClass, ownerType);
+        CORINFO_CONTEXT_HANDLE ownerType   = *contextHandle;
+        CORINFO_METHOD_HANDLE likelyMethod = info.compCompHnd->resolveVirtualMethod(baseMethod, likelyClass, ownerType);
 
-        if (likelyImplementingMethod == nullptr)
+        if (likelyMethod == nullptr)
         {
             JITDUMP("Can't figure out which method would be invoked, sorry\n");
             return;
         }
 
-        JITDUMP("Interface call would invoke method %s\n", eeGetMethodName(likelyImplementingMethod, nullptr));
-        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyImplementingMethod);
-        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyImplementingClass);
+        JITDUMP("Interface call would invoke method %s\n", eeGetMethodName(likelyMethod, nullptr));
+        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyMethod);
+        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyClass);
 
-        addGuardedDevirtualizationCandidate(call, likelyImplementingMethod, likelyImplementingClass,
-                                            likelyMethodAttribs, likelyClassAttribs, likelihood);
+        addGuardedDevirtualizationCandidate(call, likelyMethod, likelyClass, likelyMethodAttribs, likelyClassAttribs,
+                                            likelihood);
         return;
     }
 
@@ -20662,33 +20673,33 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
     if (!canDevirtualize)
     {
         JITDUMP("    Class not final or exact%s\n", isInterface ? "" : ", and method not final");
-        JITDUMP("     ... todo -- fix this for likely class\n");
-        return;
 
-#if 0
-        // We need to go back through some of the path above with the likely implementing
-        // class...
+        // Don't try guarded devirtualiztion when we're doing late devirtualization.
+        //
+        if (isLateDevirtualization)
+        {
+            JITDUMP("No guarded devirt during late devirtualization\n");
+            return;
+        }
+
+        JITDUMP("Consdering guarded devirt...\n");
+
+        // See if there's a likely guess for the class.
         //
         // pass objClass here, or baseClass?
         // always query, or do so under condition?
         //
-        CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.xxx, 
-            baseClass, ilOffset);
-        CORINFO_METHOD_BNANDLE likelyMethod = NO_METHOD_HANDLE;
+        unsigned             likelihood      = 0;
+        unsigned             numberOfClasses = 0;
+        CORINFO_CLASS_HANDLE likelyClass =
+            info.compCompHnd->getLikelyClass(info.compMethodHnd, baseClass, ilOffset, &likelihood, &numberOfClasses);
 
-        if (likelyImplementingClass == NO_CLASS_HANDLE)
+        if (likelyClass != NO_CLASS_HANDLE)
         {
-            JITDUMP("No likely implementor for class %p (%s)\n", dspPtr(objClass), objClassName);
+            JITDUMP("Likely class for %p (%s) is %p (%s) [likelihood:%u classes seen:%u]\n", dspPtr(objClass),
+                    objClassName, likelyClass, eeGetClassName(likelyClass), likelihood, numberOfClasses);
         }
         else
-        {
-            JITDUMP("Likely implementor for class %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
-                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
-
-            likelyMethod = 
-        }
-
-        if (likelyImplementingClass == NO_CLASS_HANDLE)
         {
             // Have we enabled guarded devirtualization by guessing the jit's best class?
             bool guessJitBestClass = true;
@@ -20702,31 +20713,35 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
 
             // We will use the class that introduced the method as our guess
             // for the runtime class of othe object.
-            likelyImplementingClass = info.compCompHnd->getMethodClass(derivedMethod);
+            likelyClass = info.compCompHnd->getMethodClass(derivedMethod);
 
             JITDUMP("Will guess implementing class for class %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
-                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
+                    likelyClass, eeGetClassName(likelyClass));
         }
 
-        // Don't try guarded devirtualiztion when we're doing late devirtualization.
-        if (isLateDevirtualization)
+        // Figure out which method will be called.
+        //
+        CORINFO_CONTEXT_HANDLE ownerType   = *contextHandle;
+        CORINFO_METHOD_HANDLE likelyMethod = info.compCompHnd->resolveVirtualMethod(baseMethod, likelyClass, ownerType);
+
+        if (likelyMethod == nullptr)
         {
-            JITDUMP("No guarded devirt during late devirtualization\n");
+            JITDUMP("Can't figure out which method would be invoked, sorry\n");
             return;
         }
 
+        JITDUMP("Virtual call would invoke method %s\n", eeGetMethodName(likelyMethod, nullptr));
+
         // Some of these may be redundant
         //
-        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyImplementingMethod);
-        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyImplementingClass);
+        DWORD likelyMethodAttribs = info.compCompHnd->getMethodAttribs(likelyMethod);
+        DWORD likelyClassAttribs  = info.compCompHnd->getClassAttribs(likelyClass);
 
         // Try guarded devirtualization.
         //
-        addGuardedDevirtualizationCandidate(call, derivedMethod, likelyImplementingClass, derivedMethodAttribs, objClassAttribs);
+        addGuardedDevirtualizationCandidate(call, likelyMethod, likelyClass, likelyMethodAttribs, likelyClassAttribs,
+                                            likelihood);
         return;
-
-#endif
-
     }
 
     // All checks done. Time to transform the call.

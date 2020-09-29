@@ -184,7 +184,6 @@ private:
     class Transformer
     {
     public:
-
         Transformer(Compiler* compiler, BasicBlock* block, Statement* stmt)
             : compiler(compiler), currBlock(block), stmt(stmt)
         {
