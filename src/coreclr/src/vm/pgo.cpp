@@ -348,13 +348,6 @@ HRESULT PgoManager::getMethodBlockCounts(MethodDesc* pMD, unsigned ilSize, UINT3
     return E_NOTIMPL;
 }
 
-struct ClassProfileEntry
-{
-    uint ilOffset;
-    uint count;
-    CORINFO_CLASS_HANDLE table[4];
-};
-
 struct HistogramEntry
 {
     CORINFO_CLASS_HANDLE m_mt;
@@ -391,8 +384,6 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
         //
         Header* const header = (Header*)&s_PgoData[index];
 
-        // printf("... checking entry %u at %p\n", index, header);
-
         // Sanity check that header data looks reasonable. If not, just
         // fail the lookup.
         //
@@ -405,8 +396,6 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
         //
         if ((header->token == token) && (header->hash == hash) && (header->ilSize == ilSize))
         {
-            // printf("... found match for method\n");
-
             // Yep, found data. See if there is a suitable class profile.
             //
             // This bit is currently somewhat hacky ... we scan the records, the count records come
@@ -422,8 +411,6 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                // printf("... at %p, il offset is %u\n", &s_PgoData[index + j], s_PgoData[index + j].ILOffset);
-
                 if (s_PgoData[index + j].ILOffset < countILOffset)
                 {
                     break;
@@ -438,38 +425,25 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             //
             while (j < header->recordCount)
             {
-                // printf("... class profile at entry %u is for offset %u\n", j, s_PgoData[index + j].ILOffset);
-                if (s_PgoData[index + j].ILOffset != ilOffset)
+                const ICorJitInfo::ClassProfile* const classProfile = (ICorJitInfo::ClassProfile*)&s_PgoData[index + j];
+
+                if (classProfile->ILOffset != ilOffset)
                 {
-                    j += 5;     // make this a global constant
+                    // Need to make sure this is even divisor
+                    //
+                    j += sizeof(ICorJitInfo::ClassProfile) / sizeof(ICorJitInfo::BlockCounts);
                     continue;
                 }
 
                 // This is the entry we want. Form a histogram...
                 //
-                // Currently table holds 4 entries that may be null
-                // or may be method table values.
-                // 
-                ClassProfileEntry* profileEntry = (ClassProfileEntry*)&s_PgoData[index + j];
-
-                // printf("... class profile table=0x%p il=0x%X count=%u\n", profileEntry, profileEntry->ilOffset, profileEntry->count);
-                
-                for (int j = 0; j < 4; j++)
-                {
-                    TypeHandle th(profileEntry->table[j]);
-                    MethodTable* pMT = th.AsMethodTable();
-                    // printf("    entry[%d] = 0x%p (%s)\n", j, pMT, pMT == NULL ? "" : pMT->GetDebugClassName());
-                }
-
-                // Build the histogram
-                //
-                HistogramEntry histogram[4];
+                HistogramEntry histogram[ICorJitInfo::ClassProfile::SIZE];
                 unsigned histogramCount = 0;
                 unsigned totalCount = 0;
 
-                for (int k = 0; k < 4; k++)
+                for (int k = 0; k < ICorJitInfo::ClassProfile::SIZE; k++)
                 {
-                    CORINFO_CLASS_HANDLE currentEntry = profileEntry->table[k];
+                    CORINFO_CLASS_HANDLE currentEntry = classProfile->ClassTable[k];
 
                     if (currentEntry == NULL)
                     {
@@ -507,6 +481,12 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                 // 
                 switch (histogramCount)
                 {
+                    case 0:
+                    {
+                        return NULL;
+                    }
+                    break;
+
                     case 1:
                     {
                         *pLikelihood = 100;
@@ -516,8 +496,6 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
 
                     case 2:
                     {
-                        // counts could be {3/1}, 2/2, {2/1}, 1/1
-                        //
                         if (histogram[0].m_count >= histogram[1].m_count)
                         {
                             *pLikelihood = (100 * histogram[0].m_count) / totalCount;
@@ -531,41 +509,28 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                     }
                     break;
 
-                    case 3:
+                    default:
                     {
-                        // Counts could be 1/1/1 or {2/1/1}
+                        // Find maximum entry and return it
                         //
-                        // If any entry has majority of counts, return it.
-                        //
-                        for (int m = 0; m < 3; m++)
+                        unsigned maxIndex = 0;
+                        unsigned maxCount = 0;
+
+                        for (unsigned m = 0; m < histogramCount; m++)
                         {
-                            if (histogram[m].m_count > 1)
+                            if (histogram[m].m_count > maxCount)
                             {
-                                *pLikelihood = (100 * histogram[m].m_count) / totalCount;
-                                return histogram[m].m_mt;
+                                maxIndex = m;
+                                maxCount = histogram[m].m_count;
                             }
                         }
 
-                        // Othewise, just guess the first one.
-                        *pLikelihood = (100 * histogram[0].m_count) / totalCount;
-                        return histogram[0].m_mt;
-                    }
-                    break;
+                        if (maxCount > 0)
+                        {
+                            *pLikelihood = (100 * maxCount) / totalCount;
+                            return histogram[maxIndex].m_mt;
+                        }
 
-                    case 4:
-                    {
-                        // Counts must be 1/1/1/1.
-                        //
-                        // Just guess the first one. Caller can decide not
-                        // to speculate if it so chooses.
-                        //
-                        *pLikelihood = (100 * histogram[0].m_count) / totalCount;
-                        return histogram[0].m_mt;
-                    }
-                    break;
-
-                    default:
-                    {
                         return NULL;
                     }
                     break;
@@ -573,7 +538,7 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
             }
 
             // Failed to find a class profile entry
-            // printf("... no class profile data for this method, sorry\n");
+            //
             return NULL;
         }
 
@@ -581,8 +546,8 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
         methodsChecked++;
     }
 
-    // Failed to find any sort of profile data
-    // printf("... no pgo data for this method, sorry\n");
+    // Failed to find any sort of profile data for this method
+    //
     return NULL;
 }
 

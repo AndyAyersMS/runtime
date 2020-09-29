@@ -250,6 +250,14 @@ public:
         UINT32 ExecutionCount;
     };
 
+    struct ClassProfile
+    {
+        enum { SIZE = 8, SAMPLE_INTERVAL = 128 };
+        UINT32 ILOffset;
+        UINT32 Count;
+        CORINFO_CLASS_HANDLE ClassTable[SIZE];
+    };
+
     // allocate a basic block profile buffer where execution counts will be stored
     // for jitted basic blocks.
     virtual HRESULT allocMethodBlockCounts (

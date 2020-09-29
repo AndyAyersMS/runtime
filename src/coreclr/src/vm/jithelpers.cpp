@@ -5319,18 +5319,6 @@ void JIT_Patchpoint(int* counter, int ilOffset)
 
 #endif // FEATURE_ON_STACK_REPLACEMENT
 
-// table points at an entry of 5 x 8 = 40 bytes.
-//
-// The first 8 bytes are reserved, so for x64 we will
-// have 4 8 byte entries to use to sample method table values.
-
-struct ClassProfileEntry
-{
-    uint ilOffset;
-    uint count;
-    MethodTable* table[4];
-};
-
 HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
 {
     FCALL_CONTRACT;
@@ -5340,18 +5328,18 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
 
     HELPER_METHOD_FRAME_BEGIN_1(objRef);
 
-    MethodTable* pMT = objRef->GetMethodTable();
-    ClassProfileEntry* entry = (ClassProfileEntry*) tableAddress;
-
-    const int SIZE = 4;
-    int count = entry->count++;
+    CORINFO_CLASS_HANDLE clsHnd = (CORINFO_CLASS_HANDLE) objRef->GetMethodTable();
+    ICorJitInfo::ClassProfile* const classProfile = (ICorJitInfo::ClassProfile*) tableAddress;
+    const int count = classProfile->Count++;
+    const int S = ICorJitInfo::ClassProfile::SIZE;
+    const int N = ICorJitInfo::ClassProfile::SAMPLE_INTERVAL;
     bool updated = false;
 
     // If table is not yet full, just add entries in.
-
-    if (count < SIZE)
+    //
+    if (count < S)
     {
-        entry->table[count] = pMT;
+        classProfile->ClassTable[count] = clsHnd;
         updated = true;
     }
     else
@@ -5360,6 +5348,7 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
         //
         // intentionally simple so we can have multithreaded
         // access w/o tearing state.
+        //
         static unsigned s_rng = 100;
         
         unsigned x = s_rng;
@@ -5369,36 +5358,36 @@ HCIMPL2(void, JIT_ClassProfile, Object *obj, void* tableAddress)
         s_rng = x;
         
         // N is the sampling window size,
-        // it should be much larger than the table size.
+        // it should be larger than the table size.
         //
-        // If N == count then we are building an entire
-        // run sample, but likely we don't need that and
-        // would prefer something that is more weighted
-        // to recent observations.
+        // If we let N == count then we are building an entire
+        // run sample -- probability of update decreases over time.
+        // Would be a good strategy for an AOT profiler.
         //
-        const int N = 128;
-        
-        if ((x % N) < SIZE)
+        // But for TieredPGO we would prefer something that is more
+        // weighted to recent observations.
+        //
+        // For S=4, N=128, we'll sample (on average) every 32nd call.
+        //
+        if ((x % N) < S)
         {
-            int i = x % SIZE + 1;
-
-            updated = (entry->table[i] != pMT);
-            entry->table[i] = pMT;
+            unsigned i = x % S;
+            updated = (classProfile->ClassTable[i] != clsHnd);
+            classProfile->ClassTable[i] = clsHnd;
         }
     }
 
-#if 0
     if (updated)
     {
-        printf("*** class profile table=0x%p il=0x%X count=%u\n", entry, entry->ilOffset, entry->count);
+        printf("*** class profile table=0x%p il=0x%X count=%u\n", classProfile, classProfile->ILOffset, classProfile->Count);
 
-        for (int j = 0; j < SIZE; j++)
+        for (int j = 0; j < S; j++)
         {
-            MethodTable* pTableMT = entry->table[j];
-            printf("    entry[%d] = 0x%p (%s)\n", j, pTableMT, pTableMT == NULL ? "" : pTableMT->GetDebugClassName());
+            TypeHandle typeHnd(classProfile->ClassTable[j]);
+            MethodTable *pMT = typeHnd.AsMethodTable();
+            printf("    [%d]: 0x%p (%s)\n", j, pMT, pMT == NULL ? "" : pMT->GetDebugClassName());
         }
     }
-#endif
 
     HELPER_METHOD_FRAME_END();
 }

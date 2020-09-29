@@ -438,11 +438,13 @@ void Compiler::fgInstrumentMethod()
 
     // Allocate the profile buffer
     //
-    // Buffer size is one entry for each block, and N entries for each call.
-    // For now we'll use N=5 -- that is 40 bytes per class profile probe.
+    // Allocation is in multiples of ICorJitInfo::BlockCounts. For each profile table we need
+    // some multiple of these.
     //
-    const unsigned            entriesPerCall          = 5;
-    const unsigned            totalEntries            = countOfBlocks + entriesPerCall * countOfCalls + 2; // hack
+    const unsigned entriesPerCall = sizeof(ICorJitInfo::ClassProfile) / sizeof(ICorJitInfo::BlockCounts);
+    assert(entriesPerCall * sizeof(ICorJitInfo::BlockCounts) == sizeof(ICorJitInfo::ClassProfile));
+
+    const unsigned            totalEntries            = countOfBlocks + entriesPerCall * countOfCalls;
     ICorJitInfo::BlockCounts* profileBlockCountsStart = nullptr;
 
     HRESULT res = info.compCompHnd->allocMethodBlockCounts(totalEntries, &profileBlockCountsStart);
@@ -495,14 +497,10 @@ void Compiler::fgInstrumentMethod()
                     {
                         DoPreOrder = true
                     };
-                    int                       m_count;
-                    int                       m_tableSize;
-                    ICorJitInfo::BlockCounts* m_countsEnd;
-                    ClassProbeVisitor(Compiler* compiler, int tableSize, ICorJitInfo::BlockCounts* countsEnd)
-                        : GenTreeVisitor<ClassProbeVisitor>(compiler)
-                        , m_count(0)
-                        , m_tableSize(tableSize)
-                        , m_countsEnd(countsEnd)
+                    int                        m_count;
+                    ICorJitInfo::ClassProfile* m_tableBase;
+                    ClassProbeVisitor(Compiler* compiler, ICorJitInfo::ClassProfile* tableBase)
+                        : GenTreeVisitor<ClassProbeVisitor>(compiler), m_count(0), m_tableBase(tableBase)
                     {
                     }
                     Compiler::fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
@@ -532,11 +530,10 @@ void Compiler::fgInstrumentMethod()
 
                                 assert(call->gtCallThisArg->GetNode()->TypeGet() == TYP_REF);
 
-                                // Figure out where the table is located. Each probe uses tableSize entries.
-                                ICorJitInfo::BlockCounts* tableAddress =
-                                    &m_countsEnd[m_tableSize * call->gtClassProfileCandidateInfo->probeIndex];
-
-                                // assert(tableAddress < profileEnd);
+                                // Figure out where the table is located.
+                                //
+                                ICorJitInfo::ClassProfile* classProfile =
+                                    &m_tableBase[call->gtClassProfileCandidateInfo->probeIndex];
 
                                 // Grab a temp to hold the 'this' object as it will be used three times
                                 //
@@ -545,10 +542,10 @@ void Compiler::fgInstrumentMethod()
 
                                 // Generate the IR...
                                 //
-                                GenTree* const tableAddressNode =
-                                    m_compiler->gtNewIconNode((ssize_t)tableAddress, TYP_I_IMPL);
+                                GenTree* const classProfileNode =
+                                    m_compiler->gtNewIconNode((ssize_t)classProfile, TYP_I_IMPL);
                                 GenTree* const          tmpNode = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
-                                GenTreeCall::Use* const args    = m_compiler->gtNewCallArgs(tmpNode, tableAddressNode);
+                                GenTreeCall::Use* const args    = m_compiler->gtNewCallArgs(tmpNode, classProfileNode);
                                 GenTree* const          helperCallNode =
                                     m_compiler->gtNewHelperCallNode(CORINFO_HELP_CLASSPROFILE, TYP_VOID, args);
                                 GenTree* const tmpNode2 = m_compiler->gtNewLclvNode(tmpNum, TYP_REF);
@@ -567,13 +564,14 @@ void Compiler::fgInstrumentMethod()
                                 JITDUMP("Modified call is now\n");
                                 DISPTREE(call);
 
-                                // Set up the profile table. Entry 0 is a header, the rest are data entries.
+                                // Initialize the class table
                                 //
-                                for (int i = 0; i < m_tableSize; i++)
+                                classProfile->ILOffset = jitGetILoffs(call->gtClassProfileCandidateInfo->ilOffset);
+                                classProfile->Count    = 0;
+
+                                for (int i = 0; i < ICorJitInfo::ClassProfile::SIZE; i++)
                                 {
-                                    tableAddress[i].ILOffset =
-                                        (i == 0) ? jitGetILoffs(call->gtClassProfileCandidateInfo->ilOffset) : 0;
-                                    tableAddress[i].ExecutionCount = 0;
+                                    classProfile->ClassTable[i] = NO_CLASS_HANDLE;
                                 }
 
                                 // Restore the stub address on call
@@ -588,7 +586,7 @@ void Compiler::fgInstrumentMethod()
 
                 // Scan the statements and add class probes
                 //
-                ClassProbeVisitor visitor(this, entriesPerCall, profileBlockCountsEnd);
+                ClassProbeVisitor visitor(this, (ICorJitInfo::ClassProfile*)profileBlockCountsEnd);
                 for (Statement* stmt : block->Statements())
                 {
                     visitor.WalkTree(stmt->GetRootNodePointer(), nullptr);
