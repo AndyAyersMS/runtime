@@ -443,6 +443,13 @@ public:
         DWORD     ilOffset;
     };
 
+    struct Agnostic_GetLikelyClassResult
+    {
+        DWORDLONG classHnd;
+        DWORD     likelihood;
+        DWORD     numberOfClasses;
+    };
+
     struct Agnostic_GetProfilingHandle
     {
         DWORD     bHookFunction;
@@ -1197,9 +1204,9 @@ public:
                                     ICorJitInfo::BlockCounts**   pBlockCounts,
                                     UINT32 *                     pNumRuns);
 
-    void recGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset, CORINFO_CLASS_HANDLE result);
-    void dmpGetLikelyClass(const Agnostic_GetLikelyClass& key, DWORDLONG value);
-    CORINFO_CLASS_HANDLE repGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset);
+    void recGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset, CORINFO_CLASS_HANDLE classHnd, UINT32* pLikelihood, UINT32* pNumberOfClasses);
+    void dmpGetLikelyClass(const Agnostic_GetLikelyClass& key, const Agnostic_GetLikelyClassResult& value);
+    CORINFO_CLASS_HANDLE repGetLikelyClass(CORINFO_METHOD_HANDLE ftnHnd, CORINFO_CLASS_HANDLE  baseHnd, UINT32 ilOffset, UINT32* pLikelihood, UINT32* pNumberOfClasses);
 
     void recMergeClasses(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE cls2, CORINFO_CLASS_HANDLE result);
     void dmpMergeClasses(DLDL key, DWORDLONG value);

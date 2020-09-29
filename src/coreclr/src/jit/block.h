@@ -595,7 +595,7 @@ struct BasicBlock : private LIR::Range
     // going to inherit.
     void inheritWeightPercentage(BasicBlock* bSrc, unsigned percentage)
     {
-        assert(0 <= percentage && percentage < 100);
+        assert(0 <= percentage && percentage <= 100);
 
         // Check for overflow
         if (bSrc->bbWeight * 100 <= bSrc->bbWeight)

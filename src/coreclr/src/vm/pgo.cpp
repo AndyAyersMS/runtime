@@ -361,8 +361,11 @@ struct HistogramEntry
     uint                 m_count;
 };
 
-CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset)
+CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset, UINT32* pLikelihood, UINT32* pNumberOfClasses)
 {
+    *pLikelihood = 0;
+    *pNumberOfClasses = 0;
+
     // printf("**** getLikelyClass for %p (ilSize=%u) at offset %u\n", pMD, ilSize, ilOffset);
     // Bail if there's no profile data.
     //
@@ -461,7 +464,8 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                 // Build the histogram
                 //
                 HistogramEntry histogram[4];
-                int histogramCount = 0;
+                unsigned histogramCount = 0;
+                unsigned totalCount = 0;
 
                 for (int k = 0; k < 4; k++)
                 {
@@ -472,8 +476,10 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                         continue;
                     }
 
+                    totalCount++;
+
                     bool found = false;
-                    int h = 0;
+                    unsigned h = 0;
                     for(; h < histogramCount; h++)
                     {
                         if (histogram[h].m_mt == currentEntry)
@@ -492,59 +498,77 @@ CORINFO_CLASS_HANDLE PgoManager::getLikelyClass(MethodDesc* pMD, unsigned ilSize
                     }
                 }
 
-                // printf("... histogram has %u entries!\n", histogramCount);
+                // Use histogram count as number of classes estimate
+                //
+                *pNumberOfClasses = histogramCount;
 
-                // Now pick the most frequently occurring type.
-
-                if (histogramCount == 1)
+                // Report back what we've learned
+                // (perhaps, use count to augment likelihood?)
+                // 
+                switch (histogramCount)
                 {
-                    // only ever saw one class
-                    return histogram[0].m_mt;
-                }
-                else if (histogramCount == 2)
-                {
-                    // counts could be {3/1}, 2/2, {2/1}, 1/1
-                    // Since there is secondary backup (VSD or HW prediction), 
-                    // we should guess even if there's a tie.
-                    //
-                    if (histogram[0].m_count >= histogram[1].m_count)
+                    case 1:
                     {
+                        *pLikelihood = 100;
                         return histogram[0].m_mt;
                     }
-                    else
+                    break;
+
+                    case 2:
                     {
-                        return histogram[1].m_mt;
-                    }
-                }
-                else if (histogramCount == 3)
-                {
-                    // Counts could be 1/1/1 or {2/1/1}
-                    //
-                    // If any entry has majority of counts, return it.
-                    //
-                    for (int m = 0; m < 3; m++)
-                    {
-                        if (histogram[m].m_count > 1)
+                        // counts could be {3/1}, 2/2, {2/1}, 1/1
+                        //
+                        if (histogram[0].m_count >= histogram[1].m_count)
                         {
-                            return histogram[m].m_mt;
+                            *pLikelihood = (100 * histogram[0].m_count) / totalCount;
+                            return histogram[0].m_mt;
+                        }
+                        else
+                        {
+                            *pLikelihood = (100 * histogram[1].m_count) / totalCount;
+                            return histogram[1].m_mt;
                         }
                     }
+                    break;
 
-                    // Othewise, don't guess...? May still pay off
-                    // to pick one of the three.
-                    return NULL;
-                }
-                else
-                {
-                    // 0 cases: we never hit this case at tier0.
-                    //
-                    // 4 cases... counts must be 1/1/1/1, no clear winner
-                    //
-                    // data shows we can win if there's one case that
-                    // is 0.3 or higher, we don't have that (though
-                    // admittedly we don't have a lot of precision with
-                    // 4 entries either).
-                    return NULL;
+                    case 3:
+                    {
+                        // Counts could be 1/1/1 or {2/1/1}
+                        //
+                        // If any entry has majority of counts, return it.
+                        //
+                        for (int m = 0; m < 3; m++)
+                        {
+                            if (histogram[m].m_count > 1)
+                            {
+                                *pLikelihood = (100 * histogram[m].m_count) / totalCount;
+                                return histogram[m].m_mt;
+                            }
+                        }
+
+                        // Othewise, just guess the first one.
+                        *pLikelihood = (100 * histogram[0].m_count) / totalCount;
+                        return histogram[0].m_mt;
+                    }
+                    break;
+
+                    case 4:
+                    {
+                        // Counts must be 1/1/1/1.
+                        //
+                        // Just guess the first one. Caller can decide not
+                        // to speculate if it so chooses.
+                        //
+                        *pLikelihood = (100 * histogram[0].m_count) / totalCount;
+                        return histogram[0].m_mt;
+                    }
+                    break;
+
+                    default:
+                    {
+                        return NULL;
+                    }
+                    break;
                 }
             }
 

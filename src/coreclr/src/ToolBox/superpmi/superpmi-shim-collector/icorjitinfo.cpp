@@ -2052,11 +2052,13 @@ HRESULT interceptor_ICJI::getMethodBlockCounts(CORINFO_METHOD_HANDLE ftnHnd,
 // being called. 
 CORINFO_CLASS_HANDLE interceptor_ICJI::getLikelyClass(CORINFO_METHOD_HANDLE ftnHnd,
                                                       CORINFO_CLASS_HANDLE  baseHnd,
-                                                      UINT32                ilOffset)
+                                                      UINT32                ilOffset,
+                                                      UINT32*               pLikelihood,
+                                                      UINT32*               pNumberOfClasses)
 {
     mc->cr->AddCall("getLikelyClass");
-    CORINFO_CLASS_HANDLE result = original_ICorJitInfo->getLikelyClass(ftnHnd, baseHnd, ilOffset);
-    mc->recGetLikelyClass(ftnHnd, baseHnd, ilOffset, result);
+    CORINFO_CLASS_HANDLE result = original_ICorJitInfo->getLikelyClass(ftnHnd, baseHnd, ilOffset, pLikelihood, pNumberOfClasses);
+    mc->recGetLikelyClass(ftnHnd, baseHnd, ilOffset, result, pLikelihood, pNumberOfClasses);
     return result;
 }
 

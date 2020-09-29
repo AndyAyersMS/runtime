@@ -27,7 +27,7 @@ public:
         ICorJitInfo::BlockCounts** pBlockCounts, UINT32* pNumRuns);
 
     // Retrieve the most likely class for a particular call
-    static CORINFO_CLASS_HANDLE getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset);
+    static CORINFO_CLASS_HANDLE getLikelyClass(MethodDesc* pMD, unsigned ilSize, unsigned ilOffset, UINT32* pLikelihood, UINT32* pNumberOfClasses);
 
 #ifdef FEATURE_PGO
 

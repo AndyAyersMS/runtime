@@ -11930,7 +11930,9 @@ HRESULT CEEJitInfo::getMethodBlockCounts (
 CORINFO_CLASS_HANDLE CEEJitInfo::getLikelyClass(
                      CORINFO_METHOD_HANDLE ftnHnd,
                      CORINFO_CLASS_HANDLE  baseHnd,
-                     UINT32                ilOffset
+                     UINT32                ilOffset,
+                     UINT32 *              pLikelihood,
+                     UINT32 *              pNumberOfClasses
 )
 {
     CONTRACTL {
@@ -11940,6 +11942,8 @@ CORINFO_CLASS_HANDLE CEEJitInfo::getLikelyClass(
     } CONTRACTL_END;
 
     CORINFO_CLASS_HANDLE result = NULL;
+    *pLikelihood = 0;
+    *pNumberOfClasses = 0;
 
     JIT_TO_EE_TRANSITION();
 
@@ -11962,7 +11966,7 @@ CORINFO_CLASS_HANDLE CEEJitInfo::getLikelyClass(
         codeSize = decoder.GetCodeSize();
     }
 
-    result = PgoManager::getLikelyClass(pMD, codeSize, ilOffset);
+    result = PgoManager::getLikelyClass(pMD, codeSize, ilOffset, pLikelihood, pNumberOfClasses);
 
 #endif
 
@@ -14184,7 +14188,9 @@ HRESULT CEEInfo::getMethodBlockCounts(
 CORINFO_CLASS_HANDLE CEEInfo::getLikelyClass(
                      CORINFO_METHOD_HANDLE ftnHnd,
                      CORINFO_CLASS_HANDLE  baseHnd,
-                     UINT32                ilOffset
+                     UINT32                ilOffset,
+                     UINT32*               pLikelihood,
+                     UINT32*               pNumberOfCases
 )
 {
     LIMITED_METHOD_CONTRACT;

@@ -20560,12 +20560,10 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
         // pass objClass here, or baseClass?
         // always query, or do so under condition?
         //
+        unsigned likelihood = 0;
+        unsigned numberOfClasses = 0;
         CORINFO_CLASS_HANDLE likelyImplementingClass = info.compCompHnd->getLikelyClass(info.compMethodHnd,
-            baseClass, ilOffset);
-
-        // todo: get this from PGO too
-        //
-        unsigned likelihood = 80;
+            baseClass, ilOffset, &likelihood, &numberOfClasses);
 
         if (likelyImplementingClass == NO_CLASS_HANDLE)
         {
@@ -20574,9 +20572,12 @@ void Compiler::impDevirtualizeCall(GenTreeCall*            call,
         }
         else
         {
-            JITDUMP("Likely implementor of interface %p (%s) is %p (%s)!\n", dspPtr(objClass), objClassName,
-                likelyImplementingClass, eeGetClassName(likelyImplementingClass));
+            JITDUMP("Likely implementor of interface %p (%s) is %p (%s) [likelihood:%u classes seen:%u]\n", 
+                dspPtr(objClass), objClassName, likelyImplementingClass, eeGetClassName(likelyImplementingClass),
+                likelihood, numberOfClasses);
         }
+
+        // Todo: some heuristic using likelihood, number of classes, and the profile count for this block.
 
         // Ask the runtime to determine the method that would be called based on the likely type.
         //

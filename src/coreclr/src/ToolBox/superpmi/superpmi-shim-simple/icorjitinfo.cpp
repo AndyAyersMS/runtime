@@ -1446,9 +1446,11 @@ HRESULT interceptor_ICJI::getMethodBlockCounts(CORINFO_METHOD_HANDLE ftnHnd,
 // being called. 
 CORINFO_CLASS_HANDLE interceptor_ICJI::getLikelyClass(CORINFO_METHOD_HANDLE ftnHnd,
                                                       CORINFO_CLASS_HANDLE  baseHnd,
-                                                      UINT32                ilOffset)
+                                                      UINT32                ilOffset,
+                                                      UINT32*               pLikelihood,
+                                                      UINT32*               pNumberOfClasses)
 {
-    return original_ICorJitInfo->getLikelyClass(ftnHnd, baseHnd, ilOffset);
+    return original_ICorJitInfo->getLikelyClass(ftnHnd, baseHnd, ilOffset, pLikelihood, pNumberOfClasses);
 }
 
 // Associates a native call site, identified by its offset in the native code stream, with

@@ -272,7 +272,9 @@ public:
     virtual CORINFO_CLASS_HANDLE getLikelyClass(
             CORINFO_METHOD_HANDLE ftnHnd,
             CORINFO_CLASS_HANDLE  baseHnd,
-            UINT32                ilOffset
+            UINT32                ilOffset,
+            UINT32 *              pLikelihood,     // estimated likelihood of the class (0...100)
+            UINT32 *              pNumberOfClasses // estimated number of possible classes
             ) = 0;
 
     // Associates a native call site, identified by its offset in the native code stream, with

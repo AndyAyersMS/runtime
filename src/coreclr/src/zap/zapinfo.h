@@ -316,7 +316,9 @@ public:
     CORINFO_CLASS_HANDLE getLikelyClass(
             CORINFO_METHOD_HANDLE ftnHnd,
             CORINFO_CLASS_HANDLE  baseHnd,
-            UINT32                ilOffset);
+            UINT32                ilOffset,
+            UINT32 *              pLikelihood,
+            UINT32 *              pNumberOfClasses);
 
     DWORD getJitFlags(CORJIT_FLAGS* jitFlags, DWORD sizeInBytes);
 

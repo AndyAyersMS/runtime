@@ -184,6 +184,7 @@ private:
     class Transformer
     {
     public:
+
         Transformer(Compiler* compiler, BasicBlock* block, Statement* stmt)
             : compiler(compiler), currBlock(block), stmt(stmt)
         {
@@ -192,6 +193,7 @@ private:
             thenBlock      = nullptr;
             elseBlock      = nullptr;
             origCall       = nullptr;
+            likelihood     = HIGH_PROBABILITY;
         }
 
         //------------------------------------------------------------------------
@@ -204,7 +206,7 @@ private:
 
         void Transform()
         {
-            JITDUMP("*** %s: transforming" FMT_STMT "\n", Name(), stmt->GetID());
+            JITDUMP("*** %s: transforming " FMT_STMT "\n", Name(), stmt->GetID());
             FixupRetExpr();
             ClearFlag();
             CreateRemainder();
@@ -274,8 +276,8 @@ private:
         {
             remainderBlock->inheritWeight(currBlock);
             checkBlock->inheritWeight(currBlock);
-            thenBlock->inheritWeightPercentage(currBlock, HIGH_PROBABILITY);
-            elseBlock->inheritWeightPercentage(currBlock, 100 - HIGH_PROBABILITY);
+            thenBlock->inheritWeightPercentage(currBlock, likelihood);
+            elseBlock->inheritWeightPercentage(currBlock, 100 - likelihood);
         }
 
         //------------------------------------------------------------------------
@@ -296,6 +298,7 @@ private:
         BasicBlock*  elseBlock;
         Statement*   stmt;
         GenTreeCall* origCall;
+        unsigned     likelihood;
 
         const int HIGH_PROBABILITY = 80;
     };
@@ -506,7 +509,7 @@ private:
     {
     public:
         GuardedDevirtualizationTransformer(Compiler* compiler, BasicBlock* block, Statement* stmt)
-            : Transformer(compiler, block, stmt), returnTemp(BAD_VAR_NUM), likelihood(0)
+            : Transformer(compiler, block, stmt), returnTemp(BAD_VAR_NUM)
         {
         }
 
@@ -548,6 +551,7 @@ private:
 
             likelihood = origCall->gtGuardedDevirtualizationCandidateInfo->likelihood;
             assert((likelihood >= 0) && (likelihood <= 100));
+            JITDUMP("Likelihood of correct guess is %u\n", likelihood);
 
             Transform();
         }
@@ -588,6 +592,7 @@ private:
         virtual void CreateCheck()
         {
             checkBlock = CreateAndInsertBasicBlock(BBJ_COND, currBlock);
+            checkBlock->inheritWeight(currBlock);
 
             // Fetch method table from object arg to call.
             GenTree* thisTree = compiler->gtCloneExpr(origCall->gtCallThisArg->GetNode());
@@ -800,7 +805,6 @@ private:
 
     private:
         unsigned returnTemp;
-        unsigned likelihood;
     };
 
     // Runtime lookup with dynamic dictionary expansion transformer,

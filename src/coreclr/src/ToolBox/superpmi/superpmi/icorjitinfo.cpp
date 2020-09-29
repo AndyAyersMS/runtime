@@ -1803,10 +1803,12 @@ HRESULT MyICJI::getMethodBlockCounts(CORINFO_METHOD_HANDLE ftnHnd,
 // being called. 
 CORINFO_CLASS_HANDLE MyICJI::getLikelyClass(CORINFO_METHOD_HANDLE ftnHnd,
                                             CORINFO_CLASS_HANDLE  baseHnd,
-                                            UINT32                ilOffset)
+                                            UINT32                ilOffset,
+                                            UINT32*               pLikelihood,
+                                            UINT32*               pNumberOfClasses)
 {
     jitInstance->mc->cr->AddCall("getLikelyClass");
-    return jitInstance->mc->repGetLikelyClass(ftnHnd, baseHnd, ilOffset);
+    return jitInstance->mc->repGetLikelyClass(ftnHnd, baseHnd, ilOffset, pLikelihood, pNumberOfClasses);
 }
 
 // Associates a native call site, identified by its offset in the native code stream, with

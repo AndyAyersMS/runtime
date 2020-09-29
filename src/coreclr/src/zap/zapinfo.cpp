@@ -1081,7 +1081,9 @@ HRESULT ZapInfo::getMethodBlockCounts (
 CORINFO_CLASS_HANDLE ZapInfo::getLikelyClass(
     CORINFO_METHOD_HANDLE ftnHnd,
     CORINFO_CLASS_HANDLE  baseHnd,
-    UINT32                ilOffset)
+    UINT32                ilOffset,
+    UINT32*               pLikelihood,
+    UINT32*               pNumberOfClasses)
 {
     return NULL;
 }
