@@ -591,7 +591,6 @@ private:
         virtual void CreateCheck()
         {
             checkBlock = CreateAndInsertBasicBlock(BBJ_COND, currBlock);
-            checkBlock->inheritWeight(currBlock);
 
             // Fetch method table from object arg to call.
             GenTree* thisTree = compiler->gtCloneExpr(origCall->gtCallThisArg->GetNode());
@@ -693,7 +692,6 @@ private:
         {
             thenBlock = CreateAndInsertBasicBlock(BBJ_ALWAYS, checkBlock);
             thenBlock->bbFlags |= currBlock->bbFlags & BBF_SPLIT_GAINED;
-            thenBlock->inheritWeightPercentage(checkBlock, likelihood);
 
             InlineCandidateInfo* inlineInfo = origCall->gtInlineCandidateInfo;
             CORINFO_CLASS_HANDLE clsHnd     = inlineInfo->clsHandle;
@@ -768,8 +766,6 @@ private:
         {
             elseBlock = CreateAndInsertBasicBlock(BBJ_NONE, thenBlock);
             elseBlock->bbFlags |= currBlock->bbFlags & BBF_SPLIT_GAINED;
-            elseBlock->inheritWeightPercentage(checkBlock, 100 - likelihood);
-
             GenTreeCall* call    = origCall;
             Statement*   newStmt = compiler->gtNewStmt(call);
 
