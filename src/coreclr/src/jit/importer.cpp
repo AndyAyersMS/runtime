@@ -14301,6 +14301,18 @@ void Compiler::impImportBlockCode(BasicBlock* block)
             case CEE_CALLVIRT:
             case CEE_CALL:
 
+                if (opcode == CEE_CALLI)
+                {
+                    // See if we can optimize this to a direct call.
+
+                    if (impStackTop().val->OperIs(GT_FTN_ADDR))
+                    {
+                        CORINFO_METHOD_HANDLE method 
+                    }
+
+
+                }
+
                 // We can't call getCallInfo on the token from a CALLI, but we need it in
                 // many other places.  We unfortunately embed that knowledge here.
                 if (opcode != CEE_CALLI)
