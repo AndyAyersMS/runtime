@@ -3204,6 +3204,326 @@ GenTree* Compiler::optAssertionProp_RelOp(ASSERT_VALARG_TP assertions, GenTree* 
 }
 
 //------------------------------------------------------------------------
+// optOneSuccessorReaches: see if block can only be reached by one of
+//   domBlock's successors
+//
+// Arguments:
+//   domBlock - dominating block (must be BBJ_COND)
+//   block - block of interest
+//
+// Returns:
+//   OPI_NONE if no path found
+//   OPI_BOTH_NEAR if both successors can reach and dom block to block path
+//       is just the successors
+//   OPI_BOTH if both successors can reach
+//   OPI_FALSE if only fall-through (false) successor reaches
+//   oPI_TRUE if only jump (true) successor reaches
+//
+Compiler::optPathInfo Compiler::optOneSuccessorReaches(BasicBlock* domBlock, BasicBlock* block)
+{
+    BasicBlock* trueSuccessor  = domBlock->bbJumpDest;
+    BasicBlock* falseSuccessor = domBlock->bbNext;
+
+    const bool trueReaches  = fgReachable(trueSuccessor, block);
+    const bool falseReaches = fgReachable(falseSuccessor, block);
+
+    // Both reach.
+    //
+    if (trueReaches && falseReaches)
+    {
+
+        if ((trueSuccessor->GetUniqueSucc() == block) || (falseSuccessor->GetUniqueSucc() == block))
+        {
+            return OPI_BOTH_NEAR;
+        }
+
+        return OPI_BOTH;
+    }
+
+    // Neither reaches
+    //
+    if (!trueReaches && !falseReaches)
+    {
+        return OPI_NONE;
+    }
+
+    // Only one reaches
+    //
+    return trueReaches ? OPI_TRUE : OPI_FALSE;
+}
+
+//------------------------------------------------------------------------
+// optIsRedundantRelop: try and prove a relop's value can be predicted
+//   from dominating relops.
+//
+// Arguments:
+//   tree - relop of interest
+//   block - block in which the relop appears
+//
+// Returns:
+//   OPI_NONE, OPI_BOTH, or OPI_BOTH_NEAR, if relop value can't be determined
+//   OPI_FALSE, if relop value is false
+//   OPI_TRUE,  if relop value is true
+//
+Compiler::optPathInfo Compiler::optIsRedundantRelop(GenTree* tree, BasicBlock* block)
+{
+    // We use value numbers to find same and similar relops.
+    //
+    ValueNum treeVN = tree->GetVN(VNK_Conservative);
+
+    // Walk up the dom tree and see if any dominating block has branched on
+    // exactly treeVN, or on a "related" VN
+    //
+    BasicBlock* prevBlock = block;
+    BasicBlock* domBlock  = block->bbIDom;
+
+    for (; domBlock != nullptr; prevBlock = domBlock, domBlock = domBlock->bbIDom)
+    {
+        if (prevBlock == block)
+        {
+            JITDUMP("\nVN relop, checking " FMT_BB " for redundancy\n", block->bbNum);
+        }
+
+        // Check the current dominator
+        //
+        JITDUMP(" ... checking dom " FMT_BB "\n", domBlock->bbNum);
+
+        // Must be a conditional branch.
+        // Could also handle BBJ_SWITCH perhaps.
+        //
+        if (domBlock->bbJumpKind != BBJ_COND)
+        {
+            JITDUMP(" ... not BBJ_COND\n");
+            continue;
+        }
+
+        // Can we show that there's just one path
+        // from the dominator to the current block?
+        //
+        optPathInfo reaches = optOneSuccessorReaches(domBlock, block);
+
+        switch (reaches)
+        {
+            case OPI_TRUE:
+            case OPI_FALSE:
+            {
+                // Yes, just one path reaches
+                //
+                break;
+            }
+
+            case OPI_NONE:
+            {
+                // No apparent path. No point continuing to search.
+                //
+                JITDUMP("   ... no apparent path\n");
+                break;
+            }
+
+            case OPI_BOTH_NEAR:
+            {
+                // Both reach and dominator is close by.
+                //
+                JITDUMP("   ... both successors reach\n");
+                JITDUMP("Perhaps we should have tail duplicated " FMT_BB "\n", block->bbNum);
+                continue;
+            }
+
+            case OPI_BOTH:
+                JITDUMP("   ... both successors reach\n");
+                continue;
+
+            default:
+                unreached();
+        }
+
+        // Time to scrutinize the dominating relop.
+        //
+        Statement* const domJumpStmt = domBlock->lastStmt();
+        GenTree* const   domJumpTree = domJumpStmt->GetRootNode();
+        assert(domJumpTree->OperIs(GT_JTRUE));
+        GenTree* const domCmpTree = domJumpTree->AsOp()->gtGetOp1();
+
+        JITDUMP(" Possibly redundant relop -- current relop:\n");
+        DISPTREE(tree);
+        JITDUMP(" dominated by %s path from " FMT_BB ":\n", reaches == OPI_TRUE ? "true" : "false", domBlock->bbNum);
+        DISPTREE(domCmpTree);
+
+        // Dominator must be branching on a relop.
+        // Could handle other cases here too, eg NOT(RELOP)
+        //
+        if ((domCmpTree->OperKind() & GTK_RELOP) == 0)
+        {
+            JITDUMP("   ... not a relop\n");
+            continue;
+        }
+
+        // Is this dominator relop interesting?
+        //
+        ValueNum domCmpVN = domCmpTree->GetVN(VNK_Conservative);
+
+        // Is it the exact same comparison?
+        //
+        if (domCmpVN == treeVN)
+        {
+            // Yes, and we know the value.
+            //
+            JITDUMP("   --- exact same relop -- can optimize\n");
+            return reaches;
+        }
+
+        JITDUMP("   ... different VN, seeing if related\n");
+
+        // Dominator and current relop might have related comparisons. Let's see.
+        //
+        // We're looking for cases where one of the argument VNs is common
+        // to both VNFuncs. For relops we know constants will be on the RHS.
+        //
+        VNFuncApp domFuncApp;
+        VNFuncApp treeFuncApp;
+        if (!vnStore->GetVNFunc(domCmpVN, &domFuncApp) || !vnStore->GetVNFunc(treeVN, &treeFuncApp))
+        {
+            JITDUMP("   ... not same shape\n");
+            continue;
+        }
+
+        if ((domFuncApp.m_arity != 2) || (treeFuncApp.m_arity != 2))
+        {
+            JITDUMP("   ... not same arity\n");
+            continue;
+        }
+
+        // NOTE VN does not keep constants on right. Sigh.
+        //
+        JITDUMP("   ... dom (%s " FMT_VN "," FMT_VN ") tree (%s " FMT_VN "," FMT_VN ")\n",
+            vnStore->VNFuncName(domFuncApp.m_func), domFuncApp.m_args[0], domFuncApp.m_args[1], 
+            vnStore->VNFuncName(treeFuncApp.m_func), treeFuncApp.m_args[0], treeFuncApp.m_args[1]);
+
+        const bool sameLHS = (domFuncApp.m_args[0] == treeFuncApp.m_args[0]);
+        const bool sameRHS = (domFuncApp.m_args[1] == treeFuncApp.m_args[1]);
+        const bool constantLHS =
+            vnStore->IsVNConstant(domFuncApp.m_args[0]) && vnStore->IsVNConstant(treeFuncApp.m_args[0]);
+        const bool constantRHS =
+            vnStore->IsVNConstant(domFuncApp.m_args[1]) && vnStore->IsVNConstant(treeFuncApp.m_args[1]);
+        const bool isInteresting = (sameLHS && sameRHS) || (sameLHS && constantRHS) || (sameRHS && constantLHS);
+
+        if (!isInteresting)
+        {
+            JITDUMP("   ... not interesting: sameLHS %d sameRHS %d constantLHS %d constantRHS %d\n", sameLHS, sameRHS,
+                    constantLHS, constantRHS);
+            continue;
+        }
+
+        // For now, just handle the same LHS, same RELOP, constant RHS case
+        //
+        const bool sameRelop          = (domFuncApp.m_func == treeFuncApp.m_func);
+        const bool isStillInteresting = sameRelop && sameLHS && constantRHS;
+
+        if (!isStillInteresting)
+        {
+            JITDUMP("   ... sorry, interesting but not yet handled\n");
+            continue;
+        }
+
+        // Only handle integer cases for now.
+        //
+        if (!varTypeIsIntegral(vnStore->TypeOfVN(domFuncApp.m_args[0])))
+        {
+            JITDUMP("   ... sorry, can only handle integral\n");
+            continue;
+        }
+
+        // Only handle simple relops
+        //
+        VNFunc vnf = domFuncApp.m_func;
+        if (vnf >= VNF_Boundary)
+        {
+            // VN special "opcode"
+            //
+            JITDUMP("   ... sorry, can't handle this special VN relop\n");
+            continue;
+        }
+
+        INT64 domConstant  = vnStore->CoercedConstantValue<INT64>(domFuncApp.m_args[1]);
+        INT64 treeConstant = vnStore->CoercedConstantValue<INT64>(treeFuncApp.m_args[1]);
+
+        genTreeOps relop = genTreeOps();
+
+        optPathInfo result = optPathInfo::OPI_BOTH;
+
+        if (domConstant > treeConstant)
+        {
+            // (x > 18)   ==> (x > 8)
+            // (x >= 18)  ==> (x >= 8)
+            if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_GT))
+                result = optPathInfo::OPI_TRUE;
+            else if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_GE))
+                result = optPathInfo::OPI_TRUE;
+            // !(x != 18) ==> (x != 8)
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_NE))
+                result = optPathInfo::OPI_TRUE;
+            // (x == 18)  ==> !(x == 8)
+            else if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_EQ))
+                result = optPathInfo::OPI_FALSE;
+            // !(x < 18)  ==> !(x < 8)
+            // !(x <= 18) ==> !(x <= 8)
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_LT))
+                result = optPathInfo::OPI_FALSE;
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_LE))
+                result = optPathInfo::OPI_FALSE;
+        }
+        else if (treeConstant > domConstant)
+        {
+            // (x < 8)    ==> (x < 18)
+            // (x < 8)    ==> (x <= 18)
+            if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_LT))
+                result = optPathInfo::OPI_TRUE;
+            else if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_LE))
+                result = optPathInfo::OPI_TRUE;
+            // !(x != 8)  ==> (x != 18)
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_NE))
+                result = optPathInfo::OPI_TRUE;
+            // (x == 8)   ==> !(x == 18)
+            else if ((reaches == optPathInfo::OPI_TRUE) && (relop == GT_EQ))
+                result = optPathInfo::OPI_FALSE;
+            // !(x > 8)   ==> !(x > 18)
+            // !(x >= 8)  ==> !(x >= 18)
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_GT))
+                result = optPathInfo::OPI_FALSE;
+            else if ((reaches == optPathInfo::OPI_FALSE) && (relop == GT_GE))
+                result = optPathInfo::OPI_FALSE;
+        }
+        else
+        {
+            // Same everything; should have same VN...
+            unreached();
+        }
+
+        if (result != OPI_BOTH)
+        {
+            JITDUMP(" .. can optimize, %s(%s x %lld) implies %s(%s x %lld)\n", reaches == OPI_TRUE ? "" : "!",
+                    GenTree::OpName(relop), domConstant, result == OPI_TRUE ? "" : "!", GenTree::OpName(relop),
+                    treeConstant);
+
+            printf("%s --" FMT_BB " --> " FMT_BB " can optimize, %s(%s x %lld) implies %s(%s x %lld)\n",
+                   reaches == OPI_TRUE ? "" : "!", info.compFullName, domBlock->bbNum, block->bbNum,
+                   GenTree::OpName(relop), domConstant, result == OPI_TRUE ? "" : "!", GenTree::OpName(relop),
+                   treeConstant);
+
+            return result;
+        }
+
+        // Else keep looking....
+        //
+        JITDUMP("   ... sorry, can't infer value\n");
+    }
+
+    // No luck, report failure.
+    //
+    return OPI_BOTH;
+}
+
+//------------------------------------------------------------------------
 // optAssertionProp: try and optimize a relop via assertion propagation
 //    (and dominator based redundant branch elimination)
 //
@@ -3225,108 +3545,18 @@ GenTree* Compiler::optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions, Gen
     GenTree* op1     = tree->AsOp()->gtOp1;
     GenTree* op2     = tree->AsOp()->gtOp2;
 
-    // First, walk up the dom tree and see if any dominating block has branched on
-    // exactly this tree's VN...
+    // See if we can prove anything by looking at our dominators.
     //
-    BasicBlock* prevBlock  = compCurBB;
-    BasicBlock* domBlock   = compCurBB->bbIDom;
     int         relopValue = -1;
+    optPathInfo opi        = optIsRedundantRelop(tree, compCurBB);
 
-    while (domBlock != nullptr)
+    if (opi == optPathInfo::OPI_TRUE)
     {
-        if (prevBlock == compCurBB)
-        {
-            JITDUMP("\nVN relop, checking " FMT_BB " for redundancy\n", compCurBB->bbNum);
-        }
-
-        // Check the current dominator
-        //
-        JITDUMP(" ... checking dom " FMT_BB "\n", domBlock->bbNum);
-
-        if (domBlock->bbJumpKind == BBJ_COND)
-        {
-            Statement* const domJumpStmt = domBlock->lastStmt();
-            GenTree* const   domJumpTree = domJumpStmt->GetRootNode();
-            assert(domJumpTree->OperIs(GT_JTRUE));
-            GenTree* const domCmpTree = domJumpTree->AsOp()->gtGetOp1();
-
-            if (domCmpTree->OperKind() & GTK_RELOP)
-            {
-                ValueNum domCmpVN = domCmpTree->GetVN(VNK_Conservative);
-
-                // Note we could also infer the tree relop's value from similar relops higher in the dom tree.
-                // For example, (x >= 0) dominating (x > 0), or (x < 0) dominating (x > 0).
-                //
-                // That is left as a future enhancement.
-                //
-                if (domCmpVN == tree->GetVN(VNK_Conservative))
-                {
-                    // Thes compare in "tree" is redundant.
-                    // Is there a unique path from the dominating compare?
-                    JITDUMP(" Redundant compare; current relop:\n");
-                    DISPTREE(tree);
-                    JITDUMP(" dominating relop in " FMT_BB " with same VN:\n", domBlock->bbNum);
-                    DISPTREE(domCmpTree);
-
-                    BasicBlock* trueSuccessor  = domBlock->bbJumpDest;
-                    BasicBlock* falseSuccessor = domBlock->bbNext;
-
-                    const bool trueReaches  = fgReachable(trueSuccessor, compCurBB);
-                    const bool falseReaches = fgReachable(falseSuccessor, compCurBB);
-
-                    if (trueReaches && falseReaches)
-                    {
-                        // Both dominating compare outcomes reach the current block so we can't infer the
-                        // value of the relop.
-                        //
-                        // If the dominating compare is close to the current compare, this may be a missed
-                        // opportunity to tail duplicate.
-                        //
-                        JITDUMP("Both successors of " FMT_BB " reach, can't optimize\n", domBlock->bbNum);
-
-                        if ((trueSuccessor->GetUniqueSucc() == compCurBB) ||
-                            (falseSuccessor->GetUniqueSucc() == compCurBB))
-                        {
-                            JITDUMP("Perhaps we should have tail duplicated " FMT_BB "\n", compCurBB->bbNum);
-                        }
-                    }
-                    else if (trueReaches)
-                    {
-                        // Taken jump in dominator reaches, fall through doesn't; relop must be true.
-                        //
-                        JITDUMP("Jump successor " FMT_BB " of " FMT_BB " reaches, relop must be true\n",
-                                domBlock->bbJumpDest->bbNum, domBlock->bbNum);
-                        relopValue = 1;
-                        break;
-                    }
-                    else if (falseReaches)
-                    {
-                        // Fall through from dominator reaches, taken jump doesn't; relop must be false.
-                        //
-                        JITDUMP("Fall through successor " FMT_BB " of " FMT_BB " reaches, relop must be false\n",
-                                domBlock->bbNext->bbNum, domBlock->bbNum);
-                        relopValue = 0;
-                        break;
-                    }
-                    else
-                    {
-                        // No apparent path from the dominating BB.
-                        //
-                        // If domBlock or compCurBB is in an EH handler we may fail to find a path.
-                        // Just ignore those cases.
-                        //
-                        // No point in looking further up the tree.
-                        //
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Keep looking higher up in the tree
-        //
-        prevBlock = domBlock;
-        domBlock  = domBlock->bbIDom;
+        relopValue = 1;
+    }
+    else if (opi == optPathInfo::OPI_FALSE)
+    {
+        relopValue = 0;
     }
 
     // Did we determine the relop value via dominance checks? If so, optimize.

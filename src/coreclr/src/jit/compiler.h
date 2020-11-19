@@ -7200,6 +7200,19 @@ public:
     void optImpliedByCopyAssertion(AssertionDsc* copyAssertion, AssertionDsc* depAssertion, ASSERT_TP& result);
     void optImpliedByConstAssertion(AssertionDsc* curAssertion, ASSERT_TP& result);
 
+    // Redundant relop (branch) elimination
+    enum optPathInfo
+    {
+        OPI_NONE,
+        OPI_BOTH_NEAR,
+        OPI_BOTH,
+        OPI_FALSE,
+        OPI_TRUE
+    };
+
+    optPathInfo optOneSuccessorReaches(BasicBlock* domBlock, BasicBlock* block);
+    optPathInfo optIsRedundantRelop(GenTree* tree, BasicBlock* block);
+
 #ifdef DEBUG
     void optPrintAssertion(AssertionDsc* newAssertion, AssertionIndex assertionIndex = 0);
     void optDebugCheckAssertion(AssertionDsc* assertion);
