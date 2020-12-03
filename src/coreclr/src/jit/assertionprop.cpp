@@ -1042,6 +1042,27 @@ AssertionIndex Compiler::optCreateAssertion(GenTree*         op1,
                     goto DONE_ASSERTION; // Don't make an assertion
 
                 //
+                // Non-Null Assertions
+                //
+                case GT_CALL:
+                {
+                    GenTreeCall* const call = op2->AsCall();
+
+                    if (call->IsHelperCall() && s_helperCallProperties.IsAllocator(eeGetHelperNum(call->gtCallMethHnd)))
+                    {
+                        // assert(...) TYP_REF
+                        assertion.assertionKind  = OAK_NOT_EQUAL;
+                        assertion.op2.kind       = O2K_CONST_INT;
+                        assertion.op2.u1.iconVal = 0;
+                        assertion.op2.vn         = ValueNumStore::VNForNull();
+#ifdef TARGET_64BIT
+                        assertion.op2.u1.iconFlags |= 1;
+#endif // TARGET_64BIT
+                    }
+                    break;
+                }
+
+                //
                 //  Constant Assertions
                 //
                 case GT_CNS_INT:
