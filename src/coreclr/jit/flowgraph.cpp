@@ -1799,8 +1799,8 @@ void Compiler::fgRemoveBlockAsPred(BasicBlock* block)
 
         case BBJ_SWITCH:
         {
-            unsigned     jumpCnt = block->bbJumpSwt->bbsCount;
-            BBtabDesc *  jumpTab = block->bbJumpSwt->bbsDstTab;
+            unsigned   jumpCnt = block->bbJumpSwt->bbsCount;
+            BBtabDesc* jumpTab = block->bbJumpSwt->bbsDstTab;
 
             do
             {
@@ -3641,7 +3641,7 @@ Compiler::SwitchUniqueSuccSet Compiler::GetDescriptorForSwitch(BasicBlock* switc
 
         BitVecTraits blockVecTraits(fgBBNumMax + 1, this);
         BitVec       uniqueSuccBlocks(BitVecOps::MakeEmpty(&blockVecTraits));
-        BBtabDesc* jumpTable = switchBlk->bbJumpSwt->bbsDstTab;
+        BBtabDesc*   jumpTable = switchBlk->bbJumpSwt->bbsDstTab;
         unsigned     jumpCount = switchBlk->bbJumpSwt->bbsCount;
         for (unsigned i = 0; i < jumpCount; i++)
         {
@@ -3682,7 +3682,7 @@ void Compiler::SwitchUniqueSuccSet::UpdateTarget(CompAllocator alloc,
                                                  BasicBlock*   to)
 {
     assert(switchBlk->bbJumpKind == BBJ_SWITCH); // Precondition.
-    unsigned     jmpTabCnt = switchBlk->bbJumpSwt->bbsCount;
+    unsigned   jmpTabCnt = switchBlk->bbJumpSwt->bbsCount;
     BBtabDesc* jmpTab    = switchBlk->bbJumpSwt->bbsDstTab;
 
     // Is "from" still in the switch table (because it had more than one entry before?)
@@ -5521,7 +5521,7 @@ void Compiler::fgLinkBasicBlocks()
 
                 do
                 {
-                    jumpPtr->block = fgLookupBB((unsigned)*(size_t*)jumpPtr);
+                    jumpPtr->block = fgLookupBB(jumpPtr->ilOffset);
                     jumpPtr->block->bbRefs++;
                     if (jumpPtr->block->bbNum <= curBBdesc->bbNum)
                     {
@@ -5709,14 +5709,16 @@ unsigned Compiler::fgMakeBasicBlocks(const BYTE* codeAddr, IL_OFFSET codeSize, F
                     jmpDist = getI4LittleEndian(codeAddr);
                     codeAddr += 4;
 
-                    // store the offset in the pointer.  We change these in fgLinkBasicBlocks().
-                    jmpPtr->block = (BasicBlock*)(size_t)(jmpBase + jmpDist);
+                    // Store the offset in the table.
+                    // This will be updated to the block fgLinkBasicBlocks.
+                    //
+                    jmpPtr->ilOffset = jmpBase + jmpDist;
                     jmpPtr++;
                 }
 
                 /* Append the default label to the target table */
 
-                jmpPtr->block = (BasicBlock*)(size_t)jmpBase;
+                jmpPtr->ilOffset = jmpBase;
                 jmpPtr++;
 
                 /* Make sure we found the right number of labels */
@@ -13833,11 +13835,11 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 {
     assert(block->bbJumpKind == BBJ_SWITCH);
 
-    unsigned     jmpCnt = block->bbJumpSwt->bbsCount;
-    BBtabDesc * jmpTab = block->bbJumpSwt->bbsDstTab;
-    BasicBlock*  bNewDest; // the new jump target for the current switch case
-    BasicBlock*  bDest;
-    bool         returnvalue = false;
+    unsigned    jmpCnt = block->bbJumpSwt->bbsCount;
+    BBtabDesc*  jmpTab = block->bbJumpSwt->bbsDstTab;
+    BasicBlock* bNewDest; // the new jump target for the current switch case
+    BasicBlock* bDest;
+    bool        returnvalue = false;
 
     do
     {
@@ -15175,10 +15177,10 @@ void Compiler::fgReorderBlocks()
                         //   A takenRation of 0.50 means taken 50% of the time, not taken 50% of the time
                         //   A takenRation of 0.90 means taken 90% of the time, not taken 10% of the time
                         //
-                        double takenCount = edgeToDest->edgeWeight();
+                        double takenCount    = edgeToDest->edgeWeight();
                         double notTakenCount = edgeToBlock->edgeWeight();
-                        double totalCount = takenCount + notTakenCount;
-                        double takenRatio = takenCount / totalCount;
+                        double totalCount    = takenCount + notTakenCount;
+                        double takenRatio    = takenCount / totalCount;
 
                         // If the takenRatio is greater or equal to 51% then we will reverse the branch
                         if (takenRatio < 0.51)
@@ -21773,7 +21775,7 @@ void Compiler::fgDebugCheckBlockLinks()
                 // about the BlockSet epoch.
                 BitVecTraits bitVecTraits(fgBBNumMax + 1, this);
                 BitVec       succBlocks(BitVecOps::MakeEmpty(&bitVecTraits));
-                BBtabDesc* jumpTable = block->bbJumpSwt->bbsDstTab;
+                BBtabDesc*   jumpTable = block->bbJumpSwt->bbsDstTab;
                 unsigned     jumpCount = block->bbJumpSwt->bbsCount;
                 for (unsigned i = 0; i < jumpCount; i++)
                 {
@@ -26258,7 +26260,7 @@ void Compiler::fgDebugCheckProfileData()
         if (verifyIncoming)
         {
             BasicBlock::weight_t incomingWeight = 0;
-            bool                 foundPreds        = false;
+            bool                 foundPreds     = false;
 
             for (flowList* predEdge = block->bbPreds; predEdge != nullptr; predEdge = predEdge->getNext())
             {

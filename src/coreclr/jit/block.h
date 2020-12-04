@@ -95,14 +95,19 @@ struct EHblkDsc;
 struct BBtabDesc
 {
     float likelihood;
-    BasicBlock* block;
+
+    union
+    {
+        BasicBlock* block;
+        unsigned    ilOffset;
+    };
 };
 
 struct BBswtDesc
 {
-    BBtabDesc*   bbsDstTab; // case label table address
-    unsigned     bbsCount;  // count of cases (includes 'default' if bbsHasDefault)
-    bool         bbsHasDefault;
+    BBtabDesc* bbsDstTab; // case label table address
+    unsigned   bbsCount;  // count of cases (includes 'default' if bbsHasDefault)
+    bool       bbsHasDefault;
 
     BBswtDesc() : bbsHasDefault(true)
     {
@@ -530,7 +535,7 @@ struct BasicBlock : private LIR::Range
 #define BB_MAX_WEIGHT FLT_MAX // maximum finite weight  -- needs rethinking.
 
     // The dynamic execution weight of this block
-    weight_t bbWeight; 
+    weight_t bbWeight;
 
     // Likelihood of a flow transfer to a designated successor
     float likelihood;
@@ -1237,26 +1242,52 @@ struct BasicBlockList
 struct flowList
 {
 private:
-
     flowList*   m_next;        // The next edge in the list, nullptr for end of list.
     BasicBlock* m_sourceBlock; // The source block
-    BasicBlock* m_targetBlock; // The target block 
+    BasicBlock* m_targetBlock; // The target block
     unsigned    m_dupCount;    // The count of duplicate "edges" (use only for switch stmts)
 
 public:
+    flowList* getNext() const
+    {
+        return m_next;
+    }
+    flowList** getNextPtr()
+    {
+        return &m_next;
+    }
+    void setNext(flowList* fl)
+    {
+        m_next = fl;
+    }
 
-    flowList* getNext() const { return m_next; }
-    flowList** getNextPtr() { return &m_next; }
-    void setNext(flowList* fl) { m_next = fl; }
+    BasicBlock* sourceBlock() const
+    {
+        return m_sourceBlock;
+    }
+    void setSourceBlock(BasicBlock* block)
+    {
+        m_sourceBlock = block;
+    }
 
-    BasicBlock* sourceBlock() const { return m_sourceBlock; }
-    void setSourceBlock(BasicBlock* block) { m_sourceBlock = block; }
+    BasicBlock* targetBlock() const
+    {
+        return m_targetBlock;
+    }
 
-    BasicBlock* targetBlock() const { return m_targetBlock; }
-
-    unsigned dupCount() const { return m_dupCount; }
-    void addDup() { m_dupCount ++; }
-    void removeDup() { assert(m_dupCount >= 1); m_dupCount--; }
+    unsigned dupCount() const
+    {
+        return m_dupCount;
+    }
+    void addDup()
+    {
+        m_dupCount++;
+    }
+    void removeDup()
+    {
+        assert(m_dupCount >= 1);
+        m_dupCount--;
+    }
 
     BasicBlock::weight_t edgeWeight() const
     {

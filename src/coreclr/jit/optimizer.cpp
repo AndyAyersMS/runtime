@@ -172,7 +172,7 @@ void Compiler::optMarkLoopBlocks(BasicBlock* begBlk, BasicBlock* endBlk, bool ex
 
             flow->setNext(backedgeList);
             flow->setSourceBlock(pred->sourceBlock());
-            backedgeList  = flow;
+            backedgeList = flow;
         }
     }
 
@@ -474,7 +474,7 @@ void Compiler::optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmar
 
         switch (block->bbJumpKind)
         {
-            unsigned     jumpCnt;
+            unsigned   jumpCnt;
             BBtabDesc* jumpTab;
 
             case BBJ_NONE:
@@ -2613,7 +2613,7 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap)
                 if (redirectMap->Lookup(blk->bbJumpSwt->bbsDstTab[i].block, &newJumpDest))
                 {
                     blk->bbJumpSwt->bbsDstTab[i].block = newJumpDest;
-                    redirected                   = true;
+                    redirected                         = true;
                 }
             }
             // If any redirections happend, invalidate the switch table map for the switch.
@@ -9115,7 +9115,6 @@ void Compiler::optOptimizeBools()
 
             noway_assert(edge1 != nullptr);
             noway_assert(edge2 != nullptr);
-
 
             /* Get rid of the second block (which is a BBJ_COND) */
 

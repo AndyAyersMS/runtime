@@ -17770,7 +17770,7 @@ SPILLSTACK:
             case BBJ_SWITCH:
 
                 BBtabDesc* jmpTab;
-                unsigned     jmpCnt;
+                unsigned   jmpCnt;
 
                 addStmt = impExtractLastStmt();
                 assert(addStmt->GetRootNode()->gtOper == GT_SWITCH);

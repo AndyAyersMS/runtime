@@ -425,8 +425,8 @@ GenTree* Lowering::LowerNode(GenTree* node)
 
 GenTree* Lowering::LowerSwitch(GenTree* node)
 {
-    unsigned     jumpCnt;
-    unsigned     targetCnt;
+    unsigned   jumpCnt;
+    unsigned   targetCnt;
     BBtabDesc* jumpTab;
 
     assert(node->gtOper == GT_SWITCH);

@@ -16155,13 +16155,13 @@ bool Compiler::fgFoldConditional(BasicBlock* block)
             {
                 // If we remove an edge with profile weight then our profile will now be
                 // globally inconsistent. Tolerate for now, but warn in the dump.
-                flowList*   edgeTaken = fgGetPredForBlock(bTaken, block);
+                flowList*            edgeTaken  = fgGetPredForBlock(bTaken, block);
                 BasicBlock::weight_t edgeWeight = edgeTaken->edgeWeight();
 
                 if (edgeWeight != 0.0)
                 {
                     JITDUMP("Note: edge " FMT_BB " -> " FMT_BB " had nonzero profile weight 7.2f.\n",
-                        edgeTaken->sourceBlock(), edgeTaken->targetBlock(), edgeWeight);
+                            edgeTaken->sourceBlock(), edgeTaken->targetBlock(), edgeWeight);
                 }
             }
 

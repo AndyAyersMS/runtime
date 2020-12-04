@@ -1538,11 +1538,11 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
     //
     if (bbJumpKind == BBJ_SWITCH)
     {
-        float likelihood = 0;
-        const unsigned     count = bbJumpSwt->bbsCount;
-        BBtabDesc* table = bbJumpSwt->bbsDstTab;
-        BasicBlock* const target = edge->targetBlock();
-        bool found = false;
+        float             likelihood = 0;
+        const unsigned    count      = bbJumpSwt->bbsCount;
+        BBtabDesc*        table      = bbJumpSwt->bbsDstTab;
+        BasicBlock* const target     = edge->targetBlock();
+        bool              found      = false;
 
         for (unsigned i = 0; i < count; i++)
         {
@@ -1569,11 +1569,11 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
     {
         if (bbFallsThrough())
         {
-            assert(edge->targetBlock()== bbNext);
+            assert(edge->targetBlock() == bbNext);
         }
         else
         {
-            assert(edge->targetBlock()== bbJumpDest);
+            assert(edge->targetBlock() == bbJumpDest);
         }
 
         return 1.0f;
@@ -1588,7 +1588,7 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
     {
         return likelihood;
     }
-    
+
     assert(edge->targetBlock() == bbNext);
     return (1.0f - likelihood);
 }
