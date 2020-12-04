@@ -5531,7 +5531,7 @@ void Compiler::fgLinkBasicBlocks()
 
                 /* Default case of CEE_SWITCH (next block), is at end of jumpTab[] */
 
-                noway_assert(*(jumpPtr - 1) == curBBdesc->bbNext);
+                noway_assert((jumpPtr - 1)->block == curBBdesc->bbNext);
                 break;
 
             case BBJ_CALLFINALLY: // BBJ_CALLFINALLY and BBJ_EHCATCHRET don't appear until later
@@ -5700,7 +5700,7 @@ unsigned Compiler::fgMakeBasicBlocks(const BYTE* codeAddr, IL_OFFSET codeSize, F
 
                 /* Allocate the jump table */
 
-                jmpPtr = jmpTab = new (this, CMK_BasicBlock) BBTabDesc[jmpCnt + 1];
+                jmpPtr = jmpTab = new (this, CMK_BasicBlock) BBtabDesc[jmpCnt + 1];
 
                 /* Fill in the jump table */
 
@@ -13196,19 +13196,15 @@ bool Compiler::fgRelocateEHRegions()
 #endif // !FEATURE_EH_FUNCLETS
 
 #ifdef DEBUG
+// Print out all of the edge weights
 void Compiler::fgPrintEdgeWeights()
 {
-    BasicBlock* bSrc;
-    BasicBlock* bDst;
-    flowList*   edge;
-
-    // Print out all of the edge weights
-    for (bDst = fgFirstBB; bDst != nullptr; bDst = bDst->bbNext)
+    for (BasicBlock* bDst = fgFirstBB; bDst != nullptr; bDst = bDst->bbNext)
     {
         if (bDst->bbPreds != nullptr)
         {
             printf("    Edge weights into " FMT_BB " :", bDst->bbNum);
-            for (edge = bDst->bbPreds; edge != nullptr; edge = edge->getNext())
+            for (flowList* edge = bDst->bbPreds; edge != nullptr; edge = edge->getNext())
             {
                 BasicBlock* bSrc = edge->sourceBlock();
                 printf(FMT_BB " ", bSrc->bbNum);
@@ -14049,7 +14045,7 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 
         return true;
     }
-    else if (block->bbJumpSwt->bbsCount == 2 && block->bbJumpSwt->bbsDstTab[1] == block->bbNext)
+    else if ((block->bbJumpSwt->bbsCount == 2) && (block->bbJumpSwt->bbsDstTab[1].block == block->bbNext))
     {
         /* Use a BBJ_COND(switchVal==0) for a switch with only one
            significant clause besides the default clause, if the

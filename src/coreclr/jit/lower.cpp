@@ -463,7 +463,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
     {
         JITDUMP("Lowering switch " FMT_BB ": single target; converting to BBJ_ALWAYS\n", originalSwitchBB->bbNum);
         noway_assert(comp->opts.OptimizationDisabled());
-        if (originalSwitchBB->bbNext == jumpTab[0])
+        if (originalSwitchBB->bbNext == jumpTab[0].block)
         {
             originalSwitchBB->bbJumpKind = BBJ_NONE;
             originalSwitchBB->bbJumpDest = nullptr;
@@ -471,12 +471,12 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
         else
         {
             originalSwitchBB->bbJumpKind = BBJ_ALWAYS;
-            originalSwitchBB->bbJumpDest = jumpTab[0];
+            originalSwitchBB->bbJumpDest = jumpTab[0].block;
         }
         // Remove extra predecessor links if there was more than one case.
         for (unsigned i = 1; i < jumpCnt; ++i)
         {
-            (void)comp->fgRemoveRefPred(jumpTab[i], originalSwitchBB);
+            (void)comp->fgRemoveRefPred(jumpTab[i].block, originalSwitchBB);
         }
 
         // We have to get rid of the GT_SWITCH node but a child might have side effects so just assign

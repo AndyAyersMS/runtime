@@ -16282,14 +16282,14 @@ bool Compiler::fgFoldConditional(BasicBlock* block)
             switchVal = (unsigned)cond->AsIntCon()->gtIconVal;
             unsigned jumpCnt;
             jumpCnt = block->bbJumpSwt->bbsCount;
-            BasicBlock** jumpTab;
+            BBtabDesc* jumpTab;
             jumpTab = block->bbJumpSwt->bbsDstTab;
             bool foundVal;
             foundVal = false;
 
             for (unsigned val = 0; val < jumpCnt; val++, jumpTab++)
             {
-                BasicBlock* curJump = *jumpTab;
+                BasicBlock* curJump = jumpTab->block;
 
                 assert(curJump->countOfInEdges() > 0);
 

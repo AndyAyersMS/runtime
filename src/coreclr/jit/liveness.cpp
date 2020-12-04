@@ -935,15 +935,15 @@ void Compiler::fgExtendDbgLifetimes()
 
             case BBJ_SWITCH:
             {
-                BasicBlock** jmpTab;
-                unsigned     jmpCnt;
+                BBtabDesc* jmpTab;
+                unsigned   jmpCnt;
 
                 jmpCnt = block->bbJumpSwt->bbsCount;
                 jmpTab = block->bbJumpSwt->bbsDstTab;
 
                 do
                 {
-                    VarSetOps::UnionD(this, initVars, (*jmpTab)->bbScope);
+                    VarSetOps::UnionD(this, initVars, jmpTab->block->bbScope);
                 } while (++jmpTab, --jmpCnt);
             }
             break;

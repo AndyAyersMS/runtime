@@ -535,8 +535,8 @@ void Compiler::optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmar
 
                 switch (auxBlock->bbJumpKind)
                 {
-                    unsigned     jumpCnt;
-                    BasicBlock** jumpTab;
+                    unsigned   jumpCnt;
+                    BBtabDesc* jumpTab;
 
                     case BBJ_NONE:
                     case BBJ_COND:
@@ -566,8 +566,8 @@ void Compiler::optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmar
 
                         do
                         {
-                            noway_assert(*jumpTab);
-                            if ((*jumpTab) == optLoopTable[loopNum].lpEntry)
+                            noway_assert(jumpTab->block);
+                            if (jumpTab->block == optLoopTable[loopNum].lpEntry)
                             {
                                 removeLoop = false;
                             }
