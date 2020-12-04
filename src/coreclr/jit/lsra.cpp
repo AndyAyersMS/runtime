@@ -940,9 +940,9 @@ void LinearScan::setBlockSequence()
 #endif // TRACK_LSRA_STATS
 
         bool hasUniquePred = (block->GetUniquePred(compiler) != nullptr);
-        for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
+        for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->getNext())
         {
-            BasicBlock* predBlock = pred->flBlock;
+            BasicBlock* predBlock = pred->sourceBlock();
             if (!hasUniquePred)
             {
                 if (predBlock->NumSucc(compiler) > 1)
@@ -1190,9 +1190,9 @@ void LinearScan::addToBlockSequenceWorkList(BlockSet sequencedBlockSet, BasicBlo
     // Get predSet of block
     BlockSetOps::ClearD(compiler, predSet);
     flowList* pred;
-    for (pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
+    for (pred = block->bbPreds; pred != nullptr; pred = pred->getNext())
     {
-        BlockSetOps::AddElemD(compiler, predSet, pred->flBlock->bbNum);
+        BlockSetOps::AddElemD(compiler, predSet, pred->sourceBlock()->bbNum);
     }
 
     // If either a rarely run block or all its preds are already sequenced, use block's weight to sequence
@@ -2455,9 +2455,9 @@ BasicBlock* LinearScan::findPredBlockForLiveIn(BasicBlock* block,
                         }
                         else
                         {
-                            for (flowList* pred = otherBlock->bbPreds; pred != nullptr; pred = pred->flNext)
+                            for (flowList* pred = otherBlock->bbPreds; pred != nullptr; pred = pred->getNext())
                             {
-                                BasicBlock* otherPred = pred->flBlock;
+                                BasicBlock* otherPred = pred->sourceBlock();
                                 if (otherPred->bbNum == blockInfo[otherBlock->bbNum].predBBNum)
                                 {
                                     predBlock = otherPred;
@@ -2475,9 +2475,9 @@ BasicBlock* LinearScan::findPredBlockForLiveIn(BasicBlock* block,
         }
         else
         {
-            for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
+            for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->getNext())
             {
-                BasicBlock* candidatePredBlock = pred->flBlock;
+                BasicBlock* candidatePredBlock = pred->sourceBlock();
 
                 if (isBlockVisited(candidatePredBlock))
                 {
@@ -8371,7 +8371,7 @@ void LinearScan::handleOutgoingCriticalEdges(BasicBlock* block)
             else if (liveOnlyAtSplitEdge)
             {
                 // Is the var live only at those target blocks which are connected by a split edge to this block
-                liveOnlyAtSplitEdge = ((succBlock->bbPreds->flNext == nullptr) && (succBlock != compiler->fgFirstBB));
+                liveOnlyAtSplitEdge = ((succBlock->bbPreds->getNext() == nullptr) && (succBlock != compiler->fgFirstBB));
             }
 
             regNumber toReg = getVarReg(getInVarToRegMap(succBlock->bbNum), outResolutionSetVarIndex);
@@ -8474,7 +8474,7 @@ void LinearScan::handleOutgoingCriticalEdges(BasicBlock* block)
 
             // Any "diffResolutionSet" resolution for a block with no other predecessors will be handled later
             // as split resolution.
-            if ((succBlock->bbPreds->flNext == nullptr) && (succBlock != compiler->fgFirstBB))
+            if ((succBlock->bbPreds->getNext() == nullptr) && (succBlock != compiler->fgFirstBB))
             {
                 continue;
             }
@@ -8711,9 +8711,9 @@ void LinearScan::resolveEdges()
             continue;
         }
         VarToRegMap toVarToRegMap = getInVarToRegMap(block->bbNum);
-        for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
+        for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->getNext())
         {
-            BasicBlock*     predBlock       = pred->flBlock;
+            BasicBlock*     predBlock       = pred->sourceBlock();
             VarToRegMap     fromVarToRegMap = getOutVarToRegMap(predBlock->bbNum);
             VarSetOps::Iter iter(compiler, block->bbLiveIn);
             unsigned        varIndex = 0;
@@ -11137,8 +11137,8 @@ void LinearScan::verifyFinalAllocation()
             {
                 dumpRegRecordTitle();
                 printf(shortRefPositionFormat, 0, 0);
-                assert(currentBlock->bbPreds != nullptr && currentBlock->bbPreds->flBlock != nullptr);
-                printf(bbRefPosFormat, currentBlock->bbNum, currentBlock->bbPreds->flBlock->bbNum);
+                assert(currentBlock->bbPreds != nullptr && currentBlock->bbPreds->sourceBlock() != nullptr);
+                printf(bbRefPosFormat, currentBlock->bbNum, currentBlock->bbPreds->sourceBlock()->bbNum);
                 dumpRegRecords();
             }
 

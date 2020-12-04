@@ -92,9 +92,15 @@ struct EHblkDsc;
  *     switches with just a default case to a BBJ_ALWAYS branch, and a switch with just two cases to a BBJ_COND.
  *     However, in debuggable code, we might not do that, so bbsCount might be 1.
  */
+struct BBtabDesc
+{
+    float likelihood;
+    BasicBlock* block;
+};
+
 struct BBswtDesc
 {
-    BasicBlock** bbsDstTab; // case label table address
+    BBtabDesc*   bbsDstTab; // case label table address
     unsigned     bbsCount;  // count of cases (includes 'default' if bbsHasDefault)
     bool         bbsHasDefault;
 
@@ -114,7 +120,7 @@ struct BBswtDesc
     {
         assert(bbsHasDefault);
         assert(bbsCount > 0);
-        return bbsDstTab[bbsCount - 1];
+        return bbsDstTab[bbsCount - 1].block;
     }
 };
 
@@ -523,7 +529,11 @@ struct BasicBlock : private LIR::Range
 #define BB_ZERO_WEIGHT 0.0f
 #define BB_MAX_WEIGHT FLT_MAX // maximum finite weight  -- needs rethinking.
 
-    weight_t bbWeight; // The dynamic execution weight of this block
+    // The dynamic execution weight of this block
+    weight_t bbWeight; 
+
+    // Likelihood of a flow transfer to a designated successor
+    float likelihood;
 
     // getCalledCount -- get the value used to normalize weights for this method
     weight_t getCalledCount(Compiler* comp);
@@ -635,6 +645,11 @@ struct BasicBlock : private LIR::Range
         return (bbWeight == BB_MAX_WEIGHT);
     }
 
+    // Compute weight for a particular edge.
+    //
+    weight_t getEdgeWeight(const flowList* edge) const;
+    float getEdgeLikelihood(const flowList* edge) const;
+
     // Returns "true" if the block is empty. Empty here means there are no statement
     // trees *except* PHI definitions.
     bool isEmpty();
@@ -687,7 +702,7 @@ struct BasicBlock : private LIR::Range
     // instead of 2.
 
     // NumSucc: Returns the number of successors of "this".
-    unsigned NumSucc();
+    unsigned NumSucc() const;
     unsigned NumSucc(Compiler* comp);
 
     // GetSucc: Returns the "i"th successor. Requires (0 <= i < NumSucc()).
@@ -974,7 +989,7 @@ struct BasicBlock : private LIR::Range
     static size_t s_Count;
 #endif // MEASURE_BLOCK_SIZE
 
-    bool bbFallsThrough();
+    bool bbFallsThrough() const;
 
     // Our slop fraction is 1/128 of the block weight rounded off
     static weight_t GetSlopFraction(weight_t weightBlk)
@@ -1181,9 +1196,6 @@ typedef JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BasicBlock*> Block
 // (The list of zero edges is represented by NULL.)
 // Every BasicBlock has a field called bbPreds of this type.  This field
 // represents the list of "edges" that flow into this BasicBlock.
-// The flowList type only stores the BasicBlock* of the source for the
-// control flow edge.  The destination block for the control flow edge
-// is implied to be the block which contained the bbPreds field.
 //
 // For a switch branch target there may be multiple "edges" that have
 // the same source block (and destination block).  We need to count the
@@ -1195,12 +1207,6 @@ typedef JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BasicBlock*> Block
 // the number of times each edge was executed by examining the adjacent
 // BasicBlock weights.  As we are doing for BasicBlocks, we call the number
 // of times that a control flow edge was executed the "edge weight".
-// In order to compute the edge weights we need to use a bounded range
-// for every edge weight. These two fields, 'flEdgeWeightMin' and 'flEdgeWeightMax'
-// are used to hold a bounded range.  Most often these will converge such
-// that both values are the same and that value is the exact edge weight.
-// Sometimes we are left with a rage of possible values between [Min..Max]
-// which represents an inexact edge weight.
 //
 // The bbPreds list is initially created by Compiler::fgComputePreds()
 // and is incrementally kept up to date.
@@ -1230,39 +1236,39 @@ struct BasicBlockList
 
 struct flowList
 {
-    flowList*   flNext;     // The next BasicBlock in the list, nullptr for end of list.
-    BasicBlock* flBlock;    // The BasicBlock of interest.
-    unsigned    flDupCount; // The count of duplicate "edges" (use only for switch stmts)
-
 private:
-    BasicBlock::weight_t flEdgeWeightMin;
-    BasicBlock::weight_t flEdgeWeightMax;
+
+    flowList*   m_next;        // The next edge in the list, nullptr for end of list.
+    BasicBlock* m_sourceBlock; // The source block
+    BasicBlock* m_targetBlock; // The target block 
+    unsigned    m_dupCount;    // The count of duplicate "edges" (use only for switch stmts)
 
 public:
-    BasicBlock::weight_t edgeWeightMin() const
-    {
-        return flEdgeWeightMin;
-    }
-    BasicBlock::weight_t edgeWeightMax() const
-    {
-        return flEdgeWeightMax;
-    }
 
-    // These two methods are used to set new values for flEdgeWeightMin and flEdgeWeightMax
-    // they are used only during the computation of the edge weights
-    // They return false if the newWeight is not between the current [min..max]
-    // when slop is non-zero we allow for the case where our weights might be off by 'slop'
-    //
-    bool setEdgeWeightMinChecked(BasicBlock::weight_t newWeight, BasicBlock::weight_t slop, bool* wbUsedSlop);
-    bool setEdgeWeightMaxChecked(BasicBlock::weight_t newWeight, BasicBlock::weight_t slop, bool* wbUsedSlop);
-    void setEdgeWeights(BasicBlock::weight_t newMinWeight, BasicBlock::weight_t newMaxWeight);
+    flowList* getNext() const { return m_next; }
+    flowList** getNextPtr() { return &m_next; }
+    void setNext(flowList* fl) { m_next = fl; }
 
-    flowList() : flNext(nullptr), flBlock(nullptr), flDupCount(0), flEdgeWeightMin(0), flEdgeWeightMax(0)
+    BasicBlock* sourceBlock() const { return m_sourceBlock; }
+    void setSourceBlock(BasicBlock* block) { m_sourceBlock = block; }
+
+    BasicBlock* targetBlock() const { return m_targetBlock; }
+
+    unsigned dupCount() const { return m_dupCount; }
+    void addDup() { m_dupCount ++; }
+    void removeDup() { assert(m_dupCount >= 1); m_dupCount--; }
+
+    BasicBlock::weight_t edgeWeight() const
     {
+        return m_sourceBlock->getEdgeWeight(this);
     }
 
-    flowList(BasicBlock* blk, flowList* rest)
-        : flNext(rest), flBlock(blk), flDupCount(0), flEdgeWeightMin(0), flEdgeWeightMax(0)
+    flowList() : m_next(nullptr), m_sourceBlock(nullptr), m_targetBlock(nullptr), m_dupCount(0)
+    {
+    }
+
+    flowList(BasicBlock* sourceBlock, BasicBlock* targetBlock, flowList* rest)
+        : m_next(rest), m_sourceBlock(sourceBlock), m_targetBlock(targetBlock), m_dupCount(1)
     {
     }
 };

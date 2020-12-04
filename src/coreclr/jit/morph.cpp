@@ -16153,81 +16153,15 @@ bool Compiler::fgFoldConditional(BasicBlock* block)
 
             if (fgHaveValidEdgeWeights)
             {
-                // We are removing an edge from block to bNotTaken
-                // and we have already computed the edge weights, so
-                // we will try to adjust some of the weights
-                //
+                // If we remove an edge with profile weight then our profile will now be
+                // globally inconsistent. Tolerate for now, but warn in the dump.
                 flowList*   edgeTaken = fgGetPredForBlock(bTaken, block);
-                BasicBlock* bUpdated  = nullptr; // non-NULL if we updated the weight of an internal block
+                BasicBlock::weight_t edgeWeight = edgeTaken->edgeWeight();
 
-                // We examine the taken edge (block -> bTaken)
-                // if block has valid profile weight and bTaken does not we try to adjust bTaken's weight
-                // else if bTaken has valid profile weight and block does not we try to adjust block's weight
-                // We can only adjust the block weights when (the edge block -> bTaken) is the only edge into bTaken
-                //
-                if (block->hasProfileWeight())
+                if (edgeWeight != 0.0)
                 {
-                    // The edge weights for (block -> bTaken) are 100% of block's weight
-
-                    edgeTaken->setEdgeWeights(block->bbWeight, block->bbWeight);
-
-                    if (!bTaken->hasProfileWeight())
-                    {
-                        if ((bTaken->countOfInEdges() == 1) || (bTaken->bbWeight < block->bbWeight))
-                        {
-                            // Update the weight of bTaken
-                            bTaken->inheritWeight(block);
-                            bUpdated = bTaken;
-                        }
-                    }
-                }
-                else if (bTaken->hasProfileWeight())
-                {
-                    if (bTaken->countOfInEdges() == 1)
-                    {
-                        // There is only one in edge to bTaken
-                        edgeTaken->setEdgeWeights(bTaken->bbWeight, bTaken->bbWeight);
-
-                        // Update the weight of block
-                        block->inheritWeight(bTaken);
-                        bUpdated = block;
-                    }
-                }
-
-                if (bUpdated != nullptr)
-                {
-                    BasicBlock::weight_t newMinWeight;
-                    BasicBlock::weight_t newMaxWeight;
-
-                    flowList* edge;
-                    // Now fix the weights of the edges out of 'bUpdated'
-                    switch (bUpdated->bbJumpKind)
-                    {
-                        case BBJ_NONE:
-                            edge         = fgGetPredForBlock(bUpdated->bbNext, bUpdated);
-                            newMaxWeight = bUpdated->bbWeight;
-                            newMinWeight = min(edge->edgeWeightMin(), newMaxWeight);
-                            edge->setEdgeWeights(newMinWeight, newMaxWeight);
-                            break;
-
-                        case BBJ_COND:
-                            edge         = fgGetPredForBlock(bUpdated->bbNext, bUpdated);
-                            newMaxWeight = bUpdated->bbWeight;
-                            newMinWeight = min(edge->edgeWeightMin(), newMaxWeight);
-                            edge->setEdgeWeights(newMinWeight, newMaxWeight);
-                            FALLTHROUGH;
-
-                        case BBJ_ALWAYS:
-                            edge         = fgGetPredForBlock(bUpdated->bbJumpDest, bUpdated);
-                            newMaxWeight = bUpdated->bbWeight;
-                            newMinWeight = min(edge->edgeWeightMin(), newMaxWeight);
-                            edge->setEdgeWeights(newMinWeight, newMaxWeight);
-                            break;
-
-                        default:
-                            // We don't handle BBJ_SWITCH
-                            break;
-                    }
+                    JITDUMP("Note: edge " FMT_BB " -> " FMT_BB " had nonzero profile weight 7.2f.\n",
+                        edgeTaken->sourceBlock(), edgeTaken->targetBlock(), edgeWeight);
                 }
             }
 

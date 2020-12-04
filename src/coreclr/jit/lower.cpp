@@ -427,7 +427,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
 {
     unsigned     jumpCnt;
     unsigned     targetCnt;
-    BasicBlock** jumpTab;
+    BBtabDesc* jumpTab;
 
     assert(node->gtOper == GT_SWITCH);
 
@@ -513,11 +513,11 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
     unsigned  tempLclNum  = temp->AsLclVarCommon()->GetLclNum();
     var_types tempLclType = temp->TypeGet();
 
-    BasicBlock* defaultBB   = jumpTab[jumpCnt - 1];
+    BasicBlock* defaultBB   = jumpTab[jumpCnt - 1].block;
     BasicBlock* followingBB = originalSwitchBB->bbNext;
 
     /* Is the number of cases right for a test and jump switch? */
-    const bool fFirstCaseFollows = (followingBB == jumpTab[0]);
+    const bool fFirstCaseFollows = (followingBB == jumpTab[0].block);
     const bool fDefaultFollows   = (followingBB == defaultBB);
 
     unsigned minSwitchTabJumpCnt = 2; // table is better than just 2 cmp/jcc
@@ -568,13 +568,13 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
 
     // Turn originalSwitchBB into a BBJ_COND.
     originalSwitchBB->bbJumpKind = BBJ_COND;
-    originalSwitchBB->bbJumpDest = jumpTab[jumpCnt - 1];
+    originalSwitchBB->bbJumpDest = jumpTab[jumpCnt - 1].block;
 
     // Fix the pred for the default case: the default block target still has originalSwitchBB
     // as a predecessor, but the fgSplitBlockAfterStatement() moved all predecessors to point
     // to afterDefaultCondBlock.
-    flowList* oldEdge = comp->fgRemoveRefPred(jumpTab[jumpCnt - 1], afterDefaultCondBlock);
-    comp->fgAddRefPred(jumpTab[jumpCnt - 1], originalSwitchBB, oldEdge);
+    flowList* oldEdge = comp->fgRemoveRefPred(jumpTab[jumpCnt - 1].block, afterDefaultCondBlock);
+    comp->fgAddRefPred(jumpTab[jumpCnt - 1].block, originalSwitchBB, oldEdge);
 
     bool useJumpSequence = jumpCnt < minSwitchTabJumpCnt;
 
@@ -596,11 +596,11 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
     BasicBlock* uniqueSucc = nullptr;
     if (targetCnt == 2)
     {
-        uniqueSucc = jumpTab[0];
+        uniqueSucc = jumpTab[0].block;
         noway_assert(jumpCnt >= 2);
         for (unsigned i = 1; i < jumpCnt - 1; i++)
         {
-            if (jumpTab[i] != uniqueSucc)
+            if (jumpTab[i].block != uniqueSucc)
             {
                 uniqueSucc = nullptr;
                 break;
@@ -618,7 +618,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
         // Remove any additional predecessor links to uniqueSucc.
         for (unsigned i = 1; i < jumpCnt - 1; ++i)
         {
-            assert(jumpTab[i] == uniqueSucc);
+            assert(jumpTab[i].block == uniqueSucc);
             (void)comp->fgRemoveRefPred(uniqueSucc, afterDefaultCondBlock);
         }
         if (afterDefaultCondBlock->bbNext == uniqueSucc)
@@ -664,9 +664,9 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
 
             // Remove the switch from the predecessor list of this case target's block.
             // We'll add the proper new predecessor edge later.
-            flowList* oldEdge = comp->fgRemoveRefPred(jumpTab[i], afterDefaultCondBlock);
+            flowList* oldEdge = comp->fgRemoveRefPred(jumpTab[i].block, afterDefaultCondBlock);
 
-            if (jumpTab[i] == followingBB)
+            if (jumpTab[i].block == followingBB)
             {
                 // This case label follows the switch; let it fall through.
                 fAnyTargetFollows = true;
@@ -690,10 +690,10 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
 
             // We're going to have a branch, either a conditional or unconditional,
             // to the target. Set the target.
-            currentBlock->bbJumpDest = jumpTab[i];
+            currentBlock->bbJumpDest = jumpTab[i].block;
 
             // Wire up the predecessor list for the "branch" case.
-            comp->fgAddRefPred(jumpTab[i], currentBlock, oldEdge);
+            comp->fgAddRefPred(jumpTab[i].block, currentBlock, oldEdge);
 
             if (!fAnyTargetFollows && (i == jumpCnt - 2))
             {
@@ -821,7 +821,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
 //    to emit the jump table itself that can reach up to 256 bytes (for 64 entries).
 //
 bool Lowering::TryLowerSwitchToBitTest(
-    BasicBlock* jumpTable[], unsigned jumpCount, unsigned targetCount, BasicBlock* bbSwitch, GenTree* switchValue)
+    BBtabDesc* jumpTable, unsigned jumpCount, unsigned targetCount, BasicBlock* bbSwitch, GenTree* switchValue)
 {
 #ifndef TARGET_XARCH
     // Other architectures may use this if they substitute GT_BT with equivalent code.
@@ -863,20 +863,20 @@ bool Lowering::TryLowerSwitchToBitTest(
     //
 
     BasicBlock* bbCase0  = nullptr;
-    BasicBlock* bbCase1  = jumpTable[0];
+    BasicBlock* bbCase1  = jumpTable[0].block;
     size_t      bitTable = 1;
 
     for (unsigned bitIndex = 1; bitIndex < bitCount; bitIndex++)
     {
-        if (jumpTable[bitIndex] == bbCase1)
+        if (jumpTable[bitIndex].block == bbCase1)
         {
             bitTable |= (size_t(1) << bitIndex);
         }
         else if (bbCase0 == nullptr)
         {
-            bbCase0 = jumpTable[bitIndex];
+            bbCase0 = jumpTable[bitIndex].block;
         }
-        else if (jumpTable[bitIndex] != bbCase0)
+        else if (jumpTable[bitIndex].block != bbCase0)
         {
             // If it's neither bbCase0 nor bbCase1 then it means we have 3 targets. There can't be more
             // than 3 because of the check at the start of the function.

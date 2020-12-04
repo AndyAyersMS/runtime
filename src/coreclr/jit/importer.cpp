@@ -17769,7 +17769,7 @@ SPILLSTACK:
 
             case BBJ_SWITCH:
 
-                BasicBlock** jmpTab;
+                BBtabDesc* jmpTab;
                 unsigned     jmpCnt;
 
                 addStmt = impExtractLastStmt();
@@ -17780,7 +17780,7 @@ SPILLSTACK:
 
                 do
                 {
-                    tgtBlock = (*jmpTab);
+                    tgtBlock = jmpTab->block;
 
                     multRef |= tgtBlock->bbRefs;
 

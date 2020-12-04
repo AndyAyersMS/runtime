@@ -158,10 +158,10 @@ void Compiler::optMarkLoopBlocks(BasicBlock* begBlk, BasicBlock* endBlk, bool ex
     /* Build list of backedges for block begBlk */
     flowList* backedgeList = nullptr;
 
-    for (flowList* pred = begBlk->bbPreds; pred != nullptr; pred = pred->flNext)
+    for (flowList* pred = begBlk->bbPreds; pred != nullptr; pred = pred->getNext())
     {
         /* Is this a backedge? */
-        if (pred->flBlock->bbNum >= begBlk->bbNum)
+        if (pred->sourceBlock()->bbNum >= begBlk->bbNum)
         {
             flowList* flow = new (this, CMK_FlowList) flowList();
 
@@ -170,8 +170,8 @@ void Compiler::optMarkLoopBlocks(BasicBlock* begBlk, BasicBlock* endBlk, bool ex
             genFlowNodeSize += sizeof(flowList);
 #endif // MEASURE_BLOCK_SIZE
 
-            flow->flNext  = backedgeList;
-            flow->flBlock = pred->flBlock;
+            flow->setNext(backedgeList);
+            flow->setSourceBlock(pred->sourceBlock());
             backedgeList  = flow;
         }
     }
@@ -197,9 +197,9 @@ void Compiler::optMarkLoopBlocks(BasicBlock* begBlk, BasicBlock* endBlk, bool ex
             bool reachable = false;
             bool dominates = false;
 
-            for (flowList* tmp = backedgeList; tmp != nullptr; tmp = tmp->flNext)
+            for (flowList* tmp = backedgeList; tmp != nullptr; tmp = tmp->getNext())
             {
-                BasicBlock* backedge = tmp->flBlock;
+                BasicBlock* backedge = tmp->sourceBlock();
 
                 if (!curBlk->isRunRarely())
                 {
@@ -297,9 +297,9 @@ void Compiler::optUnmarkLoopBlocks(BasicBlock* begBlk, BasicBlock* endBlk)
     BasicBlock* curBlk;
     unsigned    backEdgeCount = 0;
 
-    for (flowList* pred = begBlk->bbPreds; pred != nullptr; pred = pred->flNext)
+    for (flowList* pred = begBlk->bbPreds; pred != nullptr; pred = pred->getNext())
     {
-        curBlk = pred->flBlock;
+        curBlk = pred->sourceBlock();
 
         /* is this a backward edge? (from curBlk to begBlk) */
 
@@ -475,7 +475,7 @@ void Compiler::optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmar
         switch (block->bbJumpKind)
         {
             unsigned     jumpCnt;
-            BasicBlock** jumpTab;
+            BBtabDesc* jumpTab;
 
             case BBJ_NONE:
             case BBJ_COND:
@@ -505,8 +505,8 @@ void Compiler::optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmar
 
                 do
                 {
-                    noway_assert(*jumpTab);
-                    if ((*jumpTab) == optLoopTable[loopNum].lpEntry)
+                    noway_assert(jumpTab->block);
+                    if (jumpTab->block == optLoopTable[loopNum].lpEntry)
                     {
                         removeLoop = true;
                     }
@@ -1233,9 +1233,9 @@ bool Compiler::optRecordLoop(BasicBlock*   head,
 
         // Make sure the "iterVar" initialization is never skipped,
         // i.e. every pred of ENTRY other than HEAD is in the loop.
-        for (flowList* predEdge = entry->bbPreds; predEdge; predEdge = predEdge->flNext)
+        for (flowList* predEdge = entry->bbPreds; predEdge; predEdge = predEdge->getNext())
         {
-            BasicBlock* predBlock = predEdge->flBlock;
+            BasicBlock* predBlock = predEdge->sourceBlock();
             if ((predBlock != head) && !optLoopTable[loopInd].lpContains(predBlock))
             {
                 goto DONE_LOOP;
@@ -1374,12 +1374,12 @@ void Compiler::optCheckPreds()
 
     for (block = fgFirstBB; block; block = block->bbNext)
     {
-        for (pred = block->bbPreds; pred; pred = pred->flNext)
+        for (pred = block->bbPreds; pred; pred = pred->getNext())
         {
             // make sure this pred is part of the BB list
             for (blockPred = fgFirstBB; blockPred; blockPred = blockPred->bbNext)
             {
-                if (blockPred == pred->flBlock)
+                if (blockPred == pred->sourceBlock())
                 {
                     break;
                 }
@@ -1866,9 +1866,9 @@ private:
             }
 
             // Add preds to the worklist, checking for side-entries.
-            for (flowList* predIter = block->bbPreds; predIter != nullptr; predIter = predIter->flNext)
+            for (flowList* predIter = block->bbPreds; predIter != nullptr; predIter = predIter->getNext())
             {
-                BasicBlock* pred = predIter->flBlock;
+                BasicBlock* pred = predIter->sourceBlock();
 
                 unsigned int testNum = PositionNum(pred);
 
@@ -1955,8 +1955,8 @@ private:
             // This must be a block we inserted to connect fall-through after moving blocks.
             // To determine if it's in the loop or not, use the number of its unique predecessor
             // block.
-            assert(block->bbPreds->flBlock == block->bbPrev);
-            assert(block->bbPreds->flNext == nullptr);
+            assert(block->bbPreds->sourceBlock() == block->bbPrev);
+            assert(block->bbPreds->getNext() == nullptr);
             return block->bbPrev->bbNum;
         }
         return block->bbNum;
@@ -2144,9 +2144,9 @@ private:
         // of an edge from the run of blocks being moved to `newMoveAfter` -- doing so would
         // introduce a new lexical back-edge, which could (maybe?) confuse the loop search
         // algorithm, and isn't desirable layout anyway.
-        for (flowList* predIter = newMoveAfter->bbPreds; predIter != nullptr; predIter = predIter->flNext)
+        for (flowList* predIter = newMoveAfter->bbPreds; predIter != nullptr; predIter = predIter->getNext())
         {
-            unsigned int predNum = predIter->flBlock->bbNum;
+            unsigned int predNum = predIter->sourceBlock()->bbNum;
 
             if ((predNum >= top->bbNum) && (predNum <= bottom->bbNum) && !loopBlocks.IsMember(predNum))
             {
@@ -2214,9 +2214,9 @@ private:
         BasicBlock* nextLoopBlock = lastNonLoopBlock->bbNext;
         for (BasicBlock* testBlock = firstNonLoopBlock; testBlock != nextLoopBlock; testBlock = testBlock->bbNext)
         {
-            for (flowList* predIter = testBlock->bbPreds; predIter != nullptr; predIter = predIter->flNext)
+            for (flowList* predIter = testBlock->bbPreds; predIter != nullptr; predIter = predIter->getNext())
             {
-                BasicBlock*  testPred           = predIter->flBlock;
+                BasicBlock*  testPred           = predIter->sourceBlock();
                 unsigned int predPosNum         = PositionNum(testPred);
                 unsigned int firstNonLoopPosNum = PositionNum(firstNonLoopBlock);
                 unsigned int lastNonLoopPosNum  = PositionNum(lastNonLoopBlock);
@@ -2374,13 +2374,13 @@ private:
 
                 unsigned jumpCnt;
                 jumpCnt = block->bbJumpSwt->bbsCount;
-                BasicBlock** jumpTab;
+                BBtabDesc* jumpTab;
                 jumpTab = block->bbJumpSwt->bbsDstTab;
 
                 do
                 {
-                    noway_assert(*jumpTab);
-                    exitPoint = *jumpTab;
+                    noway_assert(jumpTab->block);
+                    exitPoint = jumpTab->block;
 
                     if (!loopBlocks.IsMember(exitPoint->bbNum))
                     {
@@ -2443,9 +2443,9 @@ void Compiler::optFindNaturalLoops()
             continue;
         }
 
-        for (flowList* pred = top->bbPreds; pred; pred = pred->flNext)
+        for (flowList* pred = top->bbPreds; pred; pred = pred->getNext())
         {
-            if (search.FindLoop(head, top, pred->flBlock))
+            if (search.FindLoop(head, top, pred->sourceBlock()))
             {
                 // Found a loop; record it and see if we've hit the limit.
                 bool recordedLoop = search.RecordLoop();
@@ -2610,9 +2610,9 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap)
             bool redirected = false;
             for (unsigned i = 0; i < blk->bbJumpSwt->bbsCount; i++)
             {
-                if (redirectMap->Lookup(blk->bbJumpSwt->bbsDstTab[i], &newJumpDest))
+                if (redirectMap->Lookup(blk->bbJumpSwt->bbsDstTab[i].block, &newJumpDest))
                 {
-                    blk->bbJumpSwt->bbsDstTab[i] = newJumpDest;
+                    blk->bbJumpSwt->bbsDstTab[i].block = newJumpDest;
                     redirected                   = true;
                 }
             }
@@ -2654,7 +2654,7 @@ void Compiler::optCopyBlkDest(BasicBlock* from, BasicBlock* to)
         {
             to->bbJumpSwt            = new (this, CMK_BasicBlock) BBswtDesc();
             to->bbJumpSwt->bbsCount  = from->bbJumpSwt->bbsCount;
-            to->bbJumpSwt->bbsDstTab = new (this, CMK_BasicBlock) BasicBlock*[from->bbJumpSwt->bbsCount];
+            to->bbJumpSwt->bbsDstTab = new (this, CMK_BasicBlock) BBtabDesc[from->bbJumpSwt->bbsCount];
 
             for (unsigned i = 0; i < from->bbJumpSwt->bbsCount; i++)
             {
@@ -2840,9 +2840,9 @@ bool Compiler::optCanonicalizeLoop(unsigned char loopInd)
     // This is ok, because after the first redirection, the topPredBlock branch target will no longer match the source
     // edge of the blockMap, so nothing will happen.
     bool firstPred = true;
-    for (flowList* topPred = t->bbPreds; topPred != nullptr; topPred = topPred->flNext)
+    for (flowList* topPred = t->bbPreds; topPred != nullptr; topPred = topPred->getNext())
     {
-        BasicBlock* topPredBlock = topPred->flBlock;
+        BasicBlock* topPredBlock = topPred->sourceBlock();
 
         // Skip if topPredBlock is in the loop.
         // Note that this uses block number to detect membership in the loop. We are adding blocks during
@@ -4303,24 +4303,9 @@ void Compiler::fgOptWhileLoop(BasicBlock* block)
             flowList* edgeToJump = fgGetPredForBlock(bTest->bbJumpDest, bTest);
 
             // Calculate the new weight for block bTest
-
             BasicBlock::weight_t newWeightTest =
                 (weightTest > weightBlock) ? (weightTest - weightBlock) : BB_ZERO_WEIGHT;
             bTest->bbWeight = newWeightTest;
-
-            if (newWeightTest == BB_ZERO_WEIGHT)
-            {
-                bTest->bbFlags |= BBF_RUN_RARELY;
-                // All out edge weights are set to zero
-                edgeToNext->setEdgeWeights(BB_ZERO_WEIGHT, BB_ZERO_WEIGHT);
-                edgeToJump->setEdgeWeights(BB_ZERO_WEIGHT, BB_ZERO_WEIGHT);
-            }
-            else
-            {
-                // Update the our edge weights
-                edgeToNext->setEdgeWeights(BB_ZERO_WEIGHT, min(edgeToNext->edgeWeightMax(), newWeightTest));
-                edgeToJump->setEdgeWeights(BB_ZERO_WEIGHT, min(edgeToJump->edgeWeightMax(), newWeightTest));
-            }
         }
     }
 
@@ -4448,11 +4433,11 @@ void Compiler::optOptimizeLoops()
         {
             BasicBlock* foundBottom = nullptr;
 
-            for (pred = top->bbPreds; pred; pred = pred->flNext)
+            for (pred = top->bbPreds; pred; pred = pred->getNext())
             {
                 /* Is this a loop candidate? - We look for "back edges" */
 
-                BasicBlock* bottom = pred->flBlock;
+                BasicBlock* bottom = pred->sourceBlock();
 
                 /* is this a backward edge? (from BOTTOM to TOP) */
 
@@ -5450,9 +5435,9 @@ void Compiler::optEnsureUniqueHead(unsigned loopInd, BasicBlock::weight_t ambien
     BlockToBlockMap* blockMap = new (getAllocator()) BlockToBlockMap(getAllocator());
     blockMap->Set(e, h2);
 
-    for (flowList* predEntry = e->bbPreds; predEntry; predEntry = predEntry->flNext)
+    for (flowList* predEntry = e->bbPreds; predEntry; predEntry = predEntry->getNext())
     {
-        BasicBlock* predBlock = predEntry->flBlock;
+        BasicBlock* predBlock = predEntry->sourceBlock();
 
         // Skip if predBlock is in the loop.
         if (t->bbNum <= predBlock->bbNum && predBlock->bbNum <= b->bbNum)
@@ -7413,8 +7398,8 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
                     noway_assert(edgeToNext != nullptr);
                     noway_assert(edgeToJump != nullptr);
 
-                    loopEnteredCount = (edgeToNext->edgeWeightMin() + edgeToNext->edgeWeightMax()) / 2.0f;
-                    loopSkippedCount = (edgeToJump->edgeWeightMin() + edgeToJump->edgeWeightMax()) / 2.0f;
+                    loopEnteredCount = edgeToNext->edgeWeight();
+                    loopSkippedCount = edgeToJump->edgeWeight();
                 }
                 else
                 {
@@ -7487,9 +7472,9 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
     fgAddRefPred(preHead, head);
     bool checkNestedLoops = false;
 
-    for (flowList* pred = top->bbPreds; pred; pred = pred->flNext)
+    for (flowList* pred = top->bbPreds; pred; pred = pred->getNext())
     {
-        BasicBlock* predBlock = pred->flBlock;
+        BasicBlock* predBlock = pred->sourceBlock();
 
         if (fgDominate(top, predBlock))
         {
@@ -7541,16 +7526,15 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
             case BBJ_SWITCH:
                 unsigned jumpCnt;
                 jumpCnt = predBlock->bbJumpSwt->bbsCount;
-                BasicBlock** jumpTab;
+                BBtabDesc* jumpTab;
                 jumpTab = predBlock->bbJumpSwt->bbsDstTab;
 
                 do
                 {
-                    assert(*jumpTab);
-                    if ((*jumpTab) == top)
+                    assert(jumpTab->block);
+                    if (jumpTab->block == top)
                     {
-                        (*jumpTab) = preHead;
-
+                        jumpTab->block = preHead;
                         fgRemoveRefPred(top, predBlock);
                         fgAddRefPred(preHead, predBlock);
                         preHead->bbFlags |= BBF_JMP_TARGET | BBF_HAS_LABEL;
@@ -9132,16 +9116,6 @@ void Compiler::optOptimizeBools()
             noway_assert(edge1 != nullptr);
             noway_assert(edge2 != nullptr);
 
-            BasicBlock::weight_t edgeSumMin = edge1->edgeWeightMin() + edge2->edgeWeightMin();
-            BasicBlock::weight_t edgeSumMax = edge1->edgeWeightMax() + edge2->edgeWeightMax();
-            if ((edgeSumMax >= edge1->edgeWeightMax()) && (edgeSumMax >= edge2->edgeWeightMax()))
-            {
-                edge1->setEdgeWeights(edgeSumMin, edgeSumMax);
-            }
-            else
-            {
-                edge1->setEdgeWeights(BB_ZERO_WEIGHT, BB_MAX_WEIGHT);
-            }
 
             /* Get rid of the second block (which is a BBJ_COND) */
 

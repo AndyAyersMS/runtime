@@ -32,14 +32,16 @@ unsigned BasicBlock::s_nMaxTrees;
 flowList* ShuffleHelper(unsigned hash, flowList* res)
 {
     flowList* head = res;
-    for (flowList *prev = nullptr; res != nullptr; prev = res, res = res->flNext)
+    for (flowList *prev = nullptr; res != nullptr; prev = res, res = res->getNext())
     {
-        unsigned blkHash = (hash ^ (res->flBlock->bbNum << 16) ^ res->flBlock->bbNum);
+        unsigned blkHash = (hash ^ (res->sourceBlock()->bbNum << 16) ^ res->sourceBlock()->bbNum);
         if (((blkHash % 1879) & 1) && prev != nullptr)
         {
             // Swap res with head.
-            prev->flNext = head;
-            std::swap(head->flNext, res->flNext);
+            prev->setNext(head);
+            flowList* tmp = head->getNext();
+            head->setNext(res->getNext());
+            res->setNext(tmp);
             std::swap(head, res);
         }
     }
@@ -162,9 +164,9 @@ flowList* Compiler::BlockPredsWithEH(BasicBlock* blk)
         EHblkDsc*   ehblk    = ehGetDsc(tryIndex);
         BasicBlock* tryStart = ehblk->ebdTryBeg;
         for (flowList* tryStartPreds = tryStart->bbPreds; tryStartPreds != nullptr;
-             tryStartPreds           = tryStartPreds->flNext)
+             tryStartPreds           = tryStartPreds->getNext())
         {
-            res = new (this, CMK_FlowList) flowList(tryStartPreds->flBlock, res);
+            res = new (this, CMK_FlowList) flowList(tryStartPreds->sourceBlock(), tryStart, res);
 
 #if MEASURE_BLOCK_SIZE
             genFlowNodeCnt += 1;
@@ -184,7 +186,7 @@ flowList* Compiler::BlockPredsWithEH(BasicBlock* blk)
         {
             if (bbInExnFlowRegions(tryIndex, bb) && !bb->isBBCallAlwaysPairTail())
             {
-                res = new (this, CMK_FlowList) flowList(bb, res);
+                res = new (this, CMK_FlowList) flowList(bb, tryStart, res);
 
 #if MEASURE_BLOCK_SIZE
                 genFlowNodeCnt += 1;
@@ -394,28 +396,28 @@ void BasicBlock::dspFlags()
 unsigned BasicBlock::dspPreds()
 {
     unsigned count = 0;
-    for (flowList* pred = bbPreds; pred != nullptr; pred = pred->flNext)
+    for (flowList* pred = bbPreds; pred != nullptr; pred = pred->getNext())
     {
         if (count != 0)
         {
             printf(",");
             count += 1;
         }
-        printf(FMT_BB, pred->flBlock->bbNum);
+        printf(FMT_BB, pred->sourceBlock()->bbNum);
         count += 4;
 
         // Account for %02u only handling 2 digits, but we can display more than that.
-        unsigned digits = CountDigits(pred->flBlock->bbNum);
+        unsigned digits = CountDigits(pred->sourceBlock()->bbNum);
         if (digits > 2)
         {
             count += digits - 2;
         }
 
         // Does this predecessor have an interesting dup count? If so, display it.
-        if (pred->flDupCount > 1)
+        if (pred->dupCount() > 1)
         {
-            printf("(%u)", pred->flDupCount);
-            count += 2 + CountDigits(pred->flDupCount);
+            printf("(%u)", pred->dupCount());
+            count += 2 + CountDigits(pred->dupCount());
         }
     }
     return count;
@@ -528,11 +530,11 @@ void BasicBlock::dspJumpKind()
 
             unsigned jumpCnt;
             jumpCnt = bbJumpSwt->bbsCount;
-            BasicBlock** jumpTab;
+            BBtabDesc* jumpTab;
             jumpTab = bbJumpSwt->bbsDstTab;
             do
             {
-                printf("%c" FMT_BB, (jumpTab == bbJumpSwt->bbsDstTab) ? ' ' : ',', (*jumpTab)->bbNum);
+                printf("%c" FMT_BB, (jumpTab == bbJumpSwt->bbsDstTab) ? ' ' : ',', (*jumpTab).block->bbNum);
             } while (++jumpTab, --jumpCnt);
 
             printf(" (switch)");
@@ -740,13 +742,13 @@ GenTree* BasicBlock::lastNode()
 
 BasicBlock* BasicBlock::GetUniquePred(Compiler* compiler)
 {
-    if ((bbPreds == nullptr) || (bbPreds->flNext != nullptr) || (this == compiler->fgFirstBB))
+    if ((bbPreds == nullptr) || (bbPreds->getNext() != nullptr) || (this == compiler->fgFirstBB))
     {
         return nullptr;
     }
     else
     {
-        return bbPreds->flBlock;
+        return bbPreds->sourceBlock();
     }
 }
 
@@ -887,7 +889,7 @@ void BasicBlock::bbSetRunRarely()
  *  Can a BasicBlock be inserted after this without altering the flowgraph
  */
 
-bool BasicBlock::bbFallsThrough()
+bool BasicBlock::bbFallsThrough() const
 {
     switch (bbJumpKind)
     {
@@ -924,7 +926,7 @@ bool BasicBlock::bbFallsThrough()
 // Return Value:
 //    Count of block successors.
 //
-unsigned BasicBlock::NumSucc()
+unsigned BasicBlock::NumSucc() const
 {
     switch (bbJumpKind)
     {
@@ -994,7 +996,7 @@ BasicBlock* BasicBlock::GetSucc(unsigned i)
             }
 
         case BBJ_SWITCH:
-            return bbJumpSwt->bbsDstTab[i];
+            return bbJumpSwt->bbsDstTab[i].block;
 
         default:
             unreached();
@@ -1503,4 +1505,90 @@ bool BasicBlock::hasEHBoundaryOut()
 #endif // FEATURE_EH_FUNCLETS
 
     return returnVal;
+}
+
+//------------------------------------------------------------------------
+// getEdgeWeight: determine weight for the specifed control flow edge
+//
+// Arguments:
+//    edge - edge of interest
+//
+// Return Value:
+//    Edge weight
+//
+BasicBlock::weight_t BasicBlock::getEdgeWeight(const flowList* edge) const
+{
+    return bbWeight * getEdgeLikelihood(edge);
+}
+
+//------------------------------------------------------------------------
+// getEdgeLikelihood: likelihood for the specifed control flow edge
+//
+// Arguments:
+//    edge - edge of interest
+//
+// Return Value:
+//    likelihood that control follows this edge [0.0,1.0]
+//
+float BasicBlock::getEdgeLikelihood(const flowList* edge) const
+{
+    assert(edge->sourceBlock() == this);
+
+    // Switches are a special case
+    //
+    if (bbJumpKind == BBJ_SWITCH)
+    {
+        float likelihood = 0;
+        const unsigned     count = bbJumpSwt->bbsCount;
+        BBtabDesc* table = bbJumpSwt->bbsDstTab;
+        BasicBlock* const target = edge->targetBlock();
+        bool found = false;
+
+        for (unsigned i = 0; i < count; i++)
+        {
+            if (table[i].block == target)
+            {
+                likelihood += table[i].likelihood;
+                found = true;
+            }
+        }
+
+        // We should always find our target in the above.
+        assert(found);
+
+        return likelihood;
+    }
+
+    const unsigned n = NumSucc();
+
+    assert((n == 1) || (n == 2));
+
+    // n==1 can be a degenerate BBJ_COND
+    //
+    if (n == 1)
+    {
+        if (bbFallsThrough())
+        {
+            assert(edge->targetBlock()== bbNext);
+        }
+        else
+        {
+            assert(edge->targetBlock()== bbJumpDest);
+        }
+
+        return 1.0f;
+    }
+
+    // n==2 must be a BBJ_COND
+    //
+    assert(bbJumpKind == BBJ_COND);
+    assert(likelihood >= 0.0f && likelihood <= 1.0f);
+
+    if (edge->targetBlock() == bbJumpDest)
+    {
+        return likelihood;
+    }
+    
+    assert(edge->targetBlock() == bbNext);
+    return (1.0f - likelihood);
 }
