@@ -15831,6 +15831,10 @@ void Compiler::impImportBlockCode(BasicBlock* block)
                                        nullptr DEBUGARG("inline UNBOX clone1"));
                     op1 = gtNewMethodTableLookup(op1);
 
+                    op1->gtFlags |= GTF_IND_INVARIANT;
+                    compCurBB->bbFlags |= BBF_HAS_VTABREF;
+                    optMethodFlags |= OMF_HAS_VTABLEREF;
+
                     GenTree* condBox = gtNewOperNode(GT_EQ, TYP_INT, op1, op2);
 
                     op1 = impCloneExpr(cloneOperand, &cloneOperand, NO_CLASS_HANDLE, (unsigned)CHECK_SPILL_ALL,

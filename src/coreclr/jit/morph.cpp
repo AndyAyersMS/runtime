@@ -17544,6 +17544,13 @@ void Compiler::fgExpandQmarkStmt(BasicBlock* block, Statement* stmt)
         elseBlock->bbFlags |= BBF_IMPORTED;
     }
 
+    if (block->bbFlags & BBF_HAS_VTABREF)
+    {
+        condBlock->bbFlags      |= BBF_HAS_VTABREF;
+        elseBlock->bbFlags      |= BBF_HAS_VTABREF;
+        remainderBlock->bbFlags |= BBF_HAS_VTABREF;
+    }
+
     remainderBlock->bbFlags |= BBF_JMP_TARGET | BBF_HAS_LABEL | propagateFlags;
 
     condBlock->inheritWeight(block);
