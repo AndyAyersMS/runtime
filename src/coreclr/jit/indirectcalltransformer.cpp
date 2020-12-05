@@ -618,6 +618,11 @@ private:
             GenTree*   jmpTree            = compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, methodTableCompare);
             Statement* jmpStmt            = compiler->fgNewStmtFromTree(jmpTree, stmt->GetILOffsetX());
             compiler->fgInsertStmtAtEnd(checkBlock, jmpStmt);
+
+            // Flag check block and method as containing a class test.
+            //
+            checkBlock->bbFlags |= BBF_HAS_VTABREF;
+            compiler->optMethodFlags |= OMF_HAS_VTABLEREF;
         }
 
         //------------------------------------------------------------------------

@@ -17418,6 +17418,9 @@ void Compiler::fgExpandQmarkForCastInstOf(BasicBlock* block, Statement* stmt)
     // Finally remove the nested qmark stmt.
     fgRemoveStmt(block, stmt);
 
+    // Cond2 has a vtable reference. Flag it.
+    cond2Block->bbFlags |= BBF_HAS_VTABREF;
+
 #ifdef DEBUG
     if (verbose)
     {

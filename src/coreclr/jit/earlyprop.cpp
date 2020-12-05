@@ -34,12 +34,18 @@ bool Compiler::optDoEarlyPropForBlock(BasicBlock* block)
 //
 // Arguments:
 //    tree           - The input tree.
+//    lclNum         - [out] set if object reference is to a local
 //
 // Return Value:
 //    Return true if the tree is a method table reference.
 
-bool Compiler::gtIsVtableRef(GenTree* tree)
+bool Compiler::gtIsVtableRef(GenTree* tree, unsigned* lclNum)
 {
+    if (lclNum != nullptr)
+    {
+        *lclNum = BAD_VAR_NUM;
+    }
+
     if (tree->OperGet() == GT_IND)
     {
         GenTree* addr = tree->AsIndir()->Addr();
@@ -49,6 +55,14 @@ bool Compiler::gtIsVtableRef(GenTree* tree)
             GenTreeAddrMode* addrMode = addr->AsAddrMode();
 
             return (!addrMode->HasIndex() && (addrMode->Base()->TypeGet() == TYP_REF));
+        }
+        else if (addr->OperIs(GT_LCL_VAR) && (addr->TypeGet() == TYP_REF))
+        {
+            if (lclNum != nullptr)
+            {
+                *lclNum = addr->AsLclVarCommon()->GetLclNum();
+            }
+            return true;
         }
     }
 

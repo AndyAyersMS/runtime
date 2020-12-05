@@ -14740,9 +14740,9 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 }
 
 //-------------------------------------------------------------
-// fgBlockEndFavorsTailDuplication:
-//     Heuristic function that returns true if this block ends in a statement that looks favorable
-//     for tail-duplicating its successor (such as assigning a constant to a local).
+// fgBlockEndFavorsDuplication:
+//     Heuristic function that returns true if this block looks favorable
+//     for duplicating its successor (such as assigning a constant to a local).
 //
 //  Arguments:
 //      block: BasicBlock we are considering duplicating the successor of
@@ -14750,28 +14750,24 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 //        prior call to fgBlockIsGoodTailDuplicationCandidate
 //
 //  Returns:
-//     true if block end is favorable for tail duplication
+//     true if block is favorable for tail duplication
 //
 //  Notes:
-//     This is the second half of the evaluation for tail duplication, where we try
+//     This is the second half of the evaluation for block duplication, where we try
 //     to determine if this predecessor block assigns a constant or provides useful
-//     information about a local that is tested in an unconditionally executed successor.
+//     information about a condition that is tested in an unconditionally executed successor.
 //     If so then duplicating the successor will likely allow the test to be
 //     optimized away.
 //
-bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNum)
+bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
 {
-    if (block->isRunRarely())
-    {
-        return false;
-    }
-
     // If the local is address exposed, we currently can't optimize.
     //
     LclVarDsc* const lclDsc = lvaGetDesc(lclNum);
 
     if (lclDsc->lvAddrExposed)
     {
+        JITDUMP("...exposed\n");
         return false;
     }
 
@@ -14780,6 +14776,7 @@ bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNu
 
     if (lastStmt == nullptr)
     {
+        JITDUMP("...empty\n");
         return false;
     }
 
@@ -14790,15 +14787,37 @@ bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNu
     //
     // Check up to N statements...
     //
-    const int  limit = 2;
-    int        count = 0;
-    Statement* stmt  = lastStmt;
+    const int  limit   = 2;
+    int        count   = 0;
+    Statement* stmt    = lastStmt;
+    unsigned   lclNum2 = BAD_VAR_NUM;
 
     while (count < limit)
     {
         count++;
         GenTree* const tree = stmt->GetRootNode();
-        if (tree->OperIs(GT_ASG) && !tree->OperIsBlkOp())
+
+        if (tree->OperIs(GT_JTRUE))
+        {
+            GenTree* const cond = tree->AsOp()->gtOp1;
+
+            if (cond->OperIsCompare())
+            {
+                GenTree* const condOp1 = cond->AsOp()->gtOp1;
+                GenTree* const condOp2 = cond->AsOp()->gtOp2;
+
+                if (condOp1->IsLocal() && condOp2->OperIsConst())
+                {
+                    lclNum2 = condOp1->AsLclVarCommon()->GetLclNum();
+                    JITDUMP("...lclNum2 V%02u\n", lclNum2);
+                }
+                else if (gtIsVtableRef(condOp1, &lclNum2))
+                {
+                    JITDUMP("...vtab V%02u\n", lclNum2);
+                }
+            }
+        }
+        else if (tree->OperIs(GT_ASG) && !tree->OperIsBlkOp())
         {
             GenTree* const op1 = tree->AsOp()->gtOp1;
 
@@ -14813,6 +14832,14 @@ bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNu
                     if (op2->OperIs(GT_ARR_LENGTH) || op2->OperIsConst() || op2->OperIsCompare())
                     {
                         return true;
+                    }
+
+                    if (op2->OperIs(GT_LCL_VAR) && (lclNum2 != BAD_VAR_NUM))
+                    {
+                        if (op2->AsLclVarCommon()->GetLclNum() == lclNum2)
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -14831,13 +14858,43 @@ bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNu
         stmt = prevStmt;
     }
 
+    // Tail duplication may also pay off if the block is one part of a hammock
+    // that is controlled by a possibly related or redundant comparision.
+    //
+    //     predBlock
+    //  JTRUE(lclNum, ...)
+    //       /  \
+    //      /    \
+    //     /    block    /
+    //             \    /
+    //              \  /
+    //            tailBlock
+    //        JTRUE(lclNum, ...)
+    //              /  \
+    //
+    BasicBlock* predBlock = block->GetUniquePred(this);
+
+    if ((predBlock != nullptr) && (predBlock->bbJumpKind == BBJ_COND))
+    {
+        unsigned predLcl = BAD_VAR_NUM;
+
+        bool predIsCandidate = fgBlockIsGoodDuplicationCandidate(predBlock, &predLcl);
+
+        // Look for exact match, or a copy up in the pred block
+        //
+        if (predIsCandidate && ((predLcl == lclNum) || (predLcl == lclNum2)))
+        {
+            return true;
+        }
+    }
+
     return false;
 }
 
 //-------------------------------------------------------------
-// fgBlockIsGoodTailDuplicationCandidate:
-//     Heuristic function that examines a block (presumably one that is a merge point) to determine
-//     if it is a good candidate to be duplicated.
+// fgBlockIsGoodDuplicationCandidate:
+//     Heuristic function that examines a block (presumably one that is a merge point)
+//     to determine if it is a good candidate to be duplicated.
 //
 // Arguments:
 //     target - the tail block (candidate for duplication)
@@ -14847,13 +14904,13 @@ bool Compiler::fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNu
 //     if true, lclNum is set to lcl to scan for in predecessor block
 //
 // Notes:
-//     The current heuristic is that tail duplication is deemed favorable if this
-//     block simply tests the value of a local against a constant or some other local.
+//     The current heuristic is that duplication is deemed favorable if this
+//     block simply tests the value of a local against a constant or some other local,
+//     or does a vtable test.
 //
-//     This is the first half of the evaluation for tail duplication. We subsequently
-//     need to check if predecessors of this block assigns a constant to the local.
+//     This is the first half of the evaluation for duplication.
 //
-bool Compiler::fgBlockIsGoodTailDuplicationCandidate(BasicBlock* target, unsigned* lclNum)
+bool Compiler::fgBlockIsGoodDuplicationCandidate(BasicBlock* target, unsigned* lclNum)
 {
     *lclNum = BAD_VAR_NUM;
 
@@ -14863,12 +14920,14 @@ bool Compiler::fgBlockIsGoodTailDuplicationCandidate(BasicBlock* target, unsigne
     //
     // This is by no means the only kind of tail that it is beneficial to duplicate,
     // just the only one we recognize for now.
+    //
     if (target->bbJumpKind != BBJ_COND)
     {
         return false;
     }
 
     // No point duplicating this block if it's not a control flow join.
+    //
     if (target->bbRefs < 2)
     {
         return false;
@@ -14888,7 +14947,8 @@ bool Compiler::fgBlockIsGoodTailDuplicationCandidate(BasicBlock* target, unsigne
         return false;
     }
 
-    // must be some kind of relational operator
+    // branch op must be some kind of relational operator
+    //
     GenTree* const cond = tree->AsOp()->gtOp1;
     if (!cond->OperIsCompare())
     {
@@ -14896,41 +14956,49 @@ bool Compiler::fgBlockIsGoodTailDuplicationCandidate(BasicBlock* target, unsigne
     }
 
     // op1 must be some combinations of casts of local or constant
+    // or an invariant IND of a local
+    //
     GenTree* op1 = cond->AsOp()->gtOp1;
     while (op1->gtOper == GT_CAST)
     {
         op1 = op1->AsOp()->gtOp1;
     }
 
-    if (!op1->IsLocal() && !op1->OperIsConst())
+    unsigned lcl1 = BAD_VAR_NUM;
+
+    if (!op1->IsLocal() && !op1->OperIsConst() && !gtIsVtableRef(op1, &lcl1))
     {
         return false;
     }
 
     // op2 must be some combinations of casts of local or constant
+    // or an invariant IND of a local
+    //
     GenTree* op2 = cond->AsOp()->gtOp2;
     while (op2->gtOper == GT_CAST)
     {
         op2 = op2->AsOp()->gtOp1;
     }
 
-    if (!op2->IsLocal() && !op2->OperIsConst())
+    unsigned lcl2 = BAD_VAR_NUM;
+
+    if (!op2->IsLocal() && !op2->OperIsConst() && !gtIsVtableRef(op1, &lcl2))
     {
         return false;
     }
 
-    // Tree must have one constant and one local, or be comparing
-    // the same local to itself.
-    unsigned lcl1 = BAD_VAR_NUM;
-    unsigned lcl2 = BAD_VAR_NUM;
-
+    // Tree must have one constant and one local or local vtable ref,
+    // or be comparing the same local to itself.
+    //
     if (op1->IsLocal())
     {
+        assert(lcl1 == BAD_VAR_NUM);
         lcl1 = op1->AsLclVarCommon()->GetLclNum();
     }
 
     if (op2->IsLocal())
     {
+        assert(lcl2 == BAD_VAR_NUM);
         lcl2 = op2->AsLclVarCommon()->GetLclNum();
     }
 
@@ -14955,21 +15023,33 @@ bool Compiler::fgBlockIsGoodTailDuplicationCandidate(BasicBlock* target, unsigne
 }
 
 //-------------------------------------------------------------
-// fgOptimizeUncondBranchToSimpleCond:
-//    For a block which has an unconditional branch, look to see if its target block
-//    is a good candidate for tail duplication, and if so do that duplication.
+// fgOptimizedBranchToSimpleCond:
+//    If the target block of a branch is a join and has a conditional
+//    branch, we may be able to unblock branch by duplicating the target.
 //
 // Arguments:
-//    block  - block with uncond branch
-//    target - block which is target of first block
+//    block  - block with branch (BBJ_NONE, BBJ_ALWAYS, BBJ_COND)
+//    target - block which is target of first block (BBJ_COND)
 //
-// Returns: true if changes were made
+// Returns:
+//    true if changes were made
 //
 // Notes:
-//   This optimization generally reduces code size and path length.
+//    If the current block is an uncondtional branch, the duplicated codee
+//    can simply be added to the current block (aka tail duplication).
 //
-bool Compiler::fgOptimizeUncondBranchToSimpleCond(BasicBlock* block, BasicBlock* target)
+//    This optimization generally reduces path length. It typically will also
+//    reduce code size, though like any code duplication-driven optimization,
+//    one must use heuristics to evaluate the potential tradeoffs.
+//
+bool Compiler::fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* target)
 {
+    // NOTE: we do not currently hit this assert because this function is only called when
+    // `fgUpdateFlowGraph` has been called with `allowDuplication` set to true, and the
+    // backend always calls `fgUpdateFlowGraph` with `allowDuplication` set to false.
+    assert(!block->IsLIR());
+    assert((block->bbJumpKind == BBJ_NONE) || (block->bbJumpKind == BBJ_ALWAYS) || (block->bbJumpKind == BBJ_COND));
+
     if (!BasicBlock::sameEHRegion(block, target))
     {
         return false;
@@ -14980,57 +15060,66 @@ bool Compiler::fgOptimizeUncondBranchToSimpleCond(BasicBlock* block, BasicBlock*
     // First check if the successor tests a local and then branches on the result
     // of a test, and obtain the local if so.
     //
-    if (!fgBlockIsGoodTailDuplicationCandidate(target, &lclNum))
+    if (!fgBlockIsGoodDuplicationCandidate(target, &lclNum))
     {
         return false;
     }
+
+    JITDUMP("Considering " FMT_BB " -> " FMT_BB ": successor looks like a good duplication candidate (V%02u)\n",
+            block->bbNum, target->bbNum, lclNum);
 
     // See if this block assigns constant or other interesting tree to that same local.
     //
-    if (!fgBlockEndFavorsTailDuplication(block, lclNum))
+    if (!fgBlockEndFavorsDuplication(block, lclNum))
     {
+        JITDUMP("Predecessor is not favorable\n");
         return false;
     }
-
-    // NOTE: we do not currently hit this assert because this function is only called when
-    // `fgUpdateFlowGraph` has been called with `doTailDuplication` set to true, and the
-    // backend always calls `fgUpdateFlowGraph` with `doTailDuplication` set to false.
-    assert(!block->IsLIR());
 
     Statement* stmt = target->FirstNonPhiDef();
     assert(stmt == target->lastStmt());
 
-    // Duplicate the target block at the end of this block
+    // Handle the cond->cond cases
+    //
+    BasicBlock* dupBlock = block;
+    if (block->bbJumpKind == BBJ_COND)
+    {
+        dupBlock = fgSplitEdge(block, target);
+    }
+
+    // Duplicate the target block IR at the end of dupblock
+    //
     GenTree* cloned = gtCloneExpr(stmt->GetRootNode());
     noway_assert(cloned);
     Statement* jmpStmt = gtNewStmt(cloned);
-
-    block->bbJumpKind = BBJ_COND;
-    block->bbJumpDest = target->bbJumpDest;
-    fgAddRefPred(block->bbJumpDest, block);
-    fgRemoveRefPred(target, block);
-
-    // add an unconditional block after this block to jump to the target block's fallthrough block
-    BasicBlock* next = fgNewBBafter(BBJ_ALWAYS, block, true);
-
-    // The new block 'next' will inherit its weight from 'block'
-    next->inheritWeight(block);
-    next->bbJumpDest = target->bbNext;
-    target->bbNext->bbFlags |= BBF_JMP_TARGET;
-    fgAddRefPred(next, block);
-    fgAddRefPred(next->bbJumpDest, next);
-
-    JITDUMP("fgOptimizeUncondBranchToSimpleCond(from " FMT_BB " to cond " FMT_BB "), created new uncond " FMT_BB "\n",
-            block->bbNum, target->bbNum, next->bbNum);
-    JITDUMP("   expecting opts to key off V%02u, added cloned compare [%06u] to " FMT_BB "\n", lclNum,
-            dspTreeID(cloned), block->bbNum);
+    fgInsertStmtAtEnd(dupBlock, jmpStmt);
 
     if (fgStmtListThreaded)
     {
         gtSetStmtInfo(jmpStmt);
     }
 
-    fgInsertStmtAtEnd(block, jmpStmt);
+    dupBlock->bbJumpKind = BBJ_COND;
+    dupBlock->bbJumpDest = target->bbJumpDest;
+    fgAddRefPred(dupBlock->bbJumpDest, dupBlock);
+    fgRemoveRefPred(target, dupBlock);
+
+    // add an unconditional block after the dup block to jump to the target block's fallthrough block
+    //
+    BasicBlock* next = fgNewBBafter(BBJ_ALWAYS, dupBlock, true);
+
+    // The new block 'next' will inherit its weight from 'block'
+    //
+    next->inheritWeight(block);
+    next->bbJumpDest = target->bbNext;
+    target->bbNext->bbFlags |= BBF_JMP_TARGET;
+    fgAddRefPred(next, dupBlock);
+    fgAddRefPred(next->bbJumpDest, next);
+
+    JITDUMP("fgOptimizeBranchToSimpleCond(from " FMT_BB " to cond " FMT_BB "), created new uncond " FMT_BB "\n",
+            block->bbNum, target->bbNum, next->bbNum);
+    JITDUMP("   expecting opts to key off V%02u, added cloned compare [%06u] to " FMT_BB "\n", lclNum,
+            dspTreeID(cloned), block->bbNum);
 
     return true;
 }
@@ -16983,7 +17072,7 @@ EXIT:;
  *    but we do not optimize those!
  */
 
-bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
+bool Compiler::fgUpdateFlowGraph(bool allowDuplication)
 {
 #ifdef DEBUG
     if (verbose)
@@ -17057,10 +17146,10 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
             bNext = block->bbNext;
             bDest = nullptr;
 
-            if (block->bbJumpKind == BBJ_ALWAYS)
+            if ((block->bbJumpKind == BBJ_ALWAYS) || (block->bbJumpKind == BBJ_COND))
             {
                 bDest = block->bbJumpDest;
-                if (doTailDuplication && fgOptimizeUncondBranchToSimpleCond(block, bDest))
+                if (allowDuplication && fgOptimizeBranchToSimpleCond(block, bDest))
                 {
                     change   = true;
                     modified = true;
@@ -17069,10 +17158,10 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                 }
             }
 
-            if (block->bbJumpKind == BBJ_NONE)
+            if ((block->bbJumpKind == BBJ_NONE) || (block->bbJumpKind == BBJ_COND))
             {
                 bDest = nullptr;
-                if (doTailDuplication && fgOptimizeUncondBranchToSimpleCond(block, block->bbNext))
+                if (allowDuplication && fgOptimizeBranchToSimpleCond(block, block->bbNext))
                 {
                     change   = true;
                     modified = true;

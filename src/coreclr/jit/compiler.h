@@ -5337,11 +5337,11 @@ public:
     bool fgRelocateEHRegions();
 #endif // !FEATURE_EH_FUNCLETS
 
-    bool fgOptimizeUncondBranchToSimpleCond(BasicBlock* block, BasicBlock* target);
+    bool fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* target);
 
-    bool fgBlockEndFavorsTailDuplication(BasicBlock* block, unsigned lclNum);
+    bool fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum);
 
-    bool fgBlockIsGoodTailDuplicationCandidate(BasicBlock* block, unsigned* lclNum);
+    bool fgBlockIsGoodDuplicationCandidate(BasicBlock* block, unsigned* lclNum);
 
     bool fgOptimizeEmptyBlock(BasicBlock* block);
 
@@ -5368,7 +5368,7 @@ public:
 
     bool fgIsForwardBranch(BasicBlock* bJump, BasicBlock* bSrc = nullptr);
 
-    bool fgUpdateFlowGraph(bool doTailDup = false);
+    bool fgUpdateFlowGraph(bool allowDuplication = false);
 
     void fgFindOperOrder();
 
@@ -6819,7 +6819,7 @@ public:
 
     typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GenTree*> LocalNumberToNullCheckTreeMap;
 
-    bool gtIsVtableRef(GenTree* tree);
+    bool gtIsVtableRef(GenTree* tree, unsigned* lclNum = nullptr);
     GenTree* getArrayLengthFromAllocation(GenTree* tree DEBUGARG(BasicBlock* block));
     GenTree* getObjectHandleNodeFromAllocation(GenTree* tree DEBUGARG(BasicBlock* block));
     GenTree* optPropGetValueRec(unsigned lclNum, unsigned ssaNum, optPropKind valueKind, int walkDepth);
