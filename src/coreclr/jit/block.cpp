@@ -1546,9 +1546,11 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
 
         for (unsigned i = 0; i < count; i++)
         {
+            assert(table[i].likelihood.isKnown);
+
             if (table[i].block == target)
             {
-                likelihood += table[i].likelihood;
+                likelihood += table[i].likelihood.value;
                 found = true;
             }
         }
@@ -1559,9 +1561,75 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
         return likelihood;
     }
 
+    // Finally returns are a special case.
+    //
+    // Here there can be compile-time varying numbers of successors.
+    // So instead of trying to allocate a fixed array to hold the
+    // successor likelihoods, we compute the likelihood by finding
+    // the matching callfinally edge.
+    //
+    if (bbJumpKind == BBJ_EHFINALLYRET)
+    {
+        BasicBlock* hndBeg = comp->fgFirstBlockOfHandler(this);
+
+        // This must be a finally, because it has non-eh successors.
+        //
+        assert(hndBeg->bbCatchTyp != BBCT_FAULT);
+
+        // If this block was never profiled then we can't
+        // determine successor likelihood.
+        //
+        if (bbWeight == 0)
+        {
+            return 0.0f;
+        }
+
+        // Find associated callfinally
+        //
+        unsigned  hndIndex = getHndIndex();
+        EHblkDsc* ehDsc    = ehGetDsc(hndIndex);
+        assert(ehDsc->HasFinallyHandler());
+
+        BasicBlock* begBlk;
+        BasicBlock* endBlk;
+        ehGetCallFinallyBlockRange(hndIndex, &begBlk, &endBlk);
+
+        BasicBlock* finBeg = ehDsc->ebdHndBeg;
+
+        for (BasicBlock* bcall = begBlk; bcall != endBlk; bcall = bcall->bbNext)
+        {
+            if ((bcall->bbJumpKind != BBJ_CALLFINALLY) || (bcall->bbJumpDest != finBeg))
+            {
+                continue;
+            }
+
+            // This callfinally invokes this finally. See if the continuation
+            // matches our successor.
+            //
+            if (bcall->bbNext != edge->targetBlock())
+            {
+                continue;
+            }
+
+            // We've found the matching callfinally, so the likelihood is
+            // the callfinally weight divided by this block's weight.
+            //
+            if (bcall->bbWeight > bbWeight)
+            {
+                return 1.0f;
+            }
+
+            return bcall->bbWeight / bbWeight;
+        }
+
+        assert(!"could not find matching callfinally");
+        return 0.0f;
+    }
+
     const unsigned n = NumSucc();
 
-    assert((n == 1) || (n == 2));
+    asssrt(n >= 1);
+    assert(n <= 2);
 
     // n==1 can be a degenerate BBJ_COND
     //
@@ -1582,13 +1650,129 @@ float BasicBlock::getEdgeLikelihood(const flowList* edge) const
     // n==2 must be a BBJ_COND
     //
     assert(bbJumpKind == BBJ_COND);
-    assert(likelihood >= 0.0f && likelihood <= 1.0f);
+    assert((likelihood.value >= 0.0f) && (likelihood.value <= 1.0f));
+
+    assert(likelihood.isKnown);
 
     if (edge->targetBlock() == bbJumpDest)
     {
-        return likelihood;
+        return likelihood.value;
     }
 
     assert(edge->targetBlock() == bbNext);
-    return (1.0f - likelihood);
+    return (1.0f - likelihood.value);
+}
+
+//------------------------------------------------------------------------
+// likelihoodKnown: determine if successor likelihoods are known
+//
+// Return Value:
+//    true if so
+//
+bool BasicBlock::likelihoodKnown() const
+{
+    if (bbJumpKind == BBJ_SWITCH)
+    {
+        const unsigned count   = bbJumpSwt->bbsCount;
+        BBtabDesc*     table   = bbJumpSwt->bbsDstTab;
+        bool           isKnown = true;
+
+        for (unsigned i = 0; i < count; i++)
+        {
+            isKnown &= table[i].likelihood.isKnown;
+        }
+
+        return isKnown;
+    }
+    else if (bbJumpKind == BBJ_COND)
+    {
+        return likelihood.isKnown;
+    }
+    else
+    {
+        return true;
+    }
+}
+
+//------------------------------------------------------------------------
+// setEdgeLikelihood: set likelihood for the specifed control flow edge
+//
+// Arguments:
+//    edge - edge of interest
+//    likelihood - likelihood this edge is taken at runtime
+//
+void BasicBlock::setEdgeLikelihood(const flowList* edge, float likelihood)
+{
+    assert(likelihood >= 0.0f);
+    assert(likelihood <= 1.0f);
+    assert(edge->sourceBlock() == this);
+
+    // For many bbJumpKinds likelihood is implicit.
+    //
+    // So we'll first set isKnown set to false to indicate
+    // the likelihood value is not meanigful.
+    //
+    this->likelihood.isKnown = false;
+
+    // Switches
+    //
+    if (bbJumpKind == BBJ_SWITCH)
+    {
+        const unsigned    count  = bbJumpSwt->bbsCount;
+        BBtabDesc*        table  = bbJumpSwt->bbsDstTab;
+        BasicBlock* const target = edge->targetBlock();
+        bool              found  = false;
+
+        // We currently can't deterimine likeihoods for individual
+        // switch cases if they all target a particular block.
+        //
+        // So we divide up the likelihood evenly.
+        //
+        assert(edge->dupCount() >= 1);
+        assert(edge->dupCount() <= count);
+        float perCaseLikelihood = likelihood / edge->dupCount();
+
+        for (unsigned i = 0; i < count; i++)
+        {
+            if (table[i].block == target)
+            {
+                table[i].likelihood.value   = perCaseLikelihood;
+                table[i].likelihood.isKnown = true;
+                found                       = true;
+            }
+        }
+
+        // We should always find our target in the above.
+        assert(found);
+        return;
+    }
+
+    // Conditionals
+    //
+    // They may also be "degenerate" in which case we divide up
+    // the count evenly.
+    //
+    if (bbJumpKind == BBJ_COND)
+    {
+        assert(edge->dupCount() >= 1);
+        assert(edge->dupCount() <= 2);
+
+        float perCaseLikelihood = likelihood / edge->dupCount();
+
+        if (edge->targetBlock() == bbJumpDest)
+        {
+            this->likelihood.value   = perCaseLikelihood;
+            this->likelihood.isKnown = true;
+        }
+        else
+        {
+            this->likelihood.value   = 1.0f - perCaseLikelihood;
+            this->likelihood.isKnown = true;
+        }
+
+        return;
+    }
+
+    // We may want to assert for other cases as the request is
+    // non-sensical...?
 }

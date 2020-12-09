@@ -4605,16 +4605,14 @@ public:
 
     // The following are boolean flags that keep track of the state of internal data structures
 
-    bool                 fgStmtListThreaded;       // true if the node list is now threaded
-    bool                 fgCanRelocateEHRegions;   // true if we are allowed to relocate the EH regions
-    bool                 fgEdgeWeightsComputed;    // true after we have called fgComputeEdgeWeights
-    bool                 fgHaveValidEdgeWeights;   // true if we were successful in computing all of the edge weights
-    bool                 fgSlopUsedInEdgeWeights;  // true if their was some slop used when computing the edge weights
-    bool                 fgRangeUsedInEdgeWeights; // true if some of the edgeWeight are expressed in Min..Max form
-    bool                 fgNeedsUpdateFlowGraph;   // true if we need to run fgUpdateFlowGraph
-    BasicBlock::weight_t fgCalledCount;            // count of the number of times this method was called
-                                                   // This is derived from the profile data
-                                                   // or is BB_UNITY_WEIGHT when we don't have profile data
+    bool                 fgStmtListThreaded;     // true if the node list is now threaded
+    bool                 fgCanRelocateEHRegions; // true if we are allowed to relocate the EH regions
+    bool                 fgEdgeWeightsComputed;  // true after we have called fgComputeEdgeWeights
+    bool                 fgHaveValidEdgeWeights; // true if we were successful in computing all of the edge weights
+    bool                 fgNeedsUpdateFlowGraph; // true if we need to run fgUpdateFlowGraph
+    BasicBlock::weight_t fgCalledCount;          // count of the number of times this method was called
+                                                 // This is derived from the profile data
+                                                 // or is BB_UNITY_WEIGHT when we don't have profile data
 
 #if defined(FEATURE_EH_FUNCLETS)
     bool fgFuncletsCreated; // true if the funclet creation phase has been run

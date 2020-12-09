@@ -39,12 +39,10 @@ void Compiler::fgInit()
     fgCheapPredsValid = false;
 
     /* We haven't yet computed the edge weight */
-    fgEdgeWeightsComputed    = false;
-    fgHaveValidEdgeWeights   = false;
-    fgSlopUsedInEdgeWeights  = false;
-    fgRangeUsedInEdgeWeights = true;
-    fgNeedsUpdateFlowGraph   = false;
-    fgCalledCount            = BB_ZERO_WEIGHT;
+    fgEdgeWeightsComputed  = false;
+    fgHaveValidEdgeWeights = false;
+    fgNeedsUpdateFlowGraph = false;
+    fgCalledCount          = BB_ZERO_WEIGHT;
 
     /* We haven't yet computed the dominator sets */
     fgDomsComputed = false;
@@ -13491,12 +13489,166 @@ void Compiler::fgComputeCalledCount(BasicBlock::weight_t returnWeight)
 
 //-------------------------------------------------------------
 // fgComputeEdgeWeights: compute edge weights from block weights
-
+//
+// Notes:
+//
+// This actually computes branch likelihoods. Those plus
+// block weights determine edge weights.
+//
 void Compiler::fgComputeEdgeWeights()
 {
-    // !TODO!
+    unsigned       iterations    = 0;
+    unsigned       numEdges      = 0;
+    unsigned       solvedEdges   = 0;
+    const unsigned maxIterations = 8;
+    bool           stillUnsolved = true;
+    bool           inconsistent  = false;
+
+    while (stillUnsolved)
+    {
+        if (inconsistent)
+        {
+            break;
+        }
+
+        if (iterations >= maxIterations)
+        {
+            break;
+        }
+
+        iterations++;
+        stillUnsolved = false;
+
+        for (BasicBlock* bDst = fgFirstBB; bDst != nullptr; bDst = bDst->bbNext)
+        {
+            // If all incoming edges to bDst save one have known weights,
+            // we can compute the weight of that last edge.
+            //
+            unsigned             unsolvedEdgeCount = 0;
+            BasicBlock::weight_t knownWeight       = 0.0f;
+            flowList*            unsolvedEdge      = nullptr;
+
+            for (flowList* edge = bDst->bbPreds; edge != nullptr; edge = edge->getNext())
+            {
+                if (iterations == 1)
+                {
+                    numEdges++;
+                }
+
+                if (edge->edgeWeightKnown())
+                {
+                    knownWeight += edge->edgeWeight();
+                }
+                else
+                {
+                    unsolvedEdgeCount++;
+
+                    if (unsolvedEdgeCount == 1)
+                    {
+                        unsolvedEdge = edge;
+                    }
+                    else if (unsolvedEdgeCount == 2)
+                    {
+                        unsolvedEdge = nullptr;
+                        break;
+                    }
+                }
+            }
+
+            // If all edge weights are known, move to another block
+            //
+            if (unsolvedEdgeCount == 0)
+            {
+                // Check incoming sum vs block...?
+                continue;
+            }
+
+            // If multiple edges are unknown, we must iterate
+            //
+            if (unsolvedEdgeCount == 2)
+            {
+                stillUnsolved = true;
+                continue;
+            }
+
+            // Compute flow into bDst from within the method.
+            //
+            BasicBlock::weight_t bDstWeight = bDst->bbWeight;
+
+            if (bDst == fgFirstBB)
+            {
+                bDstWeight -= fgCalledCount;
+            }
+
+            // Compute flow along the unknown edge.
+            //
+            BasicBlock::weight_t unknownWeight = bDstWeight - knownWeight;
+
+            // If we already have too much flow into bSrc,
+            // results are inconsitent.
+            //
+            // Todo : some wiggle room
+            //
+            if (unknownWeight < 0)
+            {
+                inconsistent  = true;
+                unknownWeight = 0;
+            }
+
+            // Now find out what fraction of the source this is...
+            //
+            BasicBlock*          bSrc         = unsolvedEdge->sourceBlock();
+            BasicBlock::weight_t sourceWeight = bSrc->bbWeight;
+
+            // If we would have too much flow out of bDst,
+            // results are inconsitent.
+            //
+            // Todo : some wiggle room
+            //
+            if (sourceWeight < unknownWeight)
+            {
+                inconsistent  = true;
+                unknownWeight = sourceWeight;
+            }
+
+            // If source weight is zero, we can't determine likelihood.
+            // Just set it to zero. Otherwise compute from the weight
+            // ratios.
+            //
+            float likelihood = 0;
+
+            if (sourceWeight > 0)
+            {
+                likelihood = unknownWeight / sourceWeight;
+            }
+
+            // Set the likelihood.
+            //
+            bSrc->setEdgeLikelihood(unsolvedEdge, likelihood);
+            solvedEdges++;
+        }
+    }
+
     fgHaveValidEdgeWeights = false;
-    fgEdgeWeightsComputed  = true;
+
+    if (inconsistent)
+    {
+        JITDUMP("fgComputeEdgeWeights() found inconsistent profile data, not using the edge weights\n");
+    }
+    else if (stillUnsolved)
+    {
+        JITDUMP("fgComputeEdgeWeights() did not converge, have weights for %3d of the %3d edges after %d passes.\n",
+                solvedEdges, numEdges, iterations);
+    }
+    else
+    {
+        fgHaveValidEdgeWeights = true;
+        JITDUMP("fgComputeEdgeWeights() was able to compute exact edge weights for all of the %3d edges, using %d "
+                "passes.\n",
+                numEdges, iterations);
+    }
+
+    fgEdgeWeightsComputed = true;
 }
 
 // fgOptimizeBranchToEmptyUnconditional:
@@ -19604,10 +19756,6 @@ bool Compiler::fgDumpFlowGraph(Phases phase)
         if (validWeights)
         {
             fprintf(fgxFile, "\n    validEdgeWeights=\"true\"");
-            if (!fgSlopUsedInEdgeWeights && !fgRangeUsedInEdgeWeights)
-            {
-                fprintf(fgxFile, "\n    exactEdgeWeights=\"true\"");
-            }
         }
         if (fgFirstColdBlock != nullptr)
         {

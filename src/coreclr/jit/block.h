@@ -92,12 +92,21 @@ struct EHblkDsc;
  *     switches with just a default case to a BBJ_ALWAYS branch, and a switch with just two cases to a BBJ_COND.
  *     However, in debuggable code, we might not do that, so bbsCount might be 1.
  */
+
+struct Likelihood
+{
+    Likelihood() : isKnown(false), value(-1.0f)
+    {
+    }
+    bool  isKnown;
+    float value;
+};
+
 struct BBtabDesc
 {
-    float likelihood;
+    Likelihood likelihood;
 
-    union
-    {
+    union {
         BasicBlock* block;
         unsigned    ilOffset;
     };
@@ -537,8 +546,12 @@ struct BasicBlock : private LIR::Range
     // The dynamic execution weight of this block
     weight_t bbWeight;
 
-    // Likelihood of a flow transfer to a designated successor
-    float likelihood;
+    // Likelihood of a flow transfer to a designated successor.
+    // (only meaningful for BBJ_COND)
+    Likelihood likelihood;
+
+    // True if likelihood for all successors is known.
+    bool likelihoodKnown() const;
 
     // getCalledCount -- get the value used to normalize weights for this method
     weight_t getCalledCount(Compiler* comp);
@@ -650,10 +663,14 @@ struct BasicBlock : private LIR::Range
         return (bbWeight == BB_MAX_WEIGHT);
     }
 
-    // Compute weight for a particular edge.
+    // Get weight for a particular edge.
     //
     weight_t getEdgeWeight(const flowList* edge) const;
+
+    // Get or set likelihood for a particular edge
+    //
     float getEdgeLikelihood(const flowList* edge) const;
+    void setEdgeLikelihood(const flowList* edge, float likelihood);
 
     // Returns "true" if the block is empty. Empty here means there are no statement
     // trees *except* PHI definitions.
@@ -996,19 +1013,6 @@ struct BasicBlock : private LIR::Range
 
     bool bbFallsThrough() const;
 
-    // Our slop fraction is 1/128 of the block weight rounded off
-    static weight_t GetSlopFraction(weight_t weightBlk)
-    {
-        return ((weightBlk + 64) / 128);
-    }
-
-    // Given an the edge b1 -> b2, calculate the slop fraction by
-    // using the higher of the two block weights
-    static weight_t GetSlopFraction(BasicBlock* b1, BasicBlock* b2)
-    {
-        return GetSlopFraction(max(b1->bbWeight, b2->bbWeight));
-    }
-
 #ifdef DEBUG
     unsigned        bbTgtStkDepth; // Native stack depth on entry (for throw-blocks)
     static unsigned s_nMaxTrees;   // The max # of tree nodes in any BB
@@ -1061,7 +1065,8 @@ struct BasicBlock : private LIR::Range
     Statement* FirstNonPhiDef();
     Statement* FirstNonPhiDefOrCatchArgAsg();
 
-    BasicBlock() : bbStmtList(nullptr), bbLiveIn(VarSetOps::UninitVal()), bbLiveOut(VarSetOps::UninitVal())
+    BasicBlock()
+        : likelihood(), bbStmtList(nullptr), bbLiveIn(VarSetOps::UninitVal()), bbLiveOut(VarSetOps::UninitVal())
     {
     }
 
@@ -1287,6 +1292,11 @@ public:
     {
         assert(m_dupCount >= 1);
         m_dupCount--;
+    }
+
+    bool edgeWeightKnown() const
+    {
+        return m_sourceBlock->likelihoodKnown();
     }
 
     BasicBlock::weight_t edgeWeight() const

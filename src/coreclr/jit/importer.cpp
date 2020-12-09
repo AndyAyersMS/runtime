@@ -2194,7 +2194,7 @@ GenTree* Compiler::getRuntimeContextTree(CORINFO_RUNTIME_LOOKUP_KIND kind)
         ctxTree = gtNewLclvNode(pRoot->info.compThisArg, TYP_REF);
         ctxTree->gtFlags |= GTF_VAR_CONTEXT;
 
-        // Vtable pointer of this object
+        // Method table pointer of this object
         ctxTree = gtNewOperNode(GT_IND, TYP_I_IMPL, ctxTree);
         ctxTree->gtFlags |= GTF_EXCEPT; // Null-pointer exception
         ctxTree->gtFlags |= GTF_IND_INVARIANT;
