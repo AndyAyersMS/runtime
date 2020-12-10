@@ -12307,29 +12307,26 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac)
                     // possible.
                     GenTreeLclVar* lclVar = op1->AsLclVar();
                     unsigned       lclNum = lclVar->GetLclNum();
-                    if ((genReturnLocal == BAD_VAR_NUM) || (genReturnLocal == lclNum))
+                    LclVarDsc* varDsc = lvaGetDesc(lclVar);
+                    if (varDsc->CanBeReplacedWithItsField(this))
                     {
-                        LclVarDsc* varDsc = lvaGetDesc(lclVar);
-                        if (varDsc->CanBeReplacedWithItsField(this))
-                        {
-                            // We can replace the struct with its only field and allow copy propagation to replace
-                            // return value that was written as a field.
-                            unsigned   fieldLclNum = varDsc->lvFieldLclStart;
-                            LclVarDsc* fieldDsc    = lvaGetDesc(fieldLclNum);
+                        // We can replace the struct with its only field and allow copy propagation to replace
+                        // return value that was written as a field.
+                        unsigned   fieldLclNum = varDsc->lvFieldLclStart;
+                        LclVarDsc* fieldDsc    = lvaGetDesc(fieldLclNum);
 
-                            if (!varTypeIsSmallInt(fieldDsc->lvType))
-                            {
-                                // TODO-CQ: support that substitution for small types without creating `CAST` node.
-                                // When a small struct is returned in a register higher bits could be left in undefined
-                                // state.
-                                JITDUMP("Replacing an independently promoted local var V%02u with its only field  "
-                                        "V%02u for "
-                                        "the return [%06u]\n",
-                                        lclVar->GetLclNum(), fieldLclNum, dspTreeID(tree));
-                                lclVar->SetLclNum(fieldLclNum);
-                                var_types fieldType = fieldDsc->lvType;
-                                lclVar->ChangeType(fieldDsc->lvType);
-                            }
+                        if (!varTypeIsSmallInt(fieldDsc->lvType))
+                        {
+                            // TODO-CQ: support that substitution for small types without creating `CAST` node.
+                            // When a small struct is returned in a register higher bits could be left in undefined
+                            // state.
+                            JITDUMP("Replacing an independently promoted local var V%02u with its only field  "
+                                "V%02u for "
+                                "the return [%06u]\n",
+                                lclVar->GetLclNum(), fieldLclNum, dspTreeID(tree));
+                            lclVar->SetLclNum(fieldLclNum);
+                            var_types fieldType = fieldDsc->lvType;
+                            lclVar->ChangeType(fieldDsc->lvType);
                         }
                     }
                 }

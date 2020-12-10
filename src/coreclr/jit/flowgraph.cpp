@@ -8898,18 +8898,7 @@ private:
 
             if (comp->compMethodReturnsNativeScalarType())
             {
-                if (!comp->compDoOldStructRetyping())
-                {
-                    returnLocalDsc.lvType = genActualType(comp->info.compRetType);
-                    if (varTypeIsStruct(returnLocalDsc.lvType))
-                    {
-                        comp->lvaSetStruct(returnLocalNum, comp->info.compMethodInfo->args.retTypeClass, false);
-                    }
-                }
-                else
-                {
-                    returnLocalDsc.lvType = genActualType(comp->info.compRetNativeType);
-                }
+                returnLocalDsc.lvType = genActualType(comp->info.compRetNativeType);
             }
             else if (comp->compMethodReturnsRetBufAddr())
             {
@@ -8941,7 +8930,12 @@ private:
 
             // make sure copy prop ignores this node (make sure it always does a reload from the temp).
             retTemp->gtFlags |= GTF_DONT_CSE;
-            returnExpr = comp->gtNewOperNode(GT_RETURN, retTemp->gtType, retTemp);
+
+            // Use the temp's type for the return tree, unless we're returning a native scalar.
+            //
+            var_types retType = comp->compMethodReturnsNativeScalarType() ? genActualType(comp->info.compRetType) : retTemp->gtType;
+
+            returnExpr = comp->gtNewOperNode(GT_RETURN, retType, retTemp);
         }
         else
         {
