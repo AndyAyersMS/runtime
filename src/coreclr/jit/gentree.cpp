@@ -12900,11 +12900,6 @@ GenTree* Compiler::gtFoldTypeCompare(GenTree* tree)
         // Drop any now-irrelvant flags
         compare->gtFlags |= tree->gtFlags & (GTF_RELOP_JMP_USED | GTF_RELOP_QMARK | GTF_DONT_CSE);
 
-        // Note that we've introduced vtable references.
-        //
-        compCurBB->bbFlags |= BBF_HAS_VTABREF;
-        optMethodFlags |= OMF_HAS_VTABLEREF;
-
         return compare;
     }
 
