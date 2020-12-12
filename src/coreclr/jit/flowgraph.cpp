@@ -15179,9 +15179,11 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
     //
     // Check up to N statements...
     //
-    const int  limit   = 2;
+    const int  limit   = 5;
     int        count   = 0;
     Statement* stmt    = lastStmt;
+    bool blockDefinesLcl = false;
+    bool scannedEntireBlock = false;
 
     while (count < limit)
     {
@@ -15201,9 +15203,16 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
 
                     if (op2->OperIs(GT_ARR_LENGTH) || op2->OperIsConst() || op2->OperIsCompare())
                     {
-                        JITDUMP("going to authorize this dup, because " FMT_BB " also looks at V%02u\n",
+                        JITDUMP("Predecessor " FMT_BB " defines V%02u, so duplication looks favorable\n",
                             block->bbNum, lclNum);
                         return true;
+                    }
+                    else
+                    {
+                        // If we see some other sort of definition, then stop looking.
+                        //
+                        blockDefinesLcl = true;
+                        break;
                     }
                 }
             }
@@ -15216,6 +15225,7 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
         //
         if (prevStmt == lastStmt)
         {
+            scannedEntireBlock = true;
             break;
         }
 
@@ -15260,53 +15270,79 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
             return true;
         }
     }
-    else if (block->NumSucc() == 1)
+    
+    if (block->NumSucc() != 1)
     {
-        // Tail duplication may also pay off if the block is reachable
-        // from another block along a path that is controlled by a possibly
-        // related or redundant comparision, and block is unlikely to interfere
-        // by redefining key locals.
-        //
-        //     predBlock
-        //  JTRUE(RELOP1(lclNum, ...))
-        //       /  \
-        //      /    \
-        //     /    block    /
-        //             \    /
-        //              \  /
-        //            successor
-        //        JTRUE(RELOP2(lclNum, ...))
-        //              /  \
-        //
-        BasicBlock* predBlock = block->GetUniquePred(this);
+        return false;
+    }
 
-        // Require predBlock to be before successor in BB order to avoid any
-        // possibiliy of a self-reinforcing cycle
-        //
-        if ((predBlock != nullptr) && (predBlock->bbJumpKind == BBJ_COND) && (predBlock->bbNum < successor->bbNum))
-        {
-            const bool isTruePath = (predBlock->bbJumpDest == block);
+    // Tail duplication may also pay off if the block is reachable
+    // from another block along a path that is controlled by a possibly
+    // related or redundant comparision, and block is unlikely to interfere
+    // by redefining key locals.
+    //
+    //     predBlock
+    //  JTRUE(RELOP1(lclNum, ...))
+    //       /  \
+    //      /    \
+    //     /    block    /
+    //             \    /
+    //              \  /
+    //            successor
+    //        JTRUE(RELOP2(lclNum, ...))
+    //              /  \
+    //
+    BasicBlock* const predBlock = block->GetUniquePred(this);
 
-            GenTree* predLastTree = predBlock->lastStmt()->GetRootNode();
-            assert(predLastTree->OperIs(GT_JTRUE));
-            GenTree* predRelop = predLastTree->AsOp()->gtOp1;
+    // Require predBlock to be before successor in BB order to avoid any
+    // possibility of a cycle of interestig relops leading to a lot of
+    // block duplication.
+    //
+    if ((predBlock == nullptr) || (predBlock->bbJumpKind != BBJ_COND) || (predBlock->bbNum < successor->bbNum))
+    {
+        return false;
+    }
 
-            GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
-            assert(successorLastTree->OperIs(GT_JTRUE));
-            GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
+    // Before analyzing the relops, see if block defines lclNum; if so then 
+    // the computation done in predBlock is likely irrelevant, and we've already
+    // determined the definition we found was unlikely to make duplication
+    // of successor pay off.
+    //
+    // And, if we didn't scan the entire block, assume there was a definition
+    // in the statements we didn't analyze.
+    //
+    // Note we don't dive into embedded assignments above, so may miss a definition
+    // even in the parts we scanned. That is OK because this method is just a heuristic.
+    //
+    if (blockDefinesLcl || !scannedEntireBlock)
+    {
+        return false;
+    }
 
-            RelopImplicationResult result = fgRelopImpliesRelop(predRelop, isTruePath, successorRelop);
-
-            // Todo: perhaps some ad-hoc analysis to see if block redefs lclNum.
-            //
-            if (result != RIR_UNKNOWN)
-            {
-                JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
-                    predBlock->bbNum, isTruePath ? "false" : "true", 
-                    successor->bbNum, result == RIR_TRUE ? "true" : "false");
-                return true;
-            }
-        }
+    // Looks like whatever happens in predBlock can flow down to the branch in successor,
+    // so see if knowing the value the predBlock relop allows us to deduce the value
+    // of the successor relop.
+    //
+    const bool isTruePath = (predBlock->bbJumpDest == block);
+    
+    GenTree* predLastTree = predBlock->lastStmt()->GetRootNode();
+    assert(predLastTree->OperIs(GT_JTRUE));
+    GenTree* predRelop = predLastTree->AsOp()->gtOp1;
+    
+    GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
+    assert(successorLastTree->OperIs(GT_JTRUE));
+    GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
+    
+    RelopImplicationResult result = fgRelopImpliesRelop(predRelop, isTruePath, successorRelop);
+    
+    // Todo: perhaps some ad-hoc analysis to see if block redefs lclNum.
+    //
+    if (result != RIR_UNKNOWN)
+    {
+        JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
+            predBlock->bbNum, isTruePath ? "false" : "true", 
+            successor->bbNum, result == RIR_TRUE ? "true" : "false");
+        return true;
     }
 
     return false;
