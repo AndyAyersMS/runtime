@@ -14740,6 +14740,399 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 }
 
 //-------------------------------------------------------------
+// fgRelopImpliesRelop: see if knowing the value of one relop 
+//    implies knowing the value of another relop.
+//
+// Arguments:
+//    relop1 - the first relop
+//    relop1Value - the value of relop1
+//    relop2 - the second relop
+//
+// Returns:
+//    RIR_TRUE if relop2 must be true, given the value of relop1
+//    RIR_FALSE if relop2 must be false, given the value of relop1
+//    RIR_UNKNOWN if true/false can't be determined.
+//
+// Notes:
+//    This utility assumes any locals tha appear in the respective
+//    relop trees have the same values; confirmation of that (to say
+//    enable an optimization) is left to callers.
+//    
+Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, bool relop1Value, GenTree* relop2)
+{
+    assert(relop1->OperIsCompare());
+    assert(relop2->OperIsCompare());
+
+    // Start by screening out cases we don't handle.
+    //
+    GenTree* const op11 = relop1->AsOp()->gtOp1;
+    GenTree* const op21 = relop2->AsOp()->gtOp1;
+
+    // Check that we're comparing the same types.
+    //
+    if (op11->TypeGet() != op21->TypeGet())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // And that both op1s are the same local.
+    // (todo: also handle invariant indirs of the same local).
+    //
+    if (!op11->IsLocal())
+    {
+        return RIR_UNKNOWN;
+    }
+    
+    if (!op21->IsLocal())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    if (op11->AsLclVarCommon()->GetLclNum() != op21->AsLclVarCommon()->GetLclNum())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // We only handle cases where op2's have the same operator
+    //
+    GenTree* const op12 = relop1->AsOp()->gtOp2;
+    GenTree* const op22 = relop2->AsOp()->gtOp2;
+
+    if (op12->OperGet() != op22->OperGet())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // And those operators must be constants, the same other local, or
+    // array lengths for what is likely the same array.
+    //
+    if (!op12->OperIs(GT_ARR_LENGTH) && !op12->OperIsConst() && !op12->IsLocal())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    if (op12->IsLocal())
+    {
+        assert(op22->IsLocal());
+
+        // Only handle "same" locals.
+        //
+        if (op12->AsLclVarCommon()->GetLclNum() != op22->AsLclVarCommon()->GetLclNum())
+        {
+            return RIR_UNKNOWN;
+        }
+    }
+    else if (op12->OperIs(GT_ARR_LENGTH))
+    {
+        // Only handle "same" array lengths.
+        //
+        return RIR_UNKNOWN;
+    }
+    else if (op12->OperIsConst())
+    {
+        // Only handle integral constants
+        //
+        if (!op12->IsIntegralConst() || !op22->IsIntegralConst())
+        {
+            return RIR_UNKNOWN;
+        }
+
+        // If one constant is a handle, the other must be a handle of the same kind.
+        //
+        if (op12->IsIconHandle())
+        {
+            if (!op22->IsIconHandle())
+            {
+                return RIR_UNKNOWN;
+            }
+
+            if (!GenTree::SameIconHandleFlag(op12, op22))
+            {
+                return RIR_UNKNOWN;
+            }
+        }
+    }
+
+    // Now look at the operators.
+    //
+    GenCondition c1 = GenCondition::FromRelop(relop1);
+    GenCondition c2 = GenCondition::FromRelop(relop2);
+
+    // Don't handle float comparisons.
+    //
+    if (c1.IsFloat() || c2.IsFloat())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // Don't handle mixed signed / unsigned comparisons.
+    // (todo: consider the common BCE idiom)
+    //
+    if (c1.IsUnsigned() != c2.IsUnsigned())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // If relop2 was reached because relop1 was false,
+    // then reverse the sense of relop1.
+    //
+    if (!relop1Value)
+    {
+        c1 = GenCondition::Reverse(c1);
+    }
+
+    // Assume we'll fail to establish the implication,
+    // and try to prove otherwise.
+    //
+    RelopImplicationResult result = RIR_UNKNOWN;
+
+    // Handle the various different RHS cases.
+    //
+    if (op12->IsIntegralConst())
+    {
+        assert(op22->IsIntegralConst());
+
+        class Evaluator
+        {
+            GenTreeIntConCommon* const e1;
+            GenTreeIntConCommon* const e2;
+
+        public:
+            
+            Evaluator(GenTreeIntConCommon* _e1, GenTreeIntConCommon* _e2) : e1(_e1), e2(_e2) 
+            { 
+            }
+
+            bool Evaluate(GenCondition c)
+            {
+                return Evaluate(c.GetCode());
+            }
+
+            bool Evaluate(GenCondition::Code c)
+            {
+                INT64 k1 = e1->IntegralValue();
+                INT64 k2 = e2->IntegralValue();
+                UINT64 uk1 = (UINT64) k1;
+                UINT64 uk2 = (UINT64) k2;
+
+                switch (c)
+                {
+                    case GenCondition::EQ:
+                    {
+                        return k1 == k2;
+                    }
+
+                    case GenCondition::NE:
+                    {
+                        return k1 != k2;
+                    }
+
+                    case GenCondition::SLT:
+                    {
+                        return k1 < k2;
+                    }
+
+                    case GenCondition::SLE:
+                    {
+                        return k1 <= k2;
+                    }
+
+                    case GenCondition::SGT:
+                    {
+                        return k1 > k2;
+                    }
+                    
+                    case GenCondition::SGE:
+                    {
+                        return k1 >= k2;
+                    }
+
+                    case GenCondition::ULT:
+                    {
+                        return uk1 < uk2;
+                    }
+
+                    case GenCondition::ULE:
+                    {
+                        return uk1 <= uk2;
+                    }
+
+                    case GenCondition::UGT:
+                    {
+                        return uk1 > uk2;
+                    }
+
+                    case GenCondition::UGE:
+                    {
+                        return uk1 >= uk2;
+                    }
+                
+                    default:
+                        break;
+                }
+                return false;
+            }
+        };
+
+        Evaluator e(op12->AsIntConCommon(), op22->AsIntConCommon());
+
+        switch (c1.GetCode())
+        {
+            case GenCondition::EQ:
+            {
+                // From upstream equality we know the exact value,
+                // so any downstream check versus a constant 
+                // can be resolved.
+                //
+                const bool isTrue = e.Evaluate(c2);
+                result = isTrue ? RIR_TRUE : RIR_FALSE;
+                break;
+            }
+
+            case GenCondition::NE:
+            {
+                // We can't learn much from a non-equality test,
+                // but there are a few cases we can resolve.
+                //
+                switch (c2.GetCode())
+                {
+                    case GenCondition::EQ:
+                    case GenCondition::NE:
+                    {
+                        // (NE x K1) ==>  (NE x K2)  if K1 == K2
+                        // (NE x K1) ==> !(EQ x K2)  if K1 == K2
+                        //
+                        bool isTrue = e.Evaluate(GenCondition::EQ);
+                        if (isTrue)
+                        {
+                            const bool invertResult = c2.Is(GenCondition::NE);
+                            isTrue ^= invertResult;
+                            result = isTrue ? RIR_TRUE : RIR_FALSE;
+                        }
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+                break;
+            }
+
+            case GenCondition::SLE:
+            case GenCondition::SGE:
+            case GenCondition::SLT:
+            case GenCondition::SGT:
+            case GenCondition::ULE:
+            case GenCondition::UGE:
+            case GenCondition::ULT:
+            case GenCondition::UGT:
+            {
+                // We have a leading inequality, and may be able to prove or disprovie
+                // the second condition.
+                //
+                // for x < y:
+                //
+                //     x <  z  is true  IF y <= z;
+                //     x >= z  is false IF y <= z;
+                //     x  = z  is false IF y <= z;
+                //     x != z  is true  IF y <  z;
+                //     x <= z  is true  IF y <  z;
+                //     x >  z  is false IF y <  z;
+                //
+                // for x <= y:
+                //
+                //     x <  z  is true  IF y <  z;
+                //     x >= z  is false IF y <  z;
+                //     x  = z  is false IF y <  z;
+                //     x != z  is true  IF y <= z;
+                //     x <= z  is true  IF y <= z;
+                //     x >  z  is false IF y <= z;
+                //
+                // and so on.
+                //
+                // First, check if the comparison needs to use the other form of
+                // the inequality (LT -> LE, etc) to evaluate the result.
+                //
+                const bool useOtherForm = c1.Is(c2) || c1.Is(GenCondition::Reverse(c2)) || c2.Is(GenCondition::EQ);
+
+                // Next check if the result needs to be inverted.
+                // An inital LT can prove a subsequent LT, LE, or NE.
+                // but can only disprove a subsequent EQ, GT, GE.
+                //
+                const bool invertResult = 
+                    c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) 
+                    || c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
+
+                bool isTrue = false;
+                    
+                if (useOtherForm)
+                {
+                    // We must map the first condition into its strict/unstrict counterpart.
+                    //
+                    GenCondition::Code counterpart = GenCondition::NONE;
+                    
+                    switch (c1.GetCode())
+                    {
+                        case GenCondition::SLT:
+                            counterpart = GenCondition::SLE;
+                            break;
+                        case GenCondition::SLE:
+                            counterpart = GenCondition::SLT;
+                            break;
+                        case GenCondition::SGT:
+                            counterpart = GenCondition::SGE;
+                            break;
+                        case GenCondition::SGE:
+                            counterpart = GenCondition::SGT;
+                            break;
+                        case GenCondition::ULT:
+                            counterpart = GenCondition::ULE;
+                            break;
+                        case GenCondition::ULE:
+                            counterpart = GenCondition::ULT;
+                            break;
+                        case GenCondition::UGT:
+                            counterpart = GenCondition::UGE;
+                            break;
+                        case GenCondition::UGE:
+                            counterpart = GenCondition::UGT;
+                            break;
+                        default:
+                            break;
+                    }
+                    
+                    assert(counterpart != GenCondition::NONE);
+                    
+                    // Evaluate using the counterpart of the first condition.
+                    //
+                    isTrue = e.Evaluate(counterpart);
+                }
+                else
+                {
+                    // Evaluate using the first condition.
+                    //
+                    isTrue = e.Evaluate(c1);
+                }
+
+                // If we proved the condition, map to a result.
+                //
+                if (isTrue)
+                {
+                    isTrue ^= invertResult;
+                    result = isTrue ? RIR_TRUE : RIR_FALSE;
+                }
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+
+    return result;
+}
+
+//-------------------------------------------------------------
 // fgBlockEndFavorsDuplication:
 //     Heuristic function that returns true if this block looks favorable
 //     for duplicating its successor (such as assigning a constant to a local).
@@ -14748,6 +15141,7 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 //      block: BasicBlock we are considering duplicating the successor of
 //      lclNum: local that is used by the successor block, provided by
 //        prior call to fgBlockIsGoodTailDuplicationCandidate
+//      successor: successor block that we might duplicate
 //
 //  Returns:
 //     true if block is favorable for tail duplication
@@ -14759,7 +15153,7 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 //     If so then duplicating the successor will likely allow the test to be
 //     optimized away.
 //
-bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
+bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, BasicBlock* successor)
 {
     // If the local is address exposed, we currently can't optimize.
     //
@@ -14767,7 +15161,6 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
 
     if (lclDsc->lvAddrExposed)
     {
-        JITDUMP("...exposed\n");
         return false;
     }
 
@@ -14776,7 +15169,6 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
 
     if (lastStmt == nullptr)
     {
-        JITDUMP("...empty\n");
         return false;
     }
 
@@ -14790,34 +15182,12 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
     const int  limit   = 2;
     int        count   = 0;
     Statement* stmt    = lastStmt;
-    unsigned   lclNum2 = BAD_VAR_NUM;
 
     while (count < limit)
     {
         count++;
         GenTree* const tree = stmt->GetRootNode();
-
-        if (tree->OperIs(GT_JTRUE))
-        {
-            GenTree* const cond = tree->AsOp()->gtOp1;
-
-            if (cond->OperIsCompare())
-            {
-                GenTree* const condOp1 = cond->AsOp()->gtOp1;
-                GenTree* const condOp2 = cond->AsOp()->gtOp2;
-
-                if (condOp1->IsLocal() && condOp2->OperIsConst())
-                {
-                    lclNum2 = condOp1->AsLclVarCommon()->GetLclNum();
-                    JITDUMP("...lclNum2 V%02u\n", lclNum2);
-                }
-                else if (gtIsVtableRef(condOp1, &lclNum2))
-                {
-                    JITDUMP("...vtab V%02u\n", lclNum2);
-                }
-            }
-        }
-        else if (tree->OperIs(GT_ASG) && !tree->OperIsBlkOp())
+        if (tree->OperIs(GT_ASG) && !tree->OperIsBlkOp())
         {
             GenTree* const op1 = tree->AsOp()->gtOp1;
 
@@ -14831,15 +15201,9 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
 
                     if (op2->OperIs(GT_ARR_LENGTH) || op2->OperIsConst() || op2->OperIsCompare())
                     {
+                        JITDUMP("going to authorize this dup, because " FMT_BB " also looks at V%02u\n",
+                            block->bbNum, lclNum);
                         return true;
-                    }
-
-                    if (op2->OperIs(GT_LCL_VAR) && (lclNum2 != BAD_VAR_NUM))
-                    {
-                        if (op2->AsLclVarCommon()->GetLclNum() == lclNum2)
-                        {
-                            return true;
-                        }
                     }
                 }
             }
@@ -14858,33 +15222,90 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
         stmt = prevStmt;
     }
 
-    // Tail duplication may also pay off if the block is one part of a hammock
-    // that is controlled by a possibly related or redundant comparision.
+    // Tail duplication may also pay off if the block has a possibly
+    // related or redundant comparison.
     //
-    //     predBlock
-    //  JTRUE(lclNum, ...)
+    //       block
+    //  JTRUE(RELOP1(lclNum, ...))
     //       /  \
     //      /    \
-    //     /    block    /
-    //             \    /
-    //              \  /
-    //            tailBlock
-    //        JTRUE(lclNum, ...)
-    //              /  \
+    //            \    /
+    //             \  /
+    //            successor
+    //       JTRUE(RELOP2(lclNum, ...))
+    //             /  \
     //
-    BasicBlock* predBlock = block->GetUniquePred(this);
-
-    if ((predBlock != nullptr) && (predBlock->bbJumpKind == BBJ_COND))
+    // Require block to be before successor in BB order to avoid any
+    // possibiliy of a self-reinforcing cycle
+    //
+    if ((block->bbJumpKind == BBJ_COND) && (block->bbNum < successor->bbNum))
     {
-        unsigned predLcl = BAD_VAR_NUM;
+        const bool isTruePath = (block->bbJumpDest == successor);
 
-        bool predIsCandidate = fgBlockIsGoodDuplicationCandidate(predBlock, &predLcl);
+        GenTree* blockLastTree = lastStmt->GetRootNode();
+        assert(blockLastTree->OperIs(GT_JTRUE));
+        GenTree* blockRelop = blockLastTree->AsOp()->gtOp1;
 
-        // Look for exact match, or a copy up in the pred block
-        //
-        if (predIsCandidate && ((predLcl == lclNum) || (predLcl == lclNum2)))
+        GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
+        assert(successorLastTree->OperIs(GT_JTRUE));
+        GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
+            
+        RelopImplicationResult result = fgRelopImpliesRelop(blockRelop, isTruePath, successorRelop);
+
+        if (result != RIR_UNKNOWN)
         {
+            JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
+                block->bbNum, isTruePath ? "false" : "true", 
+                successor->bbNum, result == RIR_TRUE ? "true" : "false");
             return true;
+        }
+    }
+    else if (block->NumSucc() == 1)
+    {
+        // Tail duplication may also pay off if the block is reachable
+        // from another block along a path that is controlled by a possibly
+        // related or redundant comparision, and block is unlikely to interfere
+        // by redefining key locals.
+        //
+        //     predBlock
+        //  JTRUE(RELOP1(lclNum, ...))
+        //       /  \
+        //      /    \
+        //     /    block    /
+        //             \    /
+        //              \  /
+        //            successor
+        //        JTRUE(RELOP2(lclNum, ...))
+        //              /  \
+        //
+        BasicBlock* predBlock = block->GetUniquePred(this);
+
+        // Require predBlock to be before successor in BB order to avoid any
+        // possibiliy of a self-reinforcing cycle
+        //
+        if ((predBlock != nullptr) && (predBlock->bbJumpKind == BBJ_COND) && (predBlock->bbNum < successor->bbNum))
+        {
+            const bool isTruePath = (predBlock->bbJumpDest == block);
+
+            GenTree* predLastTree = predBlock->lastStmt()->GetRootNode();
+            assert(predLastTree->OperIs(GT_JTRUE));
+            GenTree* predRelop = predLastTree->AsOp()->gtOp1;
+
+            GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
+            assert(successorLastTree->OperIs(GT_JTRUE));
+            GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
+
+            RelopImplicationResult result = fgRelopImpliesRelop(predRelop, isTruePath, successorRelop);
+
+            // Todo: perhaps some ad-hoc analysis to see if block redefs lclNum.
+            //
+            if (result != RIR_UNKNOWN)
+            {
+                JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
+                    predBlock->bbNum, isTruePath ? "false" : "true", 
+                    successor->bbNum, result == RIR_TRUE ? "true" : "false");
+                return true;
+            }
         }
     }
 
@@ -14898,6 +15319,7 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum)
 //
 // Arguments:
 //     target - the tail block (candidate for duplication)
+//     lclNum  - [OUT] a local whose value influences the terminal branch
 //
 // Returns:
 //     true if this is a good candidate, false otherwise
@@ -14926,7 +15348,7 @@ bool Compiler::fgBlockIsGoodDuplicationCandidate(BasicBlock* target, unsigned* l
         return false;
     }
 
-    // No point duplicating this block if it's not a control flow join.
+    // We require the block to be a join.
     //
     if (target->bbRefs < 2)
     {
@@ -14982,7 +15404,7 @@ bool Compiler::fgBlockIsGoodDuplicationCandidate(BasicBlock* target, unsigned* l
 
     unsigned lcl2 = BAD_VAR_NUM;
 
-    if (!op2->IsLocal() && !op2->OperIsConst() && !gtIsVtableRef(op1, &lcl2))
+    if (!op2->IsLocal() && !op2->OperIsConst())
     {
         return false;
     }
@@ -15070,7 +15492,7 @@ bool Compiler::fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* targe
 
     // See if this block assigns constant or other interesting tree to that same local.
     //
-    if (!fgBlockEndFavorsDuplication(block, lclNum))
+    if (!fgBlockEndFavorsDuplication(block, lclNum, target))
     {
         JITDUMP("Predecessor is not favorable\n");
         return false;
@@ -15119,7 +15541,7 @@ bool Compiler::fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* targe
     JITDUMP("fgOptimizeBranchToSimpleCond(from " FMT_BB " to cond " FMT_BB "), created new uncond " FMT_BB "\n",
             block->bbNum, target->bbNum, next->bbNum);
     JITDUMP("   expecting opts to key off V%02u, added cloned compare [%06u] to " FMT_BB "\n", lclNum,
-            dspTreeID(cloned), block->bbNum);
+            dspTreeID(cloned), dupBlock->bbNum);
 
     return true;
 }

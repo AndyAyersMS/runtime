@@ -6645,6 +6645,16 @@ public:
         return !IsFlag() && (m_code & (Float | Unordered)) == (Float | Unordered);
     }
 
+    bool IsLess() const
+    {
+        return ((m_code & OperMask) == SLT) || ((m_code & OperMask) == SLE);
+    }
+
+    bool IsGreater() const
+    {
+        return ((m_code & OperMask) == SGT) || ((m_code & OperMask) == SGE);
+    }
+
     bool Is(Code cond) const
     {
         return m_code == cond;
@@ -6654,6 +6664,11 @@ public:
     bool Is(Code c, TRest... rest) const
     {
         return Is(c) || Is(rest...);
+    }
+
+    bool Is(const GenCondition& other) const
+    {
+        return m_code == other.m_code;
     }
 
     // Indicate whether the condition should be swapped in order to avoid generating
@@ -6791,6 +6806,24 @@ public:
         assert(condition.m_code < _countof(swap));
         return GenCondition(swap[condition.m_code]);
     }
+
+    static GenCondition SwapStrict(GenCondition condition)
+    {
+        // clang-format off
+        static const Code swap[]
+        {
+        //  EQ    NE    LT    LE    GE    GT    F  NF
+            NONE, NONE, SLE,  SLT,  SGT,  SGE,  S, NS,
+            EQ,   NE,   ULE,  SGT,  UGT,  UGE,  C, NC,
+            FEQ,  FNE,  FLE,  FLT,  FGT,  FGE,  O, NO,
+            FEQU, FNEU, FLEU, FLTU, FGTU, FGEU, P, NP
+        };
+        // clang-format on
+
+        assert(condition.m_code < _countof(swap));
+        return GenCondition(swap[condition.m_code]);
+    }
+
 };
 
 // Represents a GT_JCC or GT_SETCC node.

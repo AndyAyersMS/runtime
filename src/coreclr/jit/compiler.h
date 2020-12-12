@@ -5337,9 +5337,18 @@ public:
     bool fgRelocateEHRegions();
 #endif // !FEATURE_EH_FUNCLETS
 
+    enum RelopImplicationResult
+    {
+        RIR_UNKNOWN,
+        RIR_TRUE,
+        RIR_FALSE
+    };
+
+    RelopImplicationResult fgRelopImpliesRelop(GenTree* relop1, bool relop1IsTrue, GenTree* relop2);
+
     bool fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* target);
 
-    bool fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum);
+    bool fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, BasicBlock* successor);
 
     bool fgBlockIsGoodDuplicationCandidate(BasicBlock* block, unsigned* lclNum);
 
