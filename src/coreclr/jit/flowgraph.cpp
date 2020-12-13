@@ -14740,13 +14740,15 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 }
 
 //-------------------------------------------------------------
-// fgRelopImpliesRelop: see if knowing the value of one relop 
+// fgRelopImpliesRelop: see if knowing the value of one relop
 //    implies knowing the value of another relop.
 //
 // Arguments:
 //    relop1 - the first relop
 //    relop1Value - the value of relop1
 //    relop2 - the second relop
+//    checkValueNumbers - use value numbers to ensure
+//       locals in the relops have the same values
 //
 // Returns:
 //    RIR_TRUE if relop2 must be true, given the value of relop1
@@ -14757,11 +14759,28 @@ bool Compiler::fgOptimizeSwitchBranches(BasicBlock* block)
 //    This utility assumes any locals tha appear in the respective
 //    relop trees have the same values; confirmation of that (to say
 //    enable an optimization) is left to callers.
-//    
-Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, bool relop1Value, GenTree* relop2)
+//
+Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
+                                                               bool     relop1Value,
+                                                               GenTree* relop2,
+                                                               bool     checkValueNumbers)
 {
     assert(relop1->OperIsCompare());
     assert(relop2->OperIsCompare());
+
+    // If we're able to use value numbers, first see if the two relops are redundant.
+    //
+    if (checkValueNumbers)
+    {
+        ValueNum relop1VN = relop1->GetVN(VNK_Liberal);
+        ValueNum relop2VN = relop2->GetVN(VNK_Liberal);
+
+        if (relop1VN == relop2VN)
+        {
+            JITDUMP("RIR: Value numbers agree, so second relop is %s\n", relop1Value ? "true" : "false");
+            return relop1Value ? RIR_TRUE : RIR_FALSE;
+        }
+    }
 
     // Start by screening out cases we don't handle.
     //
@@ -14778,11 +14797,19 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
     // And that both op1s are the same local.
     // (todo: also handle invariant indirs of the same local).
     //
+    // Note we could do a more comprehensive analysis when
+    // value numbers are expressions of the same local, eg
+    //
+    //  (x + 1) < 10  AND  x < 8
+    //
+    // Alternatively we could try and canoinicalize these types
+    // of comparisons earlier on, where possible.
+    //
     if (!op11->IsLocal())
     {
         return RIR_UNKNOWN;
     }
-    
+
     if (!op21->IsLocal())
     {
         return RIR_UNKNOWN;
@@ -14791,6 +14818,20 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
     if (op11->AsLclVarCommon()->GetLclNum() != op21->AsLclVarCommon()->GetLclNum())
     {
         return RIR_UNKNOWN;
+    }
+
+    // Todo: we actually don't care what the LHS trees are, provided they
+    // have the same VN.
+    //
+    if (checkValueNumbers)
+    {
+        ValueNum op11VN = op11->GetVN(VNK_Liberal);
+        ValueNum op21VN = op21->GetVN(VNK_Liberal);
+
+        if (op11VN != op21VN)
+        {
+            return RIR_UNKNOWN;
+        }
     }
 
     // We only handle cases where op2's have the same operator
@@ -14820,6 +14861,20 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
         if (op12->AsLclVarCommon()->GetLclNum() != op22->AsLclVarCommon()->GetLclNum())
         {
             return RIR_UNKNOWN;
+        }
+
+        // Todo: as noted above, if the two RHSs have the same VN,
+        // we don't care what type of operands they are.
+        //
+        if (checkValueNumbers)
+        {
+            ValueNum op12VN = op12->GetVN(VNK_Liberal);
+            ValueNum op22VN = op22->GetVN(VNK_Liberal);
+
+            if (op12VN != op22VN)
+            {
+                return RIR_UNKNOWN;
+            }
         }
     }
     else if (op12->OperIs(GT_ARR_LENGTH))
@@ -14898,9 +14953,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
             GenTreeIntConCommon* const e2;
 
         public:
-            
-            Evaluator(GenTreeIntConCommon* _e1, GenTreeIntConCommon* _e2) : e1(_e1), e2(_e2) 
-            { 
+            Evaluator(GenTreeIntConCommon* _e1, GenTreeIntConCommon* _e2) : e1(_e1), e2(_e2)
+            {
             }
 
             bool Evaluate(GenCondition c)
@@ -14910,10 +14964,10 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
 
             bool Evaluate(GenCondition::Code c)
             {
-                INT64 k1 = e1->IntegralValue();
-                INT64 k2 = e2->IntegralValue();
-                UINT64 uk1 = (UINT64) k1;
-                UINT64 uk2 = (UINT64) k2;
+                INT64  k1  = e1->IntegralValue();
+                INT64  k2  = e2->IntegralValue();
+                UINT64 uk1 = (UINT64)k1;
+                UINT64 uk2 = (UINT64)k2;
 
                 switch (c)
                 {
@@ -14941,7 +14995,7 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
                     {
                         return k1 > k2;
                     }
-                    
+
                     case GenCondition::SGE:
                     {
                         return k1 >= k2;
@@ -14966,7 +15020,7 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
                     {
                         return uk1 >= uk2;
                     }
-                
+
                     default:
                         break;
                 }
@@ -14981,11 +15035,11 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
             case GenCondition::EQ:
             {
                 // From upstream equality we know the exact value,
-                // so any downstream check versus a constant 
+                // so any downstream check versus a constant
                 // can be resolved.
                 //
                 const bool isTrue = e.Evaluate(c2);
-                result = isTrue ? RIR_TRUE : RIR_FALSE;
+                result            = isTrue ? RIR_TRUE : RIR_FALSE;
                 break;
             }
 
@@ -15059,18 +15113,17 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
                 // An inital LT can prove a subsequent LT, LE, or NE.
                 // but can only disprove a subsequent EQ, GT, GE.
                 //
-                const bool invertResult = 
-                    c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) 
-                    || c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
+                const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
+                                          c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
 
                 bool isTrue = false;
-                    
+
                 if (useOtherForm)
                 {
                     // We must map the first condition into its strict/unstrict counterpart.
                     //
                     GenCondition::Code counterpart = GenCondition::NONE;
-                    
+
                     switch (c1.GetCode())
                     {
                         case GenCondition::SLT:
@@ -15100,9 +15153,9 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1, 
                         default:
                             break;
                     }
-                    
+
                     assert(counterpart != GenCondition::NONE);
-                    
+
                     // Evaluate using the counterpart of the first condition.
                     //
                     isTrue = e.Evaluate(counterpart);
@@ -15179,11 +15232,11 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
     //
     // Check up to N statements...
     //
-    const int  limit   = 5;
-    int        count   = 0;
-    Statement* stmt    = lastStmt;
-    bool blockDefinesLcl = false;
-    bool scannedEntireBlock = false;
+    const int  limit              = 5;
+    int        count              = 0;
+    Statement* stmt               = lastStmt;
+    bool       blockDefinesLcl    = false;
+    bool       scannedEntireBlock = false;
 
     while (count < limit)
     {
@@ -15203,8 +15256,8 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
 
                     if (op2->OperIs(GT_ARR_LENGTH) || op2->OperIsConst() || op2->OperIsCompare())
                     {
-                        JITDUMP("Predecessor " FMT_BB " defines V%02u, so duplication looks favorable\n",
-                            block->bbNum, lclNum);
+                        JITDUMP("Predecessor " FMT_BB " defines V%02u, so duplication looks favorable\n", block->bbNum,
+                                lclNum);
                         return true;
                     }
                     else
@@ -15250,7 +15303,8 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
     //
     if ((block->bbJumpKind == BBJ_COND) && (block->bbNum < successor->bbNum))
     {
-        const bool isTruePath = (block->bbJumpDest == successor);
+        const bool isTruePath        = (block->bbJumpDest == successor);
+        const bool checkValueNumbers = false;
 
         GenTree* blockLastTree = lastStmt->GetRootNode();
         assert(blockLastTree->OperIs(GT_JTRUE));
@@ -15259,18 +15313,18 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
         GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
         assert(successorLastTree->OperIs(GT_JTRUE));
         GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
-            
-        RelopImplicationResult result = fgRelopImpliesRelop(blockRelop, isTruePath, successorRelop);
+
+        RelopImplicationResult result = fgRelopImpliesRelop(blockRelop, isTruePath, successorRelop, checkValueNumbers);
 
         if (result != RIR_UNKNOWN)
         {
-            JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
-                block->bbNum, isTruePath ? "false" : "true", 
-                successor->bbNum, result == RIR_TRUE ? "true" : "false");
+            JITDUMP("Relop analysis claims " FMT_BB "'s %s condition implies " FMT_BB "'s condition is %s\n",
+                    block->bbNum, isTruePath ? "false" : "true", successor->bbNum,
+                    result == RIR_TRUE ? "true" : "false");
             return true;
         }
     }
-    
+
     if (block->NumSucc() != 1)
     {
         return false;
@@ -15303,7 +15357,7 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
         return false;
     }
 
-    // Before analyzing the relops, see if block defines lclNum; if so then 
+    // Before analyzing the relops, see if block defines lclNum; if so then
     // the computation done in predBlock is likely irrelevant, and we've already
     // determined the definition we found was unlikely to make duplication
     // of successor pay off.
@@ -15323,25 +15377,26 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
     // so see if knowing the value the predBlock relop allows us to deduce the value
     // of the successor relop.
     //
-    const bool isTruePath = (predBlock->bbJumpDest == block);
-    
+    const bool isTruePath        = (predBlock->bbJumpDest == block);
+    const bool checkValueNumbers = false;
+
     GenTree* predLastTree = predBlock->lastStmt()->GetRootNode();
     assert(predLastTree->OperIs(GT_JTRUE));
     GenTree* predRelop = predLastTree->AsOp()->gtOp1;
-    
+
     GenTree* successorLastTree = successor->lastStmt()->GetRootNode();
     assert(successorLastTree->OperIs(GT_JTRUE));
     GenTree* successorRelop = successorLastTree->AsOp()->gtOp1;
-    
-    RelopImplicationResult result = fgRelopImpliesRelop(predRelop, isTruePath, successorRelop);
-    
+
+    RelopImplicationResult result = fgRelopImpliesRelop(predRelop, isTruePath, successorRelop, checkValueNumbers);
+
     // Todo: perhaps some ad-hoc analysis to see if block redefs lclNum.
     //
     if (result != RIR_UNKNOWN)
     {
-        JITDUMP("Relop analysis claims " FMT_BB"'s %s condition implies " FMT_BB"'s condition is %s\n",
-            predBlock->bbNum, isTruePath ? "false" : "true", 
-            successor->bbNum, result == RIR_TRUE ? "true" : "false");
+        JITDUMP("Relop analysis claims " FMT_BB "'s %s condition implies " FMT_BB "'s condition is %s\n",
+                predBlock->bbNum, isTruePath ? "false" : "true", successor->bbNum,
+                result == RIR_TRUE ? "true" : "false");
         return true;
     }
 

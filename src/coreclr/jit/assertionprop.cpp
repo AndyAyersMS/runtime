@@ -3258,72 +3258,51 @@ GenTree* Compiler::optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions, Gen
 
             if (domCmpTree->OperKind() & GTK_RELOP)
             {
-                ValueNum domCmpVN = domCmpTree->GetVN(VNK_Conservative);
+                BasicBlock* trueSuccessor  = domBlock->bbJumpDest;
+                BasicBlock* falseSuccessor = domBlock->bbNext;
 
-                // Note we could also infer the tree relop's value from similar relops higher in the dom tree.
-                // For example, (x >= 0) dominating (x > 0), or (x < 0) dominating (x > 0).
-                //
-                // That is left as a future enhancement.
-                //
-                if (domCmpVN == tree->GetVN(VNK_Conservative))
+                const bool trueReaches  = fgReachable(trueSuccessor, compCurBB);
+                const bool falseReaches = fgReachable(falseSuccessor, compCurBB);
+
+                if (trueReaches && falseReaches)
                 {
-                    // Thes compare in "tree" is redundant.
-                    // Is there a unique path from the dominating compare?
-                    JITDUMP(" Redundant compare; current relop:\n");
-                    DISPTREE(tree);
-                    JITDUMP(" dominating relop in " FMT_BB " with same VN:\n", domBlock->bbNum);
-                    DISPTREE(domCmpTree);
+                    // Both dominating compare outcomes reach the current block so we can't infer the
+                    // value of the relop.
+                    //
+                    // If the dominating compare is close to the current compare, this may be a missed
+                    // opportunity to tail duplicate.
+                    //
+                    JITDUMP("Both successors of " FMT_BB " reach, can't optimize from this relop\n", domBlock->bbNum);
+                }
+                else if (!trueReaches && !falseReaches)
+                {
+                    // No apparent path from the dominating BB.
+                    //
+                    // If domBlock or compCurBB is in an EH handler we may fail to find a path.
+                    // Just ignore those cases.
+                    //
+                    // No point in looking further up the tree.
+                    //
+                    JITDUMP("Neither successors of " FMT_BB " reach, can't optimize this relop\n", domBlock->bbNum);
+                    break;
+                }
+                else
+                {
+                    const bool             checkValueNumbers = true;
+                    RelopImplicationResult rir = fgRelopImpliesRelop(domCmpTree, trueReaches, tree, checkValueNumbers);
 
-                    BasicBlock* trueSuccessor  = domBlock->bbJumpDest;
-                    BasicBlock* falseSuccessor = domBlock->bbNext;
-
-                    const bool trueReaches  = fgReachable(trueSuccessor, compCurBB);
-                    const bool falseReaches = fgReachable(falseSuccessor, compCurBB);
-
-                    if (trueReaches && falseReaches)
+                    if (rir != RelopImplicationResult::RIR_UNKNOWN)
                     {
-                        // Both dominating compare outcomes reach the current block so we can't infer the
-                        // value of the relop.
-                        //
-                        // If the dominating compare is close to the current compare, this may be a missed
-                        // opportunity to tail duplicate.
-                        //
-                        JITDUMP("Both successors of " FMT_BB " reach, can't optimize\n", domBlock->bbNum);
-
-                        if ((trueSuccessor->GetUniqueSucc() == compCurBB) ||
-                            (falseSuccessor->GetUniqueSucc() == compCurBB))
-                        {
-                            JITDUMP("Perhaps we should have tail duplicated " FMT_BB "\n", compCurBB->bbNum);
-                        }
-                    }
-                    else if (trueReaches)
-                    {
-                        // Taken jump in dominator reaches, fall through doesn't; relop must be true.
-                        //
-                        JITDUMP("Jump successor " FMT_BB " of " FMT_BB " reaches, relop must be true\n",
-                                domBlock->bbJumpDest->bbNum, domBlock->bbNum);
-                        relopValue = 1;
-                        break;
-                    }
-                    else if (falseReaches)
-                    {
-                        // Fall through from dominator reaches, taken jump doesn't; relop must be false.
-                        //
-                        JITDUMP("Fall through successor " FMT_BB " of " FMT_BB " reaches, relop must be false\n",
-                                domBlock->bbNext->bbNum, domBlock->bbNum);
-                        relopValue = 0;
+                        relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
+                        JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
+                                trueReaches ? "jump" : "fall-through", domBlock->bbNum, compCurBB->bbNum,
+                                relopValue ? "true" : "false");
                         break;
                     }
                     else
                     {
-                        // No apparent path from the dominating BB.
-                        //
-                        // If domBlock or compCurBB is in an EH handler we may fail to find a path.
-                        // Just ignore those cases.
-                        //
-                        // No point in looking further up the tree.
-                        //
-                        break;
+                        JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " but we're unable to resolve the relop\n",
+                                trueReaches ? "jump" : "fall-through", domBlock->bbNum, compCurBB->bbNum);
                     }
                 }
             }

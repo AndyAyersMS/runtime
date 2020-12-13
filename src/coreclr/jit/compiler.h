@@ -5344,7 +5344,10 @@ public:
         RIR_FALSE
     };
 
-    RelopImplicationResult fgRelopImpliesRelop(GenTree* relop1, bool relop1IsTrue, GenTree* relop2);
+    RelopImplicationResult fgRelopImpliesRelop(GenTree* relop1,
+                                               bool     relop1IsTrue,
+                                               GenTree* relop2,
+                                               bool     checkValueNumbers);
 
     bool fgOptimizeBranchToSimpleCond(BasicBlock* block, BasicBlock* target);
 

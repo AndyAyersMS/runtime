@@ -6823,7 +6823,6 @@ public:
         assert(condition.m_code < _countof(swap));
         return GenCondition(swap[condition.m_code]);
     }
-
 };
 
 // Represents a GT_JCC or GT_SETCC node.
