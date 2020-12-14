@@ -6676,6 +6676,16 @@ public:
         return m_code == other.m_code;
     }
 
+    bool IsClass(const GenCondition& other) const
+    {
+        return ((m_code & OperMask) == (other.m_code & OperMask));
+    }
+
+    bool IsClass(Code c)
+    {
+        return ((m_code & OperMask) == (c & OperMask));
+    }
+
     // Indicate whether the condition should be swapped in order to avoid generating
     // multiple branches. This happens for certain floating point conditions on XARCH,
     // see GenConditionDesc and its associated mapping table for more details.
@@ -6812,21 +6822,38 @@ public:
         return GenCondition(swap[condition.m_code]);
     }
 
-    static GenCondition SwapStrict(GenCondition condition)
+    static GenCondition AddEquality(GenCondition condition)
     {
         // clang-format off
-        static const Code swapStrict[]
+        static const Code addeq[]
         {
         //  EQ    NE    LT    LE    GE    GT    F  NF
-            NONE, NONE, SLE,  SLT,  SGT,  SGE,  S, NS,
-            EQ,   NE,   ULE,  SGT,  UGT,  UGE,  C, NC,
-            FEQ,  FNE,  FLE,  FLT,  FGT,  FGE,  O, NO,
-            FEQU, FNEU, FLEU, FLTU, FGTU, FGEU, P, NP
+            NONE, NONE, SGE,  SGE,  SGE,  SGE,  S, NS,
+            EQ,   NE,   UGE,  UGE,  UGE,  UGE,  C, NC,
+            FEQ,  FNE,  FGE,  FGE,  FGE,  FGE,  O, NO,
+            FEQU, FNEU, FGEU, FGEU, FGEU, FGEU, P, NP
         };
         // clang-format on
 
-        assert(condition.m_code < _countof(swapStrict));
-        return GenCondition(swapStrict[condition.m_code]);
+        assert(condition.m_code < _countof(addeq));
+        return GenCondition(addeq[condition.m_code]);
+    }
+
+    static GenCondition RemoveEquality(GenCondition condition)
+    {
+        // clang-format off
+        static const Code noeq[]
+        {
+        //  EQ    NE    LT    LE    GE    GT    F  NF
+            NONE, NONE, SGT,  SGT,  SGT,  SGT,  S, NS,
+            EQ,   NE,   UGT,  UGT,  UGT,  UGT,  C, NC,
+            FEQ,  FNE,  FGT,  FGT,  FGT,  FGT,  O, NO,
+            FEQU, FNEU, FGTU, FGTU, FGTU, FGTU, P, NP
+        };
+        // clang-format on
+
+        assert(condition.m_code < _countof(noeq));
+        return GenCondition(noeq[condition.m_code]);
     }
 };
 

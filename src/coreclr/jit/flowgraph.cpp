@@ -14957,30 +14957,48 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
             {
             }
 
-            bool Evaluate(GenCondition c)
+            bool Evaluate(GenCondition c, int adjustment, var_types type)
             {
-                return Evaluate(c.GetCode());
-            }
+                ssize_t k1  = e1->IntegralValue();
+                ssize_t k2  = e2->IntegralValue();
+                size_t  uk1 = (size_t)k1;
+                size_t  uk2 = (size_t)k2;
 
-            bool Evaluate(GenCondition::Code c)
-            {
-                INT64  k1  = e1->IntegralValue();
-                INT64  k2  = e2->IntegralValue();
-                UINT64 uk1 = (UINT64)k1;
-                UINT64 uk2 = (UINT64)k2;
-
-                GenCondition cc(c);
-
-                if (cc.IsUnsigned())
+                if (c.IsUnsigned())
                 {
-                    JITDUMP(" -- Evaluating (%llu %s %llu)\n", uk1, cc.Name(), uk2);
+                    JITDUMP(" -- Evaluating (%llu %s %llu + %d) as %s\n", uk1, c.Name(), uk2, adjustment,
+                            varTypeName(type));
                 }
                 else
                 {
-                    JITDUMP(" -- Evaluating (%lld %s %lld)\n", k1, cc.Name(), k2);
+                    JITDUMP(" -- Evaluating (%lld %s %lld + %d) as %s\n", k1, c.Name(), k2, adjustment,
+                            varTypeName(type));
                 }
 
-                switch (c)
+                assert((adjustment >= -1) && (adjustment <= 1));
+
+                // We may not be able to adjust if it would cause overflow.
+                //
+                if (adjustment == 1)
+                {
+                    ssize_t maxk2 = AssertionDsc::GetUpperBoundForIntegralType(type);
+                    if (k2 == maxk2)
+                    {
+                        return false;
+                    }
+                    k2 += 1;
+                }
+                else if (adjustment == -1)
+                {
+                    ssize_t mink2 = AssertionDsc::GetLowerBoundForIntegralType(type);
+                    if (k2 == mink2)
+                    {
+                        return false;
+                    }
+                    k2 -= 1;
+                }
+
+                switch (c.GetCode())
                 {
                     case GenCondition::EQ:
                     {
@@ -15049,7 +15067,7 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 // so any downstream check versus a constant
                 // can be resolved.
                 //
-                const bool isTrue = e.Evaluate(c2);
+                const bool isTrue = e.Evaluate(c2, 0, TYP_LONG);
                 result            = isTrue ? RIR_TRUE : RIR_FALSE;
                 break;
             }
@@ -15067,7 +15085,7 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                         // (NE x K1) ==>  (NE x K2)  if K1 == K2
                         // (NE x K1) ==> !(EQ x K2)  if K1 == K2
                         //
-                        bool isTrue = e.Evaluate(GenCondition::EQ);
+                        bool isTrue = e.Evaluate(GenCondition::EQ, 0, TYP_LONG);
                         if (isTrue)
                         {
                             const bool invertResult = c2.Is(GenCondition::NE);
@@ -15097,56 +15115,107 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x < y:
                 //
-                //     x <  z  is true  IF y <= z;
-                //     x <= z  is true  IF y <  z;            [same form]
-                //     x  = z  is false IF y <= z;
-                //     x != z  is true  IF y <= z;
-                //     x >  z  is false IF y <= z;  (x <= z)
-                //     x >= z  is false IF y <  z;  (x <  z)  [same form]
+                //     x != z  is true  IF y < z
+                //     x  = z  is false IF y < z
+                //
+                //     x <  z  is true  IF y <= z
+                //     x >  z  is false IF y <= z + 1
+                //
+                //     x <= z  is true  IF y <= z + 1
+                //     x >= z  is false IF y <= z
                 //
                 // for x <= y:
                 //
-                //     x <  z  is true  IF y <  z;
-                //     x <= z  is true  IF y <= z;            [same form]
-                //     x  = z  is false IF y <  z;
-                //     x != z  is true  IF y <  z;
-                //     x >  z  is false IF y <= z;  (x <= z)  [same form]
-                //     x >= z  is false IF y <  z;  (x <  z)
+                //     x != z  is true  IF y < z
+                //     x  = z  is false IF y < z
                 //
-                // and so on.
+                //     x <= z  is true  IF y <= z
+                //     x >= z  is false IF y <= z - 1
+                //
+                //     x <  z  is true  IF y <= z - 1
+                //     x >  z  is false IF y <= z
+                //
+                // for x > y:
+                //
+                //     x != z  is true  IF y > z
+                //     x  = z  is false IF y > z
+                //
+                //     x >  z  is true  IF y >= z
+                //     x <  z  is false IF y >= z - 1
+                //
+                //     x >= z  is true  IF y >= z - 1
+                //     x <= z  is false IF y >= z
+                //
+                // for x >= y:
+                //
+                //     x != z  is true  IF y > z
+                //     x  = z  is false IF y > z
+                //
+                //     x >= z  is true  IF y >= z
+                //     x <= z  is false IF y >= z + 1
+                //
+                //     x >  z  is true  IF y >= z + 1
+                //     x <  z  is false IF y >= z
+                //
+                GenCondition comparisonOp(GenCondition::NONE);
+                int          adjustment = 0;
 
-                // Assume we'll fail to prove the implication.
-                //
-                bool isImplied = false;
-
-                // Check if the result needs to be inverted.
-                // An initial LT can prove a subsequent LT, LE, or NE.
-                // but can only disprove a subsequent EQ, GT, GE.
-                //
-                const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
-                                          c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
-
-                // Determine if we can use the first condition evaluate the result.
-                //
-                const bool useSameForm =
-                    (!invertResult && c2.IsNotStrict()) || (invertResult && (c1.IsNotStrict() != c2.IsNotStrict()));
-
-                // If we can't use the first condition, we need to swap
-                // strictness (LE->LT, LT->LE).
-                //
-                if (!useSameForm)
+                if (c2.Is(GenCondition::EQ) || c2.Is(GenCondition::NE))
                 {
-                    isImplied = e.Evaluate(GenCondition::SwapStrict(c1));
+                    // EQ and NE always compare using LT/GT and don't need adjustment.
+                    //
+                    comparisonOp = GenCondition::RemoveEquality(c1);
                 }
                 else
                 {
-                    isImplied = e.Evaluate(c1);
+                    // Other cases compare using LE/GE and may need adjustment.
+                    //
+                    comparisonOp = GenCondition::AddEquality(c1);
+
+                    if (c1.IsClass(GenCondition::SLT))
+                    {
+                        if (c2.IsClass(GenCondition::SGT) || c2.IsClass(GenCondition::SLE))
+                        {
+                            adjustment = +1;
+                        }
+                    }
+
+                    if (c1.IsClass(GenCondition::SLE))
+                    {
+                        if (c2.IsClass(GenCondition::SGE) || c2.IsClass(GenCondition::SLT))
+                        {
+                            adjustment = -1;
+                        }
+                    }
+
+                    if (c1.IsClass(GenCondition::SGT))
+                    {
+                        if (c2.IsClass(GenCondition::SLT) || c2.IsClass(GenCondition::SGE))
+                        {
+                            adjustment = -1;
+                        }
+                    }
+
+                    if (c1.IsClass(GenCondition::SGE))
+                    {
+                        if (c2.IsClass(GenCondition::SLE) || c2.IsClass(GenCondition::SGT))
+                        {
+                            adjustment = +1;
+                        }
+                    }
                 }
+
+                const bool isImplied = e.Evaluate(comparisonOp, adjustment, op11->TypeGet());
 
                 // If we proved the implication, map to a result.
                 //
                 if (isImplied)
                 {
+                    // Check if the result needs to be inverted ("is false") cases above.
+                    //
+                    const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
+                                              c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
+
                     result = invertResult ? RIR_FALSE : RIR_TRUE;
                 }
                 break;

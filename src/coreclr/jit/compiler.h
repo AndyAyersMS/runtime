@@ -7007,10 +7007,13 @@ public:
                     return SHRT_MIN;
                 case TYP_INT:
                     return INT_MIN;
+                case TYP_LONG:
+                    return LONG_MIN;
                 case TYP_BOOL:
                 case TYP_UBYTE:
                 case TYP_USHORT:
                 case TYP_UINT:
+                case TYP_ULONG:
                     return 0;
                 default:
                     unreached();
@@ -7028,12 +7031,16 @@ public:
                     return SHRT_MAX;
                 case TYP_INT:
                     return INT_MAX;
+                case TYP_LONG:
+                    return LONG_MAX;
                 case TYP_UBYTE:
                     return UCHAR_MAX;
                 case TYP_USHORT:
                     return USHRT_MAX;
                 case TYP_UINT:
                     return UINT_MAX;
+                case TYP_ULONG:
+                    return ULONG_MAX;
                 default:
                     unreached();
             }
