@@ -15097,21 +15097,21 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x < y:
                 //
-                //     x <  z  is true  IF y <= z;                 
+                //     x <  z  is true  IF y <= z;
                 //     x <= z  is true  IF y <  z;            [same form]
-                //     x  = z  is false IF y <= z;                 
-                //     x != z  is true  IF y <= z;                 
-                //     x >  z  is false IF y <= z;  (x <= z)       
+                //     x  = z  is false IF y <= z;
+                //     x != z  is true  IF y <= z;
+                //     x >  z  is false IF y <= z;  (x <= z)
                 //     x >= z  is false IF y <  z;  (x <  z)  [same form]
                 //
                 // for x <= y:
                 //
-                //     x <  z  is true  IF y <  z;                 
+                //     x <  z  is true  IF y <  z;
                 //     x <= z  is true  IF y <= z;            [same form]
-                //     x  = z  is false IF y <  z;                 
-                //     x != z  is true  IF y <  z;                 
+                //     x  = z  is false IF y <  z;
+                //     x != z  is true  IF y <  z;
                 //     x >  z  is false IF y <= z;  (x <= z)  [same form]
-                //     x >= z  is false IF y <  z;  (x <  z)  
+                //     x >= z  is false IF y <  z;  (x <  z)
                 //
                 // and so on.
 
@@ -15128,8 +15128,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
 
                 // Determine if we can use the first condition evaluate the result.
                 //
-                const bool useSameForm = (!invertResult && c2.IsNotStrict())
-                    || (invertResult && (c1.IsNotStrict() != c2.IsNotStrict()));
+                const bool useSameForm =
+                    (!invertResult && c2.IsNotStrict()) || (invertResult && (c1.IsNotStrict() != c2.IsNotStrict()));
 
                 // If we can't use the first condition, we need to swap
                 // strictness (LE->LT, LT->LE).
