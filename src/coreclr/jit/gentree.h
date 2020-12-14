@@ -6655,9 +6655,9 @@ public:
         return ((m_code & OperMask) == SGT) || ((m_code & OperMask) == SGE);
     }
 
-    bool IsStrict() const
+    bool IsNotStrict() const
     {
-        return ((m_code & OperMask) == SLT) || ((m_code & OperMask) == SGT);
+        return ((m_code & OperMask) == SLE) || ((m_code & OperMask) == SGE);
     }
 
     bool Is(Code cond) const
@@ -6815,7 +6815,7 @@ public:
     static GenCondition SwapStrict(GenCondition condition)
     {
         // clang-format off
-        static const Code swap[]
+        static const Code swapStrict[]
         {
         //  EQ    NE    LT    LE    GE    GT    F  NF
             NONE, NONE, SLE,  SLT,  SGT,  SGE,  S, NS,
@@ -6825,8 +6825,8 @@ public:
         };
         // clang-format on
 
-        assert(condition.m_code < _countof(swap));
-        return GenCondition(swap[condition.m_code]);
+        assert(condition.m_code < _countof(swapStrict));
+        return GenCondition(swapStrict[condition.m_code]);
     }
 };
 

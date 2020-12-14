@@ -14969,6 +14969,17 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 UINT64 uk1 = (UINT64)k1;
                 UINT64 uk2 = (UINT64)k2;
 
+                GenCondition cc(c);
+
+                if (cc.IsUnsigned())
+                {
+                    JITDUMP(" -- Evaluating (%llu %s %llu)\n", uk1, cc.Name(), uk2);
+                }
+                else
+                {
+                    JITDUMP(" -- Evaluating (%lld %s %lld)\n", k1, cc.Name(), k2);
+                }
+
                 switch (c)
                 {
                     case GenCondition::EQ:
@@ -15086,85 +15097,49 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x < y:
                 //
-                //     x <  z  is true  IF y <= z;                 same and c2 is strict
-                //     x <= z  is true  IF y <  z;
-                //     x  = z  is false IF y <= z;                 c2 is EQ
-                //     x != z  is true  IF y <  z;
-                //     x >  z  is false IF y <= z;  (x <= z)       c2 is Swap
-                //     x >= z  is false IF y <  z;  (x <  z)
+                //     x <  z  is true  IF y <= z;                 
+                //     x <= z  is true  IF y <  z;            [same form]
+                //     x  = z  is false IF y <= z;                 
+                //     x != z  is true  IF y <= z;                 
+                //     x >  z  is false IF y <= z;  (x <= z)       
+                //     x >= z  is false IF y <  z;  (x <  z)  [same form]
                 //
                 // for x <= y:
                 //
-                //     x <  z  is true  IF y <  z;                 same and c2 is strict
-                //     x <= z  is true  IF y <= z;
-                //     x  = z  is false IF y <  z;                 c2 is EQ
-                //     x != z  is true  IF y <= z;
-                //     x >  z  is false IF y <= z;  (x <= z)
-                //     x >= z  is false IF y <  z;  (x <  z)       c2 is Swap
+                //     x <  z  is true  IF y <  z;                 
+                //     x <= z  is true  IF y <= z;            [same form]
+                //     x  = z  is false IF y <  z;                 
+                //     x != z  is true  IF y <  z;                 
+                //     x >  z  is false IF y <= z;  (x <= z)  [same form]
+                //     x >= z  is false IF y <  z;  (x <  z)  
                 //
                 // and so on.
-                //
-                // First, check if the comparison needs to use the other form of
-                // the inequality (LT -> LE, etc) to evaluate the result.
-                //
-                const bool useOtherForm = ((c1.IsLess() == c2.IsLess()) && c2.IsStrict()) ||
-                                          c1.Is(GenCondition::Swap(c2)) || c2.Is(GenCondition::EQ);
 
-                // Next check if the result needs to be inverted.
-                // An inital LT can prove a subsequent LT, LE, or NE.
+                // Assume we'll fail to prove the implication.
+                //
+                bool isImplied = false;
+
+                // Check if the result needs to be inverted.
+                // An initial LT can prove a subsequent LT, LE, or NE.
                 // but can only disprove a subsequent EQ, GT, GE.
                 //
                 const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
                                           c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
 
-                bool isImplied = false;
+                // Determine if we can use the first condition evaluate the result.
+                //
+                const bool useSameForm = (!invertResult && c2.IsNotStrict())
+                    || (invertResult && (c1.IsNotStrict() != c2.IsNotStrict()));
 
-                if (useOtherForm)
+                // If we can't use the first condition, we need to swap
+                // strictness (LE->LT, LT->LE).
+                //
+                if (!useSameForm)
                 {
-                    // We must map the first condition into its strict/unstrict counterpart.
-                    //
-                    GenCondition::Code counterpart = GenCondition::NONE;
-
-                    switch (c1.GetCode())
-                    {
-                        case GenCondition::SLT:
-                            counterpart = GenCondition::SLE;
-                            break;
-                        case GenCondition::SLE:
-                            counterpart = GenCondition::SLT;
-                            break;
-                        case GenCondition::SGT:
-                            counterpart = GenCondition::SGE;
-                            break;
-                        case GenCondition::SGE:
-                            counterpart = GenCondition::SGT;
-                            break;
-                        case GenCondition::ULT:
-                            counterpart = GenCondition::ULE;
-                            break;
-                        case GenCondition::ULE:
-                            counterpart = GenCondition::ULT;
-                            break;
-                        case GenCondition::UGT:
-                            counterpart = GenCondition::UGE;
-                            break;
-                        case GenCondition::UGE:
-                            counterpart = GenCondition::UGT;
-                            break;
-                        default:
-                            break;
-                    }
-
-                    assert(counterpart != GenCondition::NONE);
-
-                    // Evaluate using the counterpart of the first condition.
-                    //
-                    isImplied = e.Evaluate(counterpart);
+                    isImplied = e.Evaluate(GenCondition::SwapStrict(c1));
                 }
                 else
                 {
-                    // Evaluate using the first condition.
-                    //
                     isImplied = e.Evaluate(c1);
                 }
 
