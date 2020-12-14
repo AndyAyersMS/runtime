@@ -6655,6 +6655,11 @@ public:
         return ((m_code & OperMask) == SGT) || ((m_code & OperMask) == SGE);
     }
 
+    bool IsStrict() const
+    {
+        return ((m_code & OperMask) == SLT) || ((m_code & OperMask) == SGT);
+    }
+
     bool Is(Code cond) const
     {
         return m_code == cond;

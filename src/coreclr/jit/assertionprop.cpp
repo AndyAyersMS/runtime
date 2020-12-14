@@ -3288,6 +3288,11 @@ GenTree* Compiler::optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions, Gen
                 }
                 else
                 {
+                    JITDUMP("RIR is comparing %s relop\n", trueReaches ? "true" : "false");
+                    DISPTREE(domCmpTree);
+                    JITDUMP("dominating\n");
+                    DISPTREE(tree);
+
                     const bool             checkValueNumbers = true;
                     RelopImplicationResult rir = fgRelopImpliesRelop(domCmpTree, trueReaches, tree, checkValueNumbers);
 

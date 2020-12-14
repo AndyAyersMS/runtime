@@ -15081,33 +15081,34 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
             case GenCondition::ULT:
             case GenCondition::UGT:
             {
-                // We have a leading inequality, and may be able to prove or disprovie
+                // We have a leading inequality, and may be able to prove or disprove
                 // the second condition.
                 //
                 // for x < y:
                 //
-                //     x <  z  is true  IF y <= z;
-                //     x >= z  is false IF y <= z;
-                //     x  = z  is false IF y <= z;
-                //     x != z  is true  IF y <  z;
+                //     x <  z  is true  IF y <= z;                 same and c2 is strict
                 //     x <= z  is true  IF y <  z;
-                //     x >  z  is false IF y <  z;
+                //     x  = z  is false IF y <= z;                 c2 is EQ
+                //     x != z  is true  IF y <  z;
+                //     x >  z  is false IF y <= z;  (x <= z)       c2 is Swap
+                //     x >= z  is false IF y <  z;  (x <  z)
                 //
                 // for x <= y:
                 //
-                //     x <  z  is true  IF y <  z;
-                //     x >= z  is false IF y <  z;
-                //     x  = z  is false IF y <  z;
-                //     x != z  is true  IF y <= z;
+                //     x <  z  is true  IF y <  z;                 same and c2 is strict
                 //     x <= z  is true  IF y <= z;
-                //     x >  z  is false IF y <= z;
+                //     x  = z  is false IF y <  z;                 c2 is EQ
+                //     x != z  is true  IF y <= z;
+                //     x >  z  is false IF y <= z;  (x <= z)
+                //     x >= z  is false IF y <  z;  (x <  z)       c2 is Swap
                 //
                 // and so on.
                 //
                 // First, check if the comparison needs to use the other form of
                 // the inequality (LT -> LE, etc) to evaluate the result.
                 //
-                const bool useOtherForm = c1.Is(c2) || c1.Is(GenCondition::Reverse(c2)) || c2.Is(GenCondition::EQ);
+                const bool useOtherForm = ((c1.IsLess() == c2.IsLess()) && c2.IsStrict()) ||
+                                          c1.Is(GenCondition::Swap(c2)) || c2.Is(GenCondition::EQ);
 
                 // Next check if the result needs to be inverted.
                 // An inital LT can prove a subsequent LT, LE, or NE.
@@ -15116,7 +15117,7 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
                                           c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
 
-                bool isTrue = false;
+                bool isImplied = false;
 
                 if (useOtherForm)
                 {
@@ -15158,21 +15159,20 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
 
                     // Evaluate using the counterpart of the first condition.
                     //
-                    isTrue = e.Evaluate(counterpart);
+                    isImplied = e.Evaluate(counterpart);
                 }
                 else
                 {
                     // Evaluate using the first condition.
                     //
-                    isTrue = e.Evaluate(c1);
+                    isImplied = e.Evaluate(c1);
                 }
 
-                // If we proved the condition, map to a result.
+                // If we proved the implication, map to a result.
                 //
-                if (isTrue)
+                if (isImplied)
                 {
-                    isTrue ^= invertResult;
-                    result = isTrue ? RIR_TRUE : RIR_FALSE;
+                    result = invertResult ? RIR_FALSE : RIR_TRUE;
                 }
                 break;
             }
@@ -15319,7 +15319,7 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
         if (result != RIR_UNKNOWN)
         {
             JITDUMP("Relop analysis claims " FMT_BB "'s %s condition implies " FMT_BB "'s condition is %s\n",
-                    block->bbNum, isTruePath ? "false" : "true", successor->bbNum,
+                    block->bbNum, isTruePath ? "true" : "false", successor->bbNum,
                     result == RIR_TRUE ? "true" : "false");
             return true;
         }
@@ -15395,7 +15395,7 @@ bool Compiler::fgBlockEndFavorsDuplication(BasicBlock* block, unsigned lclNum, B
     if (result != RIR_UNKNOWN)
     {
         JITDUMP("Relop analysis claims " FMT_BB "'s %s condition implies " FMT_BB "'s condition is %s\n",
-                predBlock->bbNum, isTruePath ? "false" : "true", successor->bbNum,
+                predBlock->bbNum, isTruePath ? "true" : "false", successor->bbNum,
                 result == RIR_TRUE ? "true" : "false");
         return true;
     }
