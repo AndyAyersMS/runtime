@@ -14794,6 +14794,14 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
         return RIR_UNKNOWN;
     }
 
+    // Don't handle byref comparisons.
+    // (some interop stubs compare byrefs to nulls)
+    //
+    if (op11->TypeIs(TYP_BYREF))
+    {
+        return RIR_UNKNOWN;
+    }
+
     // And that both op1s are the same local.
     // (todo: also handle invariant indirs of the same local).
     //
