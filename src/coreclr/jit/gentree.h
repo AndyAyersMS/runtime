@@ -6828,10 +6828,10 @@ public:
         static const Code addeq[]
         {
         //  EQ    NE    LT    LE    GE    GT    F  NF
-            NONE, NONE, SGE,  SGE,  SGE,  SGE,  S, NS,
-            EQ,   NE,   UGE,  UGE,  UGE,  UGE,  C, NC,
-            FEQ,  FNE,  FGE,  FGE,  FGE,  FGE,  O, NO,
-            FEQU, FNEU, FGEU, FGEU, FGEU, FGEU, P, NP
+            NONE, NONE, SLE,  SLE,  SGE,  SGE,  S, NS,
+            EQ,   NE,   ULE,  ULE,  UGE,  UGE,  C, NC,
+            FEQ,  FNE,  FLE,  FLE,  FGE,  FGE,  O, NO,
+            FEQU, FNEU, FLEU, FLEU, FGEU, FGEU, P, NP
         };
         // clang-format on
 
@@ -6845,10 +6845,10 @@ public:
         static const Code noeq[]
         {
         //  EQ    NE    LT    LE    GE    GT    F  NF
-            NONE, NONE, SGT,  SGT,  SGT,  SGT,  S, NS,
-            EQ,   NE,   UGT,  UGT,  UGT,  UGT,  C, NC,
-            FEQ,  FNE,  FGT,  FGT,  FGT,  FGT,  O, NO,
-            FEQU, FNEU, FGTU, FGTU, FGTU, FGTU, P, NP
+            NONE, NONE, SLT,  SLT,  SGT,  SGT,  S, NS,
+            EQ,   NE,   ULT,  ULT,  UGT,  UGT,  C, NC,
+            FEQ,  FNE,  FLT,  FLT,  FGT,  FGT,  O, NO,
+            FEQU, FNEU, FLTU, FLTU, FGTU, FGTU, P, NP
         };
         // clang-format on
 

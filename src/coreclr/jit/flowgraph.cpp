@@ -15088,9 +15088,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                         bool isTrue = e.Evaluate(GenCondition::EQ, 0, TYP_LONG);
                         if (isTrue)
                         {
-                            const bool invertResult = c2.Is(GenCondition::NE);
-                            isTrue ^= invertResult;
-                            result = isTrue ? RIR_TRUE : RIR_FALSE;
+                            const bool invertResult = c2.Is(GenCondition::EQ);
+                            result                  = invertResult ? RIR_FALSE : RIR_TRUE;
                         }
                         break;
                     }
@@ -15115,8 +15114,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x < y:
                 //
-                //     x != z  is true  IF y < z
-                //     x  = z  is false IF y < z
+                //     x != z  is true  IF y <= z
+                //     x  = z  is false IF y <  z
                 //
                 //     x <  z  is true  IF y <= z
                 //     x >  z  is false IF y <= z + 1
@@ -15126,8 +15125,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x <= y:
                 //
-                //     x != z  is true  IF y < z
-                //     x  = z  is false IF y < z
+                //     x != z  is true  IF y <  z
+                //     x  = z  is false IF y <  z
                 //
                 //     x <= z  is true  IF y <= z
                 //     x >= z  is false IF y <= z - 1
@@ -15137,8 +15136,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x > y:
                 //
-                //     x != z  is true  IF y > z
-                //     x  = z  is false IF y > z
+                //     x != z  is true  IF y >= z
+                //     x  = z  is false IF y >  z
                 //
                 //     x >  z  is true  IF y >= z
                 //     x <  z  is false IF y >= z - 1
@@ -15148,8 +15147,8 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
                 //
                 // for x >= y:
                 //
-                //     x != z  is true  IF y > z
-                //     x  = z  is false IF y > z
+                //     x != z  is true  IF y >  z
+                //     x  = z  is false IF y >  z
                 //
                 //     x >= z  is true  IF y >= z
                 //     x <= z  is false IF y >= z + 1
@@ -15162,13 +15161,19 @@ Compiler::RelopImplicationResult Compiler::fgRelopImpliesRelop(GenTree* relop1,
 
                 if (c2.Is(GenCondition::EQ) || c2.Is(GenCondition::NE))
                 {
-                    // EQ and NE always compare using LT/GT and don't need adjustment.
-                    //
-                    comparisonOp = GenCondition::RemoveEquality(c1);
+                    if ((c1.IsClass(GenCondition::SLT)) || c1.IsClass(GenCondition::SGT))
+                    {
+                        comparisonOp = GenCondition::AddEquality(c1);
+                    }
+                    else
+                    {
+                        comparisonOp = GenCondition::RemoveEquality(c1);
+                    }
                 }
                 else
                 {
-                    // Other cases compare using LE/GE and may need adjustment.
+                    // Mixed LT/LE/GT/GE always use the "E" forms,
+                    // and may also require adjustment.
                     //
                     comparisonOp = GenCondition::AddEquality(c1);
 
