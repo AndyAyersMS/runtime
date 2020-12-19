@@ -6832,6 +6832,21 @@ public:
     //
     PhaseStatus optRedundantBranches();
     bool optRedundantBranch(BasicBlock* const block);
+    bool optJumpThread(BasicBlock* const block, BasicBlock* const domBlock);
+
+    enum RelopImplicationResult
+    {
+        RIR_UNKNOWN,
+        RIR_TRUE,
+        RIR_FALSE
+    };
+
+    RelopImplicationResult optRelopImpliesRelop(GenTree* const relop1, bool relop1IsTrue, GenTree* const relop2);
+
+    RelopImplicationResult optRelopImpliesRelopRHSConstant(
+        GenTree* relop1, bool relop1IsTrue, GenTree* relop2, GenTree* const op12, GenTree* const op22);
+
+    bool optEvaluateRelop(GenTree* const c1, GenTree* const c2, GenCondition cond, int adj, var_types type);
 
 #if ASSERTION_PROP
     /**************************************************************************
@@ -6981,6 +6996,8 @@ public:
                     return SHRT_MIN;
                 case TYP_INT:
                     return INT_MIN;
+                case TYP_LONG:
+                    return LONG_MIN;
                 case TYP_BOOL:
                 case TYP_UBYTE:
                 case TYP_USHORT:
@@ -7002,12 +7019,16 @@ public:
                     return SHRT_MAX;
                 case TYP_INT:
                     return INT_MAX;
+                case TYP_LONG:
+                    return LONG_MAX;
                 case TYP_UBYTE:
                     return UCHAR_MAX;
                 case TYP_USHORT:
                     return USHRT_MAX;
                 case TYP_UINT:
                     return UINT_MAX;
+                case TYP_ULONG:
+                    return ULONG_MAX;
                 default:
                     unreached();
             }

@@ -6645,6 +6645,21 @@ public:
         return !IsFlag() && (m_code & (Float | Unordered)) == (Float | Unordered);
     }
 
+    bool IsLess() const
+    {
+        return ((m_code & OperMask) == SLT) || ((m_code & OperMask) == SLE);
+    }
+
+    bool IsGreater() const
+    {
+        return ((m_code & OperMask) == SGT) || ((m_code & OperMask) == SGE);
+    }
+
+    bool IsNotStrict() const
+    {
+        return ((m_code & OperMask) == SLE) || ((m_code & OperMask) == SGE);
+    }
+
     bool Is(Code cond) const
     {
         return m_code == cond;
@@ -6654,6 +6669,21 @@ public:
     bool Is(Code c, TRest... rest) const
     {
         return Is(c) || Is(rest...);
+    }
+
+    bool Is(const GenCondition& other) const
+    {
+        return m_code == other.m_code;
+    }
+
+    bool IsClass(const GenCondition& other) const
+    {
+        return ((m_code & OperMask) == (other.m_code & OperMask));
+    }
+
+    bool IsClass(Code c)
+    {
+        return ((m_code & OperMask) == (c & OperMask));
     }
 
     // Indicate whether the condition should be swapped in order to avoid generating
@@ -6790,6 +6820,40 @@ public:
 
         assert(condition.m_code < _countof(swap));
         return GenCondition(swap[condition.m_code]);
+    }
+
+    static GenCondition AddEquality(GenCondition condition)
+    {
+        // clang-format off
+        static const Code addeq[]
+        {
+        //  EQ    NE    LT    LE    GE    GT    F  NF
+            NONE, NONE, SLE,  SLE,  SGE,  SGE,  S, NS,
+            EQ,   NE,   ULE,  ULE,  UGE,  UGE,  C, NC,
+            FEQ,  FNE,  FLE,  FLE,  FGE,  FGE,  O, NO,
+            FEQU, FNEU, FLEU, FLEU, FGEU, FGEU, P, NP
+        };
+        // clang-format on
+
+        assert(condition.m_code < _countof(addeq));
+        return GenCondition(addeq[condition.m_code]);
+    }
+
+    static GenCondition RemoveEquality(GenCondition condition)
+    {
+        // clang-format off
+        static const Code noeq[]
+        {
+        //  EQ    NE    LT    LE    GE    GT    F  NF
+            NONE, NONE, SLT,  SLT,  SGT,  SGT,  S, NS,
+            EQ,   NE,   ULT,  ULT,  UGT,  UGT,  C, NC,
+            FEQ,  FNE,  FLT,  FLT,  FGT,  FGT,  O, NO,
+            FEQU, FNEU, FLTU, FLTU, FGTU, FGTU, P, NP
+        };
+        // clang-format on
+
+        assert(condition.m_code < _countof(noeq));
+        return GenCondition(noeq[condition.m_code]);
     }
 };
 
