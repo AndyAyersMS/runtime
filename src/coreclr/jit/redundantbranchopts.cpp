@@ -101,75 +101,52 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
 
             if (domCmpTree->OperKind() & GTK_RELOP)
             {
-                // We can use liberal VNs as bounds checks are not yet
-                // manifest explicitly as relops.
+                // See if there are paths from the dominating relop that
+                // would bring just the true or false value to the dominated relop
                 //
-                ValueNum domCmpVN = domCmpTree->GetVN(VNK_Liberal);
+                BasicBlock* const trueSuccessor  = domBlock->bbJumpDest;
+                BasicBlock* const falseSuccessor = domBlock->bbNext;
+                const bool        trueReaches    = fgReachable(trueSuccessor, block);
+                const bool        falseReaches   = fgReachable(falseSuccessor, block);
 
-                // Note we could also infer the tree relop's value from similar relops higher in the dom tree.
-                // For example, (x >= 0) dominating (x > 0), or (x < 0) dominating (x > 0).
-                //
-                // That is left as a future enhancement.
-                //
-                if (domCmpVN == tree->GetVN(VNK_Liberal))
+                if (trueReaches && falseReaches)
                 {
-                    // Thes compare in "tree" is redundant.
-                    // Is there a unique path from the dominating compare?
+                    // Both dominating compare outcomes reach the current block so we can't directly
+                    // infer the value of the relop.
                     //
-                    JITDUMP(FMT_BB " has dominating relop with same liberal VN:\n", domBlock->bbNum);
-                    DISPTREE(domCmpTree);
-                    JITDUMP(" Redundant compare; current relop:\n");
-                    DISPTREE(tree);
+                    // However we may be able to update the flow from block's predecessors so they
+                    // bypass block and instead transfer control to jump's successors (aka jump threading).
+                    //
+                    wasThreaded = optJumpThread(block, domBlock);
 
-                    BasicBlock* const trueSuccessor  = domBlock->bbJumpDest;
-                    BasicBlock* const falseSuccessor = domBlock->bbNext;
-                    const bool        trueReaches    = fgReachable(trueSuccessor, block);
-                    const bool        falseReaches   = fgReachable(falseSuccessor, block);
+                    if (wasThreaded)
+                    {
+                        return true;
+                    }
+                }
+                if (!trueReaches && !falseReaches)
+                {
+                    // No apparent path from the dominating compare.
+                    //
+                    // If domBlock or block is in an EH handler we may fail to find a path.
+                    // Just ignore those cases.
+                    //
+                    // No point in looking further up the tree.
+                    //
+                    break;
+                }
 
-                    if (trueReaches && falseReaches)
-                    {
-                        // Both dominating compare outcomes reach the current block so we can't infer the
-                        // value of the relop.
-                        //
-                        // However we may be able to update the flow from block's predecessors so they
-                        // bypass block and instead transfer control to jump's successors (aka jump threading).
-                        //
-                        wasThreaded = optJumpThread(block, domBlock);
+                // Just one outcome reaches. See if we can deduce the value of tree.
+                //
+                const RelopImplicationResult rir = optRelopImpliesRelop(jumpTree, trueReaches, tree);
 
-                        if (wasThreaded)
-                        {
-                            return true;
-                        }
-                    }
-                    else if (trueReaches)
-                    {
-                        // Taken jump in dominator reaches, fall through doesn't; relop must be true.
-                        //
-                        JITDUMP("Jump successor " FMT_BB " of " FMT_BB " reaches, relop must be true\n",
-                                domBlock->bbJumpDest->bbNum, domBlock->bbNum);
-                        relopValue = 1;
-                        break;
-                    }
-                    else if (falseReaches)
-                    {
-                        // Fall through from dominator reaches, taken jump doesn't; relop must be false.
-                        //
-                        JITDUMP("Fall through successor " FMT_BB " of " FMT_BB " reaches, relop must be false\n",
-                                domBlock->bbNext->bbNum, domBlock->bbNum);
-                        relopValue = 0;
-                        break;
-                    }
-                    else
-                    {
-                        // No apparent path from the dominating BB.
-                        //
-                        // If domBlock or block is in an EH handler we may fail to find a path.
-                        // Just ignore those cases.
-                        //
-                        // No point in looking further up the tree.
-                        //
-                        break;
-                    }
+                if (rir != RelopImplicationResult::RIR_UNKNOWN)
+                {
+                    relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
+                    JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
+                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, compCurBB->bbNum,
+                            relopValue ? "true" : "false");
+                    break;
                 }
             }
         }
@@ -306,14 +283,63 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
         }
     }
 
+    // Figure out whether we can infer the value of block's relop if
+    // we know the value of the domBlocks' relop.
+    //
+    GenTree* const               domTree    = domBlock->lastStmt()->GetRootNode()->AsOp()->gtGetOp1();
+    GenTree* const               blockTree  = block->lastStmt()->GetRootNode()->AsOp()->gtGetOp1();
+    const RelopImplicationResult rirIfTrue  = optRelopImpliesRelop(domTree, true, blockTree);
+    const RelopImplicationResult rirIfFalse = optRelopImpliesRelop(domTree, false, blockTree);
+
+    // If we can't infer anything, then no point continuing.
+    //
+    if ((rirIfTrue == RIR_UNKNOWN) && (rirIfFalse == RIR_UNKNOWN))
+    {
+        JITDUMP(" Can't infer anything about relop; no threading\n");
+        return false;
+    }
+
+    // Figure out where control flow from block will end up, given a true/false value
+    // for the dominating predicate.
+    //
+    // Note we may only be able to infer results for one of the paths coming out of
+    // dom block, and the inferred value of the second relop along that path may be
+    // different than the value of the first relop.
+    //
+    BasicBlock* trueTarget   = nullptr;
+    BasicBlock* falseTarget  = nullptr;
+    const char* trueMessage  = "unknown";
+    const char* falseMessage = "unknown";
+
+    if (rirIfTrue != RIR_UNKNOWN)
+    {
+        trueTarget  = (rirIfTrue == RIR_TRUE) ? block->bbJumpDest : block->bbNext;
+        trueMessage = (rirIfTrue == RIR_TRUE) ? "true" : "false";
+    }
+
+    if (rirIfFalse != RIR_UNKNOWN)
+    {
+        falseTarget  = (rirIfFalse == RIR_TRUE) ? block->bbJumpDest : block->bbNext;
+        falseMessage = (rirIfFalse == RIR_TRUE) ? "true" : "false";
+    }
+
+    // I don't think it's possible for both targets to match... we know they can't
+    // both be null, and it seems odd that the could both be the same.
+    //
+    assert(trueTarget != falseTarget);
+
     // In order to optimize we have to be able to determine which predecessors
-    // are correlated exclusively with a true value for block's relop, and which
-    // are correlated exclusively with a false value (aka true preds and false preds).
+    // are correlated exclusively with the rirIfTrue value for block's relop, and which
+    // are correlated exclusively with the rirIfFalse value (aka true preds and false preds).
     //
-    // To do this we try and follow the flow from domBlock to block; any block pred
-    // reachable from domBlock's true edge is a true pred, and vice versa.
+    // Given a successful true inference, a true pred can branch to the trueTarget.
+    // Given a successful false inference, a false pred can branch to the falseTarget.
     //
-    // However, there are some exceptions:
+    // To determine if a pred is true or false we try and follow the flow from domBlock
+    // to block; any block pred reachable from domBlock's true edge is a true pred, and
+    // vice versa.
+    //
+    // However, there are some exceptions and complications:
     //
     // * It's possible for a pred to be reachable from both paths out of domBlock;
     // if so, we can't jump thread that pred.
@@ -334,10 +360,13 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
     // * It's also possible that the pred is a switch; we could handle that
     // but don't, currently.
     //
+    // * It's also possible that the inference failed for a particular class of
+    // pred. We'll handle those as ambiguous as well.
+    //
     // For true preds and false preds we can reroute flow. It may turn out that
     // one of the preds falls through to block. We would prefer not to introduce
     // a new block to allow changing that fall through to a jump, so if we have
-    // both a pred that is not a true pred, and a fall through, we defer optimizing
+    // any ambiguous preds and an unambiguous fall through, we defer optimizing
     // the fall through pred as well.
     //
     // This creates an ordering issue, and to resolve it we have to walk the pred
@@ -352,8 +381,6 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
     BasicBlock*       fallThroughPred   = nullptr;
     BasicBlock* const trueSuccessor     = domBlock->bbJumpDest;
     BasicBlock* const falseSuccessor    = domBlock->bbNext;
-    BasicBlock* const trueTarget        = block->bbJumpDest;
-    BasicBlock* const falseTarget       = block->bbNext;
 
     for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
     {
@@ -381,18 +408,19 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             continue;
         }
 
-        if (predBlock->bbNext == block)
-        {
-            JITDUMP(FMT_BB " is a fall-through pred\n", predBlock->bbNum);
-            assert(fallThroughPred == nullptr);
-            fallThroughPred = predBlock;
-        }
-
         if (isTruePred)
         {
             if (!BasicBlock::sameEHRegion(predBlock, trueTarget))
             {
-                JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is an eh constrained true pred\n", predBlock->bbNum);
+                numAmbiguousPreds++;
+                continue;
+            }
+
+            if (trueTarget == nullptr)
+            {
+                JITDUMP(FMT_BB " is a true pred, but we could not determine the true target\n", predBlock->bbNum);
+                numAmbiguousPreds++;
                 continue;
             }
 
@@ -405,7 +433,7 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             {
                 uniqueTruePred = nullptr;
             }
-            JITDUMP(FMT_BB " is a true pred\n", predBlock->bbNum);
+            JITDUMP(FMT_BB " is a true pred and can branch to " FMT_BB "\n", predBlock->bbNum, trueTarget->bbNum);
         }
         else
         {
@@ -413,7 +441,15 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
             if (!BasicBlock::sameEHRegion(predBlock, falseTarget))
             {
-                JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is an eh constrained false pred\n", predBlock->bbNum);
+                numAmbiguousPreds++;
+                continue;
+            }
+
+            if (falseTarget == nullptr)
+            {
+                JITDUMP(FMT_BB " is a false pred, but we could not determine false true target\n", predBlock->bbNum);
+                numAmbiguousPreds++;
                 continue;
             }
 
@@ -426,7 +462,14 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             {
                 uniqueFalsePred = nullptr;
             }
-            JITDUMP(FMT_BB " is a false pred\n", predBlock->bbNum);
+            JITDUMP(FMT_BB " is a false pred and can branch to " FMT_BB "\n", predBlock->bbNum, falseTarget->bbNum);
+        }
+
+        if (predBlock->bbNext == block)
+        {
+            JITDUMP(FMT_BB " is an unambiguous fall-through pred\n", predBlock->bbNum);
+            assert(fallThroughPred == nullptr);
+            fallThroughPred = predBlock;
         }
     }
 
@@ -440,7 +483,7 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
     if ((numAmbiguousPreds > 0) && (fallThroughPred != nullptr))
     {
-        JITDUMP(FMT_BB " has both ambiguous preds and a fall through pred, not optimizing\n");
+        JITDUMP(FMT_BB " has both ambiguous preds and an unambiguous fall through pred, not optimizing\n");
         return false;
     }
 
@@ -474,6 +517,13 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             continue;
         }
 
+        if ((isTruePred && (trueTarget == nullptr)) || (isFalsePred && (falseTarget == nullptr)))
+        {
+            // Skip over preds where the relop value could not be inferred.
+            //
+            continue;
+        }
+
         // Is this the one and only unambiguous fall through pred?
         //
         if (predBlock->bbNext == block)
@@ -491,8 +541,8 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
             if (isTruePred)
             {
-                JITDUMP("Fall through flow from pred " FMT_BB " -> " FMT_BB " implies predicate true\n",
-                        predBlock->bbNum, block->bbNum);
+                JITDUMP("Fall through flow from pred " FMT_BB " -> " FMT_BB " implies predicate %s\n", predBlock->bbNum,
+                        block->bbNum, trueMessage);
                 JITDUMP("  repurposing " FMT_BB " to always jump to " FMT_BB "\n", block->bbNum, trueTarget->bbNum);
                 fgRemoveRefPred(block->bbNext, block);
                 block->bbJumpKind = BBJ_ALWAYS;
@@ -500,8 +550,8 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             else
             {
                 assert(isFalsePred);
-                JITDUMP("Fall through flow from pred " FMT_BB " -> " FMT_BB " implies predicate false\n",
-                        predBlock->bbNum, block->bbNum);
+                JITDUMP("Fall through flow from pred " FMT_BB " -> " FMT_BB " implies predicate %s\n", predBlock->bbNum,
+                        block->bbNum, falseMessage);
                 JITDUMP("  repurposing " FMT_BB " to always fall through to " FMT_BB "\n", block->bbNum,
                         falseTarget->bbNum);
                 fgRemoveRefPred(block->bbJumpDest, block);
@@ -520,8 +570,8 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
                 assert(!fgReachable(falseSuccessor, predBlock));
                 JITDUMP("Jump flow from pred " FMT_BB " -> " FMT_BB
-                        " implies predicate true; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
-                        predBlock->bbNum, block->bbNum, predBlock->bbNum, trueTarget->bbNum);
+                        " implies predicate %s; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
+                        predBlock->bbNum, block->bbNum, trueMessage, predBlock->bbNum, trueTarget->bbNum);
 
                 fgRemoveRefPred(block, predBlock);
                 fgReplaceJumpTarget(predBlock, trueTarget, block);
@@ -537,8 +587,8 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
                 }
 
                 JITDUMP("Jump flow from pred " FMT_BB " -> " FMT_BB
-                        " implies predicate false; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
-                        predBlock->bbNum, block->bbNum, predBlock->bbNum, falseTarget->bbNum);
+                        " implies predicate %s; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
+                        predBlock->bbNum, block->bbNum, falseMessage, predBlock->bbNum, falseTarget->bbNum);
 
                 fgRemoveRefPred(block, predBlock);
                 fgReplaceJumpTarget(predBlock, falseTarget, block);
@@ -669,6 +719,10 @@ Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const r
 //    RIR_TRUE if relop2 must be true, given the value of relop1
 //    RIR_FALSE if relop2 must be false, given the value of relop1
 //    RIR_UNKNOWN if true/false can't be determined.
+//
+// Notes:
+//    Loosely based on Table 2 in "Avoiding Conditional Branches
+//    by Code Replication" by Mueller & Whalley, PLDI '95.
 //
 Compiler::RelopImplicationResult Compiler::optRelopImpliesRelopRHSConstant(
     GenTree* const relop1, bool relop1Value, GenTree* const relop2, GenTree* const op12, GenTree* const op22)
