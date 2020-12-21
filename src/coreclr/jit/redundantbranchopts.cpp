@@ -553,3 +553,468 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
     fgModified = true;
     return true;
 }
+
+//-------------------------------------------------------------
+// optRelopImpliesRelop: sees if the value of one relop
+//    implies the value of another relop.
+//
+// Arguments:
+//    relop1 - the first relop
+//    relop1Value - the value of relop1
+//    relop2 - the second relop
+//
+// Returns:
+//    RIR_TRUE if relop2 must be true, given the value of relop1
+//    RIR_FALSE if relop2 must be false, given the value of relop1
+//    RIR_UNKNOWN if true/false can't be determined.
+//
+Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const relop1,
+                                                                bool           relop1Value,
+                                                                GenTree* const relop2)
+{
+    assert(relop1->OperIsCompare());
+    assert(relop2->OperIsCompare());
+
+    // Examine the value numbers of relop1 and relop2.
+    //
+    ValueNum vn1Normal;
+    ValueNum vn1Exception;
+    vnStore->VNUnpackExc(relop1->GetVN(VNK_Liberal), &vn1Normal, &vn1Exception);
+    ValueNum vn2Normal;
+    ValueNum vn2Exception;
+    vnStore->VNUnpackExc(relop2->GetVN(VNK_Liberal), &vn2Normal, &vn2Exception);
+
+    // Insist for now that relop2 not have any novel exceptions.
+    //
+    // If caller is willing to extract and duplicate relop2's side
+    // effects, we can relax this.
+    //
+    if (!vnStore->VNExcIsSubset(vn1Exception, vn2Exception))
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // If the normal value numbers agree, then relop2 is fully redundant.
+    //
+    if (vn1Normal == vn2Normal)
+    {
+        JITDUMP("RIR: Value numbers agree, so second relop is %s\n", relop1Value ? "true" : "false");
+        return relop1Value ? RIR_TRUE : RIR_FALSE;
+    }
+
+    // If the value numbers differ, check if the left hand sides match.
+    //
+    GenTree* const op11 = relop1->AsOp()->gtOp1;
+    GenTree* const op21 = relop2->AsOp()->gtOp1;
+
+    if (vnStore->VNLiberalNormalValue(op11->gtVNPair) != vnStore->VNLiberalNormalValue(op21->gtVNPair))
+    {
+        // The relop LHSs don't match, so we can't draw any conclusions.
+        // (TODO: verify we've properly canonicalized relops so constants never appear on LHSs).
+        //
+        return RIR_UNKNOWN;
+    }
+
+    // Don't handle byref comparisons until downstream code is prepared to cope.
+    //
+    // (some interop stubs compare byrefs to nulls)
+    //
+    if (op11->TypeIs(TYP_BYREF))
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // We currently only handle cases where op2's have the same operator.
+    //
+    // TODO: allow mixed RHSs, eg constant vs array len. Perhaps not that
+    // interesting until/unless we also consider implicit relops in array
+    // accesses.
+    //
+    GenTree* const op12 = relop1->AsOp()->gtOp2;
+    GenTree* const op22 = relop2->AsOp()->gtOp2;
+
+    if (op12->OperGet() != op22->OperGet())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // We have (x RELOP y1) =?=> (x RELOP' y2) where y1 and y2 are the
+    // same kind of tree.
+    //
+    // If y's are constants we can handle a wide range of relops.
+    //
+    if (op12->OperIsConst())
+    {
+        return optRelopImpliesRelopRHSConstant(relop1, relop1Value, relop2, op12, op22);
+    }
+
+    // TODO: handle other interesting RHS cases.
+    //
+    return RIR_UNKNOWN;
+}
+
+//-------------------------------------------------------------
+// optRelopImpliesRelopRHSConstant: sees if the value of
+//    one relop implies the value of another relop, where LHSs
+//    are same integral value, and RHSs are constants.
+//
+// Arguments:
+//    relop1 - the first relop
+//    relop1Value - the value of relop1
+//    relop2 - the second relop
+//    op12 - constant in first relop
+//    op22 - constant in second relop
+//
+// Returns:
+//    RIR_TRUE if relop2 must be true, given the value of relop1
+//    RIR_FALSE if relop2 must be false, given the value of relop1
+//    RIR_UNKNOWN if true/false can't be determined.
+//
+Compiler::RelopImplicationResult Compiler::optRelopImpliesRelopRHSConstant(
+    GenTree* const relop1, bool relop1Value, GenTree* const relop2, GenTree* const op12, GenTree* const op22)
+{
+    // Only handle integral constants
+    //
+    if (!op12->IsIntegralConst() || !op22->IsIntegralConst())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // If one constant is a handle, the other must be a handle of the same kind.
+    //
+    if (op12->IsIconHandle())
+    {
+        if (!op22->IsIconHandle())
+        {
+            return RIR_UNKNOWN;
+        }
+
+        if (!GenTree::SameIconHandleFlag(op12, op22))
+        {
+            return RIR_UNKNOWN;
+        }
+    }
+
+    // Now look at the operators.
+    //
+    GenCondition c1 = GenCondition::FromRelop(relop1);
+    GenCondition c2 = GenCondition::FromRelop(relop2);
+
+    // Don't handle float comparisons.
+    //
+    if (c1.IsFloat() || c2.IsFloat())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // Don't handle mixed signed / unsigned comparisons.
+    // (todo: consider the common BCE idiom)
+    //
+    if (c1.IsUnsigned() != c2.IsUnsigned())
+    {
+        return RIR_UNKNOWN;
+    }
+
+    // If relop2 was reached because relop1 was false,
+    // then reverse the sense of relop1.
+    //
+    if (!relop1Value)
+    {
+        c1 = GenCondition::Reverse(c1);
+    }
+
+    // Assume we'll fail to establish the implication,
+    // and try to prove otherwise.
+    //
+    RelopImplicationResult result = RIR_UNKNOWN;
+
+    // We're going to reduce (x RELOP k1) => (x RELOP' k2)
+    // to (k1 RELOP* k2 +/- 1).
+    //
+    switch (c1.GetCode())
+    {
+        case GenCondition::EQ:
+        {
+            // From upstream equality we know the exact value,
+            // so any downstream check versus a constant
+            // can be resolved.
+            //
+            const bool isTrue = optEvaluateRelop(op12, op22, c2, 0, TYP_LONG);
+            result            = isTrue ? RIR_TRUE : RIR_FALSE;
+            break;
+        }
+
+        case GenCondition::NE:
+        {
+            // We can't learn much from a non-equality test,
+            // but there are a few cases we can resolve.
+            //
+            switch (c2.GetCode())
+            {
+                case GenCondition::EQ:
+                case GenCondition::NE:
+                {
+                    // (NE x K1) ==>  (NE x K2)  if K1 == K2
+                    // (NE x K1) ==> !(EQ x K2)  if K1 == K2
+                    //
+                    bool isTrue = optEvaluateRelop(op12, op22, GenCondition::EQ, 0, TYP_LONG);
+                    if (isTrue)
+                    {
+                        const bool invertResult = c2.Is(GenCondition::EQ);
+                        result                  = invertResult ? RIR_FALSE : RIR_TRUE;
+                    }
+                    break;
+                }
+
+                default:
+                    break;
+            }
+            break;
+        }
+
+        case GenCondition::SLE:
+        case GenCondition::SGE:
+        case GenCondition::SLT:
+        case GenCondition::SGT:
+        case GenCondition::ULE:
+        case GenCondition::UGE:
+        case GenCondition::ULT:
+        case GenCondition::UGT:
+        {
+            // We have a leading inequality, and may be able to prove or disprove
+            // the second condition.
+            //
+            // for x < y:
+            //
+            //     x != z  is true  IF y <= z
+            //     x  = z  is false IF y <  z
+            //
+            //     x <  z  is true  IF y <= z
+            //     x >  z  is false IF y <= z + 1
+            //
+            //     x <= z  is true  IF y <= z + 1
+            //     x >= z  is false IF y <= z
+            //
+            // for x <= y:
+            //
+            //     x != z  is true  IF y <  z
+            //     x  = z  is false IF y <  z
+            //
+            //     x <= z  is true  IF y <= z
+            //     x >= z  is false IF y <= z - 1
+            //
+            //     x <  z  is true  IF y <= z - 1
+            //     x >  z  is false IF y <= z
+            //
+            // for x > y:
+            //
+            //     x != z  is true  IF y >= z
+            //     x  = z  is false IF y >  z
+            //
+            //     x >  z  is true  IF y >= z
+            //     x <  z  is false IF y >= z - 1
+            //
+            //     x >= z  is true  IF y >= z - 1
+            //     x <= z  is false IF y >= z
+            //
+            // for x >= y:
+            //
+            //     x != z  is true  IF y >  z
+            //     x  = z  is false IF y >  z
+            //
+            //     x >= z  is true  IF y >= z
+            //     x <= z  is false IF y >= z + 1
+            //
+            //     x >  z  is true  IF y >= z + 1
+            //     x <  z  is false IF y >= z
+            //
+            GenCondition comparisonOp(GenCondition::NONE);
+            int          adjustment = 0;
+
+            if (c2.Is(GenCondition::EQ) || c2.Is(GenCondition::NE))
+            {
+                if ((c1.IsClass(GenCondition::SLT)) || c1.IsClass(GenCondition::SGT))
+                {
+                    comparisonOp = GenCondition::AddEquality(c1);
+                }
+                else
+                {
+                    comparisonOp = GenCondition::RemoveEquality(c1);
+                }
+            }
+            else
+            {
+                // Mixed LT/LE/GT/GE always use the "E" forms,
+                // and may also require adjustment.
+                //
+                comparisonOp = GenCondition::AddEquality(c1);
+
+                if (c1.IsClass(GenCondition::SLT))
+                {
+                    if (c2.IsClass(GenCondition::SGT) || c2.IsClass(GenCondition::SLE))
+                    {
+                        adjustment = +1;
+                    }
+                }
+
+                if (c1.IsClass(GenCondition::SLE))
+                {
+                    if (c2.IsClass(GenCondition::SGE) || c2.IsClass(GenCondition::SLT))
+                    {
+                        adjustment = -1;
+                    }
+                }
+
+                if (c1.IsClass(GenCondition::SGT))
+                {
+                    if (c2.IsClass(GenCondition::SLT) || c2.IsClass(GenCondition::SGE))
+                    {
+                        adjustment = -1;
+                    }
+                }
+
+                if (c1.IsClass(GenCondition::SGE))
+                {
+                    if (c2.IsClass(GenCondition::SLE) || c2.IsClass(GenCondition::SGT))
+                    {
+                        adjustment = +1;
+                    }
+                }
+            }
+
+            // Verify it's ok to use type of constant here...
+            //
+            const bool isImplied = optEvaluateRelop(op12, op22, comparisonOp, adjustment, op12->TypeGet());
+
+            // If we proved the implication, map to a result.
+            //
+            if (isImplied)
+            {
+                // Check if the result needs to be inverted ("is false") cases above.
+                //
+                const bool invertResult = c1.IsLess() && (c2.IsGreater() || c2.Is(GenCondition::EQ)) ||
+                                          c1.IsGreater() && (c2.IsLess() || c2.Is(GenCondition::EQ));
+
+                result = invertResult ? RIR_FALSE : RIR_TRUE;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return result;
+}
+
+//------------------------------------------------------------------------
+// optEvaluateRelop: given a relop and constant values, determine if the
+//    relop is true or false
+//
+// Arguments:
+//     c1   - first constant
+//     c2   - second constant
+//     cond - condition
+//     adj  - value to add to c2 (-1, 0, or 1)
+//     type - types being compared
+//
+// Returns:
+//     True if "(c1 cond c2 + adj)" is definitely true
+//     False if it's false or truth can't be determined
+//
+bool Compiler::optEvaluateRelop(GenTree* const c1, GenTree* const c2, GenCondition cond, int adj, var_types type)
+{
+    ssize_t k1  = c1->AsIntConCommon()->IntegralValue();
+    ssize_t k2  = c2->AsIntConCommon()->IntegralValue();
+    size_t  uk1 = (size_t)k1;
+    size_t  uk2 = (size_t)k2;
+
+    if (cond.IsUnsigned())
+    {
+        JITDUMP(" -- Evaluating (%llu %s %llu + %d) as %s\n", uk1, cond.Name(), uk2, adj, varTypeName(type));
+    }
+    else
+    {
+        JITDUMP(" -- Evaluating (%lld %s %lld + %d) as %s\n", k1, cond.Name(), k2, adj, varTypeName(type));
+    }
+
+    assert((adj >= -1) && (adj <= 1));
+
+    // We may not be able to adjust if it would cause overflow.
+    //
+    if (adj == 1)
+    {
+        ssize_t maxk2 = AssertionDsc::GetUpperBoundForIntegralType(type);
+        if (k2 == maxk2)
+        {
+            return false;
+        }
+        k2 += 1;
+    }
+    else if (adj == -1)
+    {
+        ssize_t mink2 = AssertionDsc::GetLowerBoundForIntegralType(type);
+        if (k2 == mink2)
+        {
+            return false;
+        }
+        k2 -= 1;
+    }
+
+    switch (cond.GetCode())
+    {
+        case GenCondition::EQ:
+        {
+            return k1 == k2;
+        }
+
+        case GenCondition::NE:
+        {
+            return k1 != k2;
+        }
+
+        case GenCondition::SLT:
+        {
+            return k1 < k2;
+        }
+
+        case GenCondition::SLE:
+        {
+            return k1 <= k2;
+        }
+
+        case GenCondition::SGT:
+        {
+            return k1 > k2;
+        }
+
+        case GenCondition::SGE:
+        {
+            return k1 >= k2;
+        }
+
+        case GenCondition::ULT:
+        {
+            return uk1 < uk2;
+        }
+
+        case GenCondition::ULE:
+        {
+            return uk1 <= uk2;
+        }
+
+        case GenCondition::UGT:
+        {
+            return uk1 > uk2;
+        }
+
+        case GenCondition::UGE:
+        {
+            return uk1 >= uk2;
+        }
+
+        default:
+            break;
+    }
+    return false;
+}

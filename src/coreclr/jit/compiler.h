@@ -6834,6 +6834,20 @@ public:
     bool optRedundantBranch(BasicBlock* const block);
     bool optJumpThread(BasicBlock* const block, BasicBlock* const domBlock);
 
+    enum RelopImplicationResult
+    {
+        RIR_UNKNOWN,
+        RIR_TRUE,
+        RIR_FALSE
+    };
+
+    RelopImplicationResult optRelopImpliesRelop(GenTree* const relop1, bool relop1IsTrue, GenTree* const relop2);
+
+    RelopImplicationResult optRelopImpliesRelopRHSConstant(
+        GenTree* relop1, bool relop1IsTrue, GenTree* relop2, GenTree* const op12, GenTree* const op22);
+
+    bool optEvaluateRelop(GenTree* const c1, GenTree* const c2, GenCondition cond, int adj, var_types type);
+
 #if ASSERTION_PROP
     /**************************************************************************
      *               Value/Assertion propagation
