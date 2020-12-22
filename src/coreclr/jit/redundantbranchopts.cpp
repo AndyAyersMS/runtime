@@ -425,16 +425,16 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
         if (isTruePred)
         {
-            if (!BasicBlock::sameEHRegion(predBlock, trueTarget))
+            if (trueTarget == nullptr)
             {
-                JITDUMP(FMT_BB " is an eh constrained true pred\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is a true pred, but we could not determine the true target\n", predBlock->bbNum);
                 numAmbiguousPreds++;
                 continue;
             }
 
-            if (trueTarget == nullptr)
+            if (!BasicBlock::sameEHRegion(predBlock, trueTarget))
             {
-                JITDUMP(FMT_BB " is a true pred, but we could not determine the true target\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is an eh constrained true pred\n", predBlock->bbNum);
                 numAmbiguousPreds++;
                 continue;
             }
@@ -455,16 +455,16 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
         {
             assert(isFalsePred);
 
-            if (!BasicBlock::sameEHRegion(predBlock, falseTarget))
+            if (falseTarget == nullptr)
             {
-                JITDUMP(FMT_BB " is an eh constrained false pred\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is a false pred, but we could not determine false target\n", predBlock->bbNum);
                 numAmbiguousPreds++;
                 continue;
             }
 
-            if (falseTarget == nullptr)
+            if (!BasicBlock::sameEHRegion(predBlock, falseTarget))
             {
-                JITDUMP(FMT_BB " is a false pred, but we could not determine false target\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is an eh constrained false pred\n", predBlock->bbNum);
                 numAmbiguousPreds++;
                 continue;
             }
@@ -538,15 +538,16 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             continue;
         }
 
-        if (!BasicBlock::sameEHRegion(predBlock, isTruePred ? trueTarget : falseTarget))
+        if ((isTruePred && (trueTarget == nullptr)) || (isFalsePred && (falseTarget == nullptr)))
         {
-            // Skip over eh constrained preds, they will continue to flow to block.
+            // Skip over preds where the relop value could not be inferred, they will continue to flow to block.
+            //
             continue;
         }
 
-        if ((isTruePred && (trueTarget == nullptr)) || (isFalsePred && (falseTarget == nullptr)))
+        if (!BasicBlock::sameEHRegion(predBlock, isTruePred ? trueTarget : falseTarget))
         {
-            // Skip over preds where the relop value could not be inferred.
+            // Skip over eh constrained preds, they will continue to flow to block.
             //
             continue;
         }
@@ -598,6 +599,7 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
                 fgRemoveRefPred(block, predBlock);
                 fgReplaceJumpTarget(predBlock, trueTarget, block);
                 fgAddRefPred(trueTarget, predBlock);
+                trueTarget->bbFlags |= BBF_JMP_TARGET;
             }
             else
             {
