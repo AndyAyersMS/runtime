@@ -138,8 +138,8 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
                     {
                         relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
                         JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
-                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, block->bbNum,
-                            relopValue ? "true" : "false");
+                                trueReaches ? "jump" : "fall-through", domBlock->bbNum, block->bbNum,
+                                relopValue ? "true" : "false");
                         break;
                     }
                 }
@@ -666,7 +666,7 @@ Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const r
     if (vn1Normal == vn2Normal)
     {
         JITDUMP("RIR(%s): Value numbers agree, so second relop is %s\n", relop1Value ? "true" : "false",
-            relop1Value ? "true" : "false");
+                relop1Value ? "true" : "false");
         return relop1Value ? RIR_TRUE : RIR_FALSE;
     }
 
@@ -715,7 +715,7 @@ Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const r
     {
         const RelopImplicationResult rir = optRelopImpliesRelopRHSConstant(relop1, relop1Value, relop2, op12, op22);
         JITDUMP("RIR(%s)]: inference says second relop value is %s\n", relop1Value ? "true" : "false",
-            (rir == RIR_UNKNOWN) ? "unknown" : ((rir == RIR_TRUE) ? "true" : "false"));
+                (rir == RIR_UNKNOWN) ? "unknown" : ((rir == RIR_TRUE) ? "true" : "false"));
         return rir;
     }
 
