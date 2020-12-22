@@ -11,6 +11,8 @@
 //
 PhaseStatus Compiler::optRedundantBranches()
 {
+    INDEBUG(if (verbose) fgDispBasicBlocks());
+
     // We attempt this "bottom up" so walk the flow graph in postorder.
     //
     bool madeChanges = false;
@@ -33,6 +35,11 @@ PhaseStatus Compiler::optRedundantBranches()
         {
             madeChanges |= optRedundantBranch(block);
         }
+    }
+
+    if (madeChanges)
+    {
+        INDEBUG(if (verbose) fgDispBasicBlocks());
     }
 
     return madeChanges ? PhaseStatus::MODIFIED_EVERYTHING : PhaseStatus::MODIFIED_NOTHING;
@@ -109,6 +116,34 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
                 const bool        trueReaches    = fgReachable(trueSuccessor, block);
                 const bool        falseReaches   = fgReachable(falseSuccessor, block);
 
+                if (!trueReaches && !falseReaches)
+                {
+                    // No apparent path from the dominating compare.
+                    //
+                    // If domBlock or block is in an EH handler we may fail to find a path.
+                    // Just ignore those cases.
+                    //
+                    // No point in looking further up the tree.
+                    //
+                    break;
+                }
+
+                if (trueReaches != falseReaches)
+                {
+                    // Just one outcome reaches. See if we can deduce the value of tree.
+                    //
+                    const RelopImplicationResult rir = optRelopImpliesRelop(domCmpTree, trueReaches, tree);
+
+                    if (rir != RelopImplicationResult::RIR_UNKNOWN)
+                    {
+                        relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
+                        JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
+                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, block->bbNum,
+                            relopValue ? "true" : "false");
+                        break;
+                    }
+                }
+
                 if (trueReaches && falseReaches)
                 {
                     // Both dominating compare outcomes reach the current block so we can't directly
@@ -123,30 +158,6 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
                     {
                         return true;
                     }
-                }
-                if (!trueReaches && !falseReaches)
-                {
-                    // No apparent path from the dominating compare.
-                    //
-                    // If domBlock or block is in an EH handler we may fail to find a path.
-                    // Just ignore those cases.
-                    //
-                    // No point in looking further up the tree.
-                    //
-                    break;
-                }
-
-                // Just one outcome reaches. See if we can deduce the value of tree.
-                //
-                const RelopImplicationResult rir = optRelopImpliesRelop(domCmpTree, trueReaches, tree);
-
-                if (rir != RelopImplicationResult::RIR_UNKNOWN)
-                {
-                    relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
-                    JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
-                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, block->bbNum,
-                            relopValue ? "true" : "false");
-                    break;
                 }
             }
         }
@@ -168,6 +179,8 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
     //
     // Note we really shouldn't get here if the tree has non-exception effects,
     // as they should have impacted the value number.
+    //
+    // (TODO: preserve side effects like AP does)
     //
     if ((tree->gtFlags & GTF_SIDE_EFFECT) != 0)
     {
