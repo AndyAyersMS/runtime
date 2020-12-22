@@ -138,13 +138,13 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
 
                 // Just one outcome reaches. See if we can deduce the value of tree.
                 //
-                const RelopImplicationResult rir = optRelopImpliesRelop(jumpTree, trueReaches, tree);
+                const RelopImplicationResult rir = optRelopImpliesRelop(domCmpTree, trueReaches, tree);
 
                 if (rir != RelopImplicationResult::RIR_UNKNOWN)
                 {
                     relopValue = (rir == RelopImplicationResult::RIR_TRUE) ? 1 : 0;
                     JITDUMP("%s path from " FMT_BB " reaches " FMT_BB " and so relop must be %s\n",
-                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, compCurBB->bbNum,
+                            trueReaches ? "jump" : "fall-through", domBlock->bbNum, block->bbNum,
                             relopValue ? "true" : "false");
                     break;
                 }
@@ -373,6 +373,7 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
     // list twice. Classification of preds should be cheap so we just rerun the
     // reachability checks twice as well.
     //
+    int               numPreds          = 0;
     int               numAmbiguousPreds = 0;
     int               numTruePreds      = 0;
     int               numFalsePreds     = 0;
@@ -385,6 +386,7 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
     for (flowList* pred = block->bbPreds; pred != nullptr; pred = pred->flNext)
     {
         BasicBlock* const predBlock = pred->flBlock;
+        numPreds++;
 
         // We don't do switch updates, yet.
         //
@@ -426,14 +428,15 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
             if (numTruePreds == 0)
             {
-                numTruePreds++;
                 uniqueTruePred = predBlock;
             }
             else
             {
                 uniqueTruePred = nullptr;
             }
-            JITDUMP(FMT_BB " is a true pred and can branch to " FMT_BB "\n", predBlock->bbNum, trueTarget->bbNum);
+
+            numTruePreds++;
+            JITDUMP(FMT_BB " is a true pred\n", predBlock->bbNum);
         }
         else
         {
@@ -448,20 +451,21 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
 
             if (falseTarget == nullptr)
             {
-                JITDUMP(FMT_BB " is a false pred, but we could not determine false true target\n", predBlock->bbNum);
+                JITDUMP(FMT_BB " is a false pred, but we could not determine false target\n", predBlock->bbNum);
                 numAmbiguousPreds++;
                 continue;
             }
 
             if (numFalsePreds == 0)
             {
-                numFalsePreds++;
                 uniqueFalsePred = predBlock;
             }
             else
             {
                 uniqueFalsePred = nullptr;
             }
+
+            numFalsePreds++;
             JITDUMP(FMT_BB " is a false pred and can branch to " FMT_BB "\n", predBlock->bbNum, falseTarget->bbNum);
         }
 
@@ -472,6 +476,10 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             fallThroughPred = predBlock;
         }
     }
+
+    // All preds should have been classified.
+    //
+    assert(numPreds == numTruePreds + numFalsePreds + numAmbiguousPreds);
 
     if ((numTruePreds == 0) && (numFalsePreds == 0))
     {
@@ -514,6 +522,12 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
         {
             // Skip over ambiguous preds, they will continue to flow to block.
             //
+            continue;
+        }
+
+        if (!BasicBlock::sameEHRegion(predBlock, isTruePred ? trueTarget : falseTarget))
+        {
+            // Skip over eh constrained preds, they will continue to flow to block.
             continue;
         }
 
@@ -563,11 +577,6 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             assert(predBlock->bbNext != block);
             if (isTruePred)
             {
-                if (!BasicBlock::sameEHRegion(predBlock, trueTarget))
-                {
-                    continue;
-                }
-
                 assert(!fgReachable(falseSuccessor, predBlock));
                 JITDUMP("Jump flow from pred " FMT_BB " -> " FMT_BB
                         " implies predicate %s; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
@@ -580,11 +589,6 @@ bool Compiler::optJumpThread(BasicBlock* const block, BasicBlock* const domBlock
             else
             {
                 assert(isFalsePred);
-
-                if (!BasicBlock::sameEHRegion(predBlock, falseTarget))
-                {
-                    continue;
-                }
 
                 JITDUMP("Jump flow from pred " FMT_BB " -> " FMT_BB
                         " implies predicate %s; we can safely redirect flow to be " FMT_BB " -> " FMT_BB "\n",
@@ -648,7 +652,8 @@ Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const r
     //
     if (vn1Normal == vn2Normal)
     {
-        JITDUMP("RIR: Value numbers agree, so second relop is %s\n", relop1Value ? "true" : "false");
+        JITDUMP("RIR(%s): Value numbers agree, so second relop is %s\n", relop1Value ? "true" : "false",
+            relop1Value ? "true" : "false");
         return relop1Value ? RIR_TRUE : RIR_FALSE;
     }
 
@@ -691,11 +696,14 @@ Compiler::RelopImplicationResult Compiler::optRelopImpliesRelop(GenTree* const r
     // We have (x RELOP y1) =?=> (x RELOP' y2) where y1 and y2 are the
     // same kind of tree.
     //
-    // If y's are constants we can handle a wide range of relops.
+    // If y's are constants we can often infer the value of relop2.
     //
     if (op12->OperIsConst())
     {
-        return optRelopImpliesRelopRHSConstant(relop1, relop1Value, relop2, op12, op22);
+        const RelopImplicationResult rir = optRelopImpliesRelopRHSConstant(relop1, relop1Value, relop2, op12, op22);
+        JITDUMP("RIR(%s)]: inference says second relop value is %s\n", relop1Value ? "true" : "false",
+            (rir == RIR_UNKNOWN) ? "unknown" : ((rir == RIR_TRUE) ? "true" : "false"));
+        return rir;
     }
 
     // TODO: handle other interesting RHS cases.
