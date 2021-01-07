@@ -17176,18 +17176,40 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                     }
                 }
 
-                // Check for a conditional branch that just skips over an empty BBJ_ALWAYS block
-
+                // Check for cases where reversing the branch condition may enable
+                // other flow opts.
+                //
+                // Current block falls through to an empty bNext BBJ_ALWAYS, and
+                // (a) block jump target is bNext's bbNext.
+                // (b) block jump target is elsewhere but join free, and
+                //      bNext's jump target has a join.
+                //
                 if ((block->bbJumpKind == BBJ_COND) &&   // block is a BBJ_COND block
                     (bNext != nullptr) &&                // block is not the last block
                     (bNext->bbRefs == 1) &&              // No other block jumps to bNext
-                    (bNext->bbNext == bDest) &&          // The block after bNext is the BBJ_COND jump dest
                     (bNext->bbJumpKind == BBJ_ALWAYS) && // The next block is a BBJ_ALWAYS block
                     bNext->isEmpty() &&                  // and it is an an empty block
                     (bNext != bNext->bbJumpDest) &&      // special case for self jumps
                     (bDest != fgFirstColdBlock))
                 {
-                    bool optimizeJump = true;
+                    // case (a)
+                    //
+                    const bool isJumpAroundEmpty = (bNext->bbNext == bDest);
+
+                    // case (b)
+                    //
+                    // Note the asymetric checks for refs == 1 and refs > 1 ensures that we
+                    // differentiate the roles played by bDest and bNextJumpDest. We need some
+                    // sense of which arrangement is preferable to avoid getting stuck in a loop
+                    // reversing and re-reversing.
+                    //
+                    // Other tiebreaking criteria could be considered.
+                    //
+                    BasicBlock* const bNextJumpDest = bNext->bbJumpDest;
+                    const bool        isJumpToJoinFree =
+                        !isJumpAroundEmpty && (bDest->bbRefs == 1) && (bNextJumpDest->bbRefs > 1);
+
+                    bool optimizeJump = isJumpAroundEmpty || isJumpToJoinFree;
 
                     // We do not optimize jumps between two different try regions.
                     // However jumping to a block that is not in any try region is OK
@@ -17219,18 +17241,68 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                         }
                     }
 
+                    if (optimizeJump && isJumpToJoinFree)
+                    {
+                        // In the join free case, we also need to move bDest right after bNext
+                        // to create same flow as in the isJumpAroundEmpty case.
+                        //
+                        // We can't do this unless block, bNext, and bDest are all the same try region.
+                        //
+                        if (!BasicBlock::sameTryRegion(block, bDest) || !BasicBlock::sameTryRegion(bNext, bDest))
+                        {
+                            optimizeJump = false;
+                        }
+                        else
+                        {
+                            // We don't expect bDest to already be right after bNext.
+                            //
+                            assert(bDest != bNext->bbNext);
+
+                            JITDUMP("\nMoving " FMT_BB " after " FMT_BB " to enable reversal\n", bDest->bbNum,
+                                    bNext->bbNum);
+
+                            // If bDest can fall through we'll need to create a jump
+                            // block after it too. Remember where to jump to.
+                            //
+                            BasicBlock* const bDestNext = bDest->bbNext;
+
+                            // Move bDest
+                            //
+                            if (ehIsBlockEHLast(bDest))
+                            {
+                                ehUpdateLastBlocks(bDest, bDest->bbPrev);
+                            }
+
+                            fgUnlinkBlock(bDest);
+                            fgInsertBBafter(bNext, bDest);
+
+                            if (ehIsBlockEHLast(bNext))
+                            {
+                                ehUpdateLastBlocks(bNext, bDest);
+                            }
+
+                            // Add fall through fixup block, if needed.
+                            //
+                            if (bDest->bbFallsThrough())
+                            {
+                                BasicBlock* const bFixup = fgNewBBafter(BBJ_ALWAYS, bDest, true);
+                                bFixup->inheritWeight(bDestNext);
+                                bFixup->bbJumpDest = bDestNext;
+                                fgReplacePred(bDestNext, bDest, bFixup);
+                                fgAddRefPred(bFixup, bDest);
+                                bDestNext->bbFlags |= BBF_JMP_TARGET;
+                            }
+                        }
+                    }
+
                     if (optimizeJump)
                     {
-#ifdef DEBUG
-                        if (verbose)
-                        {
-                            printf("\nReversing a conditional jump around an unconditional jump (" FMT_BB " -> " FMT_BB
-                                   " -> " FMT_BB ")\n",
-                                   block->bbNum, bDest->bbNum, bNext->bbJumpDest->bbNum);
-                        }
-#endif // DEBUG
-                        /* Reverse the jump condition */
+                        JITDUMP("\nReversing a conditional jump around an unconditional jump (" FMT_BB " -> " FMT_BB
+                                " -> " FMT_BB ")\n",
+                                block->bbNum, bDest->bbNum, bNextJumpDest->bbNum);
 
+                        //  Reverse the jump condition
+                        //
                         GenTree* test = block->lastNode();
                         noway_assert(test->OperIsConditionalJump());
 
@@ -17244,7 +17316,6 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                         {
                             gtReverseCond(test);
                         }
-
                         // Optimize the Conditional JUMP to go to the new target
                         block->bbJumpDest = bNext->bbJumpDest;
 
@@ -17292,7 +17363,6 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                         // we optimized this JUMP - goto REPEAT to catch similar cases
                         change   = true;
                         modified = true;
-
 #ifdef DEBUG
                         if (verbose)
                         {
