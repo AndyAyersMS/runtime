@@ -17205,9 +17205,10 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                     //
                     // Other tiebreaking criteria could be considered.
                     //
-                    BasicBlock* const bNextJumpDest = bNext->bbJumpDest;
-                    const bool        isJumpToJoinFree =
-                        !isJumpAroundEmpty && (bDest->bbRefs == 1) && (bNextJumpDest->bbRefs > 1);
+                    BasicBlock* const bNextJumpDest    = bNext->bbJumpDest;
+                    const bool        isJumpToJoinFree = !isJumpAroundEmpty && (bDest->bbRefs == 1) &&
+                                                  (bNextJumpDest->bbRefs > 1) &&
+                                                  (block->isRunRarely() == bDest->isRunRarely());
 
                     bool optimizeJump = isJumpAroundEmpty || isJumpToJoinFree;
 
