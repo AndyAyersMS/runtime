@@ -17205,9 +17205,14 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                     //
                     // Other tiebreaking criteria could be considered.
                     //
+                    // Pragmatic constraints:
+                    //
+                    // * don't consider lexical predecessors, or we may confuse loop recognition
+                    // * don't consider blocks of different rarities
+                    //
                     BasicBlock* const bNextJumpDest    = bNext->bbJumpDest;
                     const bool        isJumpToJoinFree = !isJumpAroundEmpty && (bDest->bbRefs == 1) &&
-                                                  (bNextJumpDest->bbRefs > 1) &&
+                                                  (bNextJumpDest->bbRefs > 1) && (bDest->bbNum > block->bbNum) &&
                                                   (block->isRunRarely() == bDest->isRunRarely());
 
                     bool optimizeJump = isJumpAroundEmpty || isJumpToJoinFree;
@@ -17247,9 +17252,7 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication)
                         // In the join free case, we also need to move bDest right after bNext
                         // to create same flow as in the isJumpAroundEmpty case.
                         //
-                        // We can't do this unless block, bNext, and bDest are all the same try region.
-                        //
-                        if (!BasicBlock::sameTryRegion(block, bDest) || !BasicBlock::sameTryRegion(bNext, bDest))
+                        if (!fgEhAllowsMoveBlock(bNext, bDest))
                         {
                             optimizeJump = false;
                         }
