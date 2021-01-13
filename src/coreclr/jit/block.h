@@ -427,7 +427,6 @@ struct BasicBlock : private LIR::Range
 
 #endif // defined(FEATURE_EH_FUNCLETS) && defined(TARGET_ARM)
 
-<<<<<<< HEAD:src/coreclr/jit/block.h
 #define BBF_BACKWARD_JUMP       MAKE_BBFLAG(24) // BB is surrounded by a backward jump/switch arc
 #define BBF_RETLESS_CALL        MAKE_BBFLAG(25) // BBJ_CALLFINALLY that will never return (and therefore, won't need a paired
                                                 // BBJ_ALWAYS); see isBBCallAlwaysPair().
