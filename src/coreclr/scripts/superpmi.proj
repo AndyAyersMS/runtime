@@ -7,6 +7,8 @@
     <FileSeparatorChar>/</FileSeparatorChar>
   </PropertyGroup>
 
+  <Choose>
+     <When Condition="$(CollectionType) == 'crossgen' or $(CollectionType) == 'crossgen2' or $(CollectionType) == 'pmi'">
     <!-- The directory structure of pmiAssembliesPayload is
          source\workitem\pmiAssembliesDirectory\<machine_specific_load_0>\binaries
          source\workitem\pmiAssembliesDirectory\<machine_specific_load_1>\binaries
@@ -40,6 +42,29 @@
   <PropertyGroup Condition="'$(WorkItemCommand)' != ''">
     <WorkItemCommand>$(Python) $(WorkItemCommand) -assemblies $(PmiAssembliesDirectory) -arch $(Architecture) -build_type $(BuildConfig) -core_root $(SuperPMIDirectory)</WorkItemCommand>
   </PropertyGroup>
+
+  </When>
+  <When Condition="$(CollectionType) == 'runtests' or $(CollectionType) == 'runtests-pgo'">
+  <PropertyGroup Condition="'$(AGENT_OS)' == 'Windows_NT'">
+    <Python>%HELIX_PYTHONPATH%</Python>
+    <SuperPMIDirectory>%HELIX_CORRELATION_PAYLOAD%\superpmi</SuperPMIDirectory>
+    <OutputMchPath>%HELIX_WORKITEM_UPLOAD_ROOT%</OutputMchPath>
+    <!-- Workaround until https://github.com/dotnet/arcade/pull/6179 is not available -->
+    <HelixResultsDestinationDir>$(BUILD_SOURCESDIRECTORY)\artifacts\helixresults</HelixResultsDestinationDir>
+    <WorkItemCommand>$(SuperPMIDirectory)\superpmi.py collect -log_level DEBUG --$(CollectionType) $(Python) </WorkItemCommand>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AGENT_OS)' != 'Windows_NT'">
+    <Python>$HELIX_PYTHONPATH</Python>
+    <PmiAssembliesPayload>$(WorkItemDirectory)/pmiAssembliesDirectory</PmiAssembliesPayload>
+    <PmiAssembliesDirectory>$HELIX_WORKITEM_PAYLOAD/binaries</PmiAssembliesDirectory>
+    <SuperPMIDirectory>$HELIX_CORRELATION_PAYLOAD/superpmi</SuperPMIDirectory>
+    <OutputMchPath>$HELIX_WORKITEM_UPLOAD_ROOT</OutputMchPath>
+    <!-- Workaround until https://github.com/dotnet/arcade/pull/6179 is not available -->
+    <HelixResultsDestinationDir>$(BUILD_SOURCESDIRECTORY)/artifacts/helixresults</HelixResultsDestinationDir>
+    <WorkItemCommand>$(SuperPMIDirectory)/superpmi.py collect -log_level DEBUG --$(CollectionType) -pmi_location $(SuperPMIDirectory)/pmi.dll </WorkItemCommand>
+  </PropertyGroup>
+  </When>
+  </Choose>
 
   <PropertyGroup>
     <EnableAzurePipelinesReporter>false</EnableAzurePipelinesReporter>
