@@ -177,9 +177,13 @@ def build_and_run(coreclr_args):
                                     ("proxy", "proxy-yarp"),
                                     ("staticfiles", "static")]
 
+        # configname_scenario_list = [("platform", "plaintext")]
+
         # note tricks to get empty and one element tuples
 
         runtime_options_list = [tuple(), ("TieredCompilation=0", ), ("TieredPGO=1", "TC_QuickJitForLoops=1"), ("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
+
+        # runtime_options_list = [tuple()]
 
         #os_arch_combos = [("windows", "x64"), ("Linux", "x64")]
 
