@@ -13,12 +13,13 @@
 
 import argparse
 import logging
+import shutil
 import sys
 import zipfile
 
 from os import path
 from coreclr_arguments import *
-from superpmi import TempDir, determine_mcs_tool_path, run_and_log
+from superpmi import TempDir, determine_mcs_tool_path, determine_superpmi_tool_path, is_nonzero_length_file
 from superpmi_setup import run_command
 
 # Start of parser object creation.
@@ -26,9 +27,7 @@ is_windows = platform.system() == "Windows"
 parser = argparse.ArgumentParser(description="description")
 
 parser.add_argument("-source_directory", help="path to source directory")
-parser.add_argument("-core_root", help="Path to Core_Root directory")
 parser.add_argument("-output_mch_path", help="Absolute path to the mch file to produce")
-parser.add_argument("-log_file", help="Name of the log file")
 parser.add_argument("-arch", help="Architecture")
 
 def setup_args(args):
@@ -41,7 +40,7 @@ def setup_args(args):
         args (CoreclrArguments)
 
     """
-    coreclr_args = CoreclrArguments(args, require_built_core_root=False, require_built_product_dir=False,
+    coreclr_args = CoreclrArguments(args, require_built_core_root=True, require_built_product_dir=True,
                                     require_built_test_dir=False, default_build_type="Checked")
 
     coreclr_args.verify(args,
@@ -53,16 +52,6 @@ def setup_args(args):
                         "output_mch_path",
                         lambda output_mch_path: not os.path.isfile(output_mch_path),
                         "output_mch_path already exist")
-
-    coreclr_args.verify(args,
-                        "log_file",
-                        lambda log_file: True,  # not os.path.isfile(log_file),
-                        "log_file already exist")
-
-    coreclr_args.verify(args,
-                        "core_root",
-                        lambda core_root: os.path.isdir(core_root),
-                        "core_root doesn't exist")
 
     coreclr_args.verify(args,
                         "arch",
@@ -127,9 +116,12 @@ def build_and_run(coreclr_args):
         coreclr_args (CoreClrArguments): Arguments use to drive
         output_mch_name (string): Name of output mch file name
     """
-    core_root = coreclr_args.core_root
-    # log_file = coreclr_args.log_file
     source_directory = coreclr_args.source_directory
+    target_arch = coreclr_args.arch
+    target_os = coreclr_args.host_os
+
+    checked_root = path.join(source_directory, "artifacts", "bin", "coreclr", target_os + "." + coreclr_args.arch + ".Checked")
+    release_root = path.join(source_directory, "artifacts", "bin", "coreclr", target_os + "." + coreclr_args.arch + ".Release")
 
     # We'll use repo script to install dotnet
     dotnet_install_script_name = "dotnet-install.cmd" if is_windows else "dotnet-install.sh"
@@ -165,7 +157,7 @@ def build_and_run(coreclr_args):
 
         crank_app = path.join(temp_location, "crank")
         mcs_path = determine_mcs_tool_path(coreclr_args)
-
+        superpmi_path = determine_superpmi_tool_path(coreclr_args)
 
         # todo: add grpc/signalr, perhaps
 
@@ -177,80 +169,109 @@ def build_and_run(coreclr_args):
                                     ("proxy", "proxy-yarp"),
                                     ("staticfiles", "static")]
 
-        # configname_scenario_list = [("platform", "plaintext")]
+        configname_scenario_list = [("plaintext", "mvc")]
 
-        # note tricks to get empty and one element tuples
+        # note tricks to get one element tuples
 
-        runtime_options_list = [tuple(), ("TieredCompilation=0", ), ("TieredPGO=1", "TC_QuickJitForLoops=1"), ("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
+        runtime_options_list = [("Dummy=0",), ("TieredCompilation=0", ), ("TieredPGO=1", "TC_QuickJitForLoops=1"), ("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
 
-        # runtime_options_list = [tuple()]
+        runtime_options_list = [("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
 
-        #os_arch_combos = [("windows", "x64"), ("Linux", "x64")]
+        mch_file = path.join(coreclr_args.output_mch_path, "aspnet.run." + target_os + "." + target_arch + ".checked.mch")
+        benchmark_machine = determine_benchmark_machine(coreclr_args)
 
-        os_arch_combos = [("windows", "x64")]
+        jitname = determine_native_name(coreclr_args, "clrjit", target_os)
+        coreclrname = determine_native_name(coreclr_args, "coreclr", target_os)
+        spminame = determine_native_name(coreclr_args, "superpmi-shim-collector", target_os)
+        corelibname = "System.Private.CoreLib.dll"
 
-        for (target_os, target_arch) in os_arch_combos:
+        jitpath = path.join(".", jitname)
+        jitlib  = path.join(checked_root, jitname)
+        coreclr = path.join(release_root, coreclrname)
+        corelib = path.join(release_root, corelibname)
+        spmilib = path.join(checked_root, spminame)
 
-            mch_file = path.join(coreclr_args.output_mch_path, "aspnet.run." + target_os + "." + target_arch + ".checked.mch")
-            benchmark_machine = determine_benchmark_machine(coreclr_args)
+        for (configName, scenario) in configname_scenario_list:
+            configYml = configName + ".benchmarks.yml"
+            configFile = path.join(temp_location, "benchmarks", "scenarios", configYml)
 
-            jitname = determine_native_name(coreclr_args, "clrjit", target_os)
-            coreclrname = determine_native_name(coreclr_args, "coreclr", target_os)
-            spminame = determine_native_name(coreclr_args, "superpmi-shim-collector", target_os)
-            corelibname = "System.Private.CoreLib.dll"
+            crank_arguments = ["--config", configFile,
+                               "--profile", benchmark_machine,
+                               "--scenario", scenario,
+                               "--application.framework", "net6.0",
+                               "--application.channel", "edge",
+                               "--application.sdkVersion", "latest",
+                               "--application.environmentVariables", "COMPlus_JitName=" + spminame,
+                               "--application.environmentVariables", "COMPlus_JitEnableNoWayAssert=2",
+                               "--application.environmentVariables", "SuperPMIShimLogPath=.",
+                               "--application.environmentVariables", "SuperPMIShimPath=" + jitpath,
+                               "--application.environmentVariables", "COMPlus_EnableExtraSuperPmiQueries=1",
+                               "--application.environmentVariables", "COMPlus_JitDisablePgoRange=132db966",
+#                               "--application.environmentVariables", "COMPlus_JitHashDump=132db966",
+#                               "--application.environmentVariables", "COMPlus_JitStdOutFile=jit.txt",
+                               "--application.options.fetch", "true",
+                               "--application.options.displayOutput", "true",
+                               "--application.options.outputFiles", spmilib,
+                               "--application.options.outputFiles", jitlib,
+                               "--application.options.outputFiles", coreclr,
+                               "--application.options.outputFiles", corelib]
 
-            jitpath = path.join(".", jitname)
-            jitlib  = path.join(core_root, jitname)
-            coreclr = path.join(core_root, coreclrname)
-            corelib = path.join(core_root, corelibname)
-            spmilib = path.join(core_root, spminame)
+            for runtime_options in runtime_options_list:
+                runtime_arguments = []
+                for runtime_option in runtime_options:
+                    runtime_arguments.append("--application.environmentVariables")
+                    runtime_arguments.append("COMPlus_" + runtime_option)
 
-            for (configName, scenario) in configname_scenario_list:
-                configYml = configName + ".benchmarks.yml"
-                configFile = path.join(temp_location, "benchmarks", "scenarios", configYml)
+                print("")
+                print("================================")
+                print("Config: " + configName + " options: " + " ".join(runtime_options))
+                print("================================")
+                print("")
 
-                crank_arguments = ["--config", configFile,
-                                   "--profile", benchmark_machine,
-                                   "--scenario", scenario,
-                                   "--application.framework", "net6.0",
-                                   "--application.channel", "edge",
-                                   "--application.sdkVersion", "latest",
-                                   "--application.environmentVariables", "COMPlus_JitName=" + spminame,
-                                   "--application.environmentVariables", "SuperPMIShimLogPath=.",
-                                   "--application.environmentVariables", "SuperPMIShimPath=" + jitpath,
-                                   "--application.environmentVariables", "COMPlus_EnableExtraSuperPmiQueries=1",
-                                   "--application.options.fetch", "true",
-                                   "--application.options.outputFiles", spmilib,
-                                   "--application.options.outputFiles", jitlib,
-                                   "--application.options.outputFiles", coreclr,
-                                   "--application.options.outputFiles", corelib]
+                subprocess.run([crank_app] + crank_arguments + runtime_arguments, cwd=temp_location)
 
-                for runtime_options in runtime_options_list:
-                    runtime_arguments = []
-                    for runtime_option in runtime_options:
-                        runtime_arguments.append("--application.environmentVariables")
-                        runtime_arguments.append("COMPlus_" + runtime_option)
+        # extract
+        crankZipFiles = [os.path.join(temp_location, item) for item in os.listdir(temp_location) if item.endswith(".zip")]
 
-                    subprocess.run([crank_app] + crank_arguments + runtime_arguments, cwd=temp_location)
+        if len(crankZipFiles) > 0:
+            for zipFile in crankZipFiles:
+                with zipfile.ZipFile(zipFile, "r") as zipObject:
+                    listOfFileNames = zipObject.namelist()
+                    for zippedFileName in listOfFileNames:
+                        if zippedFileName.endswith('.mc'):
+                            zipObject.extract(zippedFileName, temp_location)
+                            print("MC summary for " + zippedFileName)
+                            command = [mcs_path, "-jitflags", zippedFileName]
+                            run_command(command, temp_location)
 
-            crankZipFiles = [os.path.join(temp_location, item) for item in os.listdir(temp_location) if item.endswith(".zip")]
+        # merge
+        command = [mcs_path, "-merge", "temp.mch", "*.mc", "-dedup", "-thin"]
+        run_command(command, temp_location)
 
-            if len(crankZipFiles) > 0:
-                for zipFile in crankZipFiles:
-                    with zipfile.ZipFile(zipFile, "r") as zipObject:
-                        listOfFileNames = zipObject.namelist()
-                        for zippedFileName in listOfFileNames:
-                            if zippedFileName.endswith('.mc'):
-                                zipObject.extract(zippedFileName, temp_location)
-                                print("MC summary for " + zippedFileName)
-                                command = [mcs_path, "-jitflags", zippedFileName]
-                                run_command(command, temp_location)
+        # clean
+        command = [superpmi_path, "-v", "ewmi", "-f", "fail.mcl", jitlib, "temp.mch"]
+        run_command(command, temp_location)
 
-            command = [mcs_path, "-merge", mch_file, "*.mc", "-recursive", "-dedup", "-thin"]
-            run_command(command, temp_location)
+        # strip
+        if is_nonzero_length_file("fail.mcl"):
+            print("Replay had failures, NOT cleaning...");
+            fail_file = path.join(coreclr_args.output_mch_path, "fail.mcl");
+            shutil.copy2("fail.mcl", fail_file)
+            shutil.copy2("temp.mch", mch_file)
+            #command = [mcs_path, "-strip", "fail.mcl", "temp.mch", mch_file]
+            #run_command(command, temp_location)
+        else:
+            print("Replay was clean...");
+            shutil.copy2("temp.mch", mch_file)
 
-            command = [mcs_path, "-toc", mch_file]
-            run_command(command, temp_location)
+        # index
+        command = [mcs_path, "-toc", mch_file]
+        run_command(command, temp_location)
+
+        # overall summary
+        print("Merged summary for " + mch_file)
+        command = [mcs_path, "-jitflags", mch_file]
+        run_command(command, temp_location)
 
 def main(main_args):
     """ Main entry point
