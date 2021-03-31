@@ -202,14 +202,10 @@ def build_and_run(coreclr_args):
                                "--application.channel", "edge",
                                "--application.sdkVersion", "latest",
                                "--application.environmentVariables", "COMPlus_JitName=" + spminame,
-                               "--application.environmentVariables", "COMPlus_JitEnableNoWayAssert=2",
                                "--application.environmentVariables", "SuperPMIShimLogPath=.",
                                "--application.environmentVariables", "SuperPMIShimPath=" + jitpath,
                                "--application.environmentVariables", "COMPlus_EnableExtraSuperPmiQueries=1",
-                               "--application.environmentVariables", "COMPlus_JitDisablePgoRange=132db966",
-#                               "--application.environmentVariables", "COMPlus_JitHashDump=132db966",
-#                               "--application.environmentVariables", "COMPlus_JitStdOutFile=jit.txt",
-                               "--application.options.fetch", "true",
+                               "--application.options.downloadFiles", "*.mc",
                                "--application.options.displayOutput", "true",
                                "--application.options.outputFiles", spmilib,
                                "--application.options.outputFiles", jitlib,
@@ -224,7 +220,7 @@ def build_and_run(coreclr_args):
 
                 print("")
                 print("================================")
-                print("Config: " + configName + " options: " + " ".join(runtime_options))
+                print("Config: " + configName + " scenario: " + scenario + " options: " + " ".join(runtime_options))
                 print("================================")
                 print("")
 
