@@ -169,13 +169,13 @@ def build_and_run(coreclr_args):
                                     ("proxy", "proxy-yarp"),
                                     ("staticfiles", "static")]
 
-        configname_scenario_list = [("plaintext", "mvc")]
+        # configname_scenario_list = [("plaintext", "mvc")]
 
         # note tricks to get one element tuples
 
         runtime_options_list = [("Dummy=0",), ("TieredCompilation=0", ), ("TieredPGO=1", "TC_QuickJitForLoops=1"), ("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
 
-        runtime_options_list = [("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
+        # runtime_options_list = [("TieredPGO=1", "TC_QuickJitForLoops=1", "ReadyToRun=0")]
 
         mch_file = path.join(coreclr_args.output_mch_path, "aspnet.run." + target_os + "." + target_arch + ".checked.mch")
         benchmark_machine = determine_benchmark_machine(coreclr_args)
@@ -199,6 +199,7 @@ def build_and_run(coreclr_args):
                                "--profile", benchmark_machine,
                                "--scenario", scenario,
                                "--application.framework", "net6.0",
+                               "--application.runtimeVersion", "6.0.0-preview.4.21179.4",
                                "--application.channel", "edge",
                                "--application.sdkVersion", "latest",
                                "--application.environmentVariables", "COMPlus_JitName=" + spminame,
@@ -250,12 +251,10 @@ def build_and_run(coreclr_args):
 
         # strip
         if is_nonzero_length_file("fail.mcl"):
-            print("Replay had failures, NOT cleaning...");
+            print("Replay had failures, cleaning...");
             fail_file = path.join(coreclr_args.output_mch_path, "fail.mcl");
-            shutil.copy2("fail.mcl", fail_file)
-            shutil.copy2("temp.mch", mch_file)
-            #command = [mcs_path, "-strip", "fail.mcl", "temp.mch", mch_file]
-            #run_command(command, temp_location)
+            command = [mcs_path, "-strip", "fail.mcl", "temp.mch", mch_file]
+            run_command(command, temp_location)
         else:
             print("Replay was clean...");
             shutil.copy2("temp.mch", mch_file)
