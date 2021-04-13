@@ -96,7 +96,8 @@ def determine_benchmark_machine(coreclr_args):
 
     if coreclr_args.arch == "x64":
         if coreclr_args.host_os == "windows":
-            return "aspnet-perf-win"
+#            return "aspnet-perf-win"
+            return "aspnet-citrine-win"
         elif coreclr_args.host_os == "Linux":
             return "aspnet-perf-lin"
         else:
@@ -199,7 +200,7 @@ def build_and_run(coreclr_args):
                                "--profile", benchmark_machine,
                                "--scenario", scenario,
                                "--application.framework", "net6.0",
-                               "--application.runtimeVersion", "6.0.0-preview.4.21179.4",
+#                               "--application.runtimeVersion", "6.0.0-preview.4.21179.4",
                                "--application.channel", "edge",
                                "--application.sdkVersion", "latest",
                                "--application.environmentVariables", "COMPlus_JitName=" + spminame,
@@ -208,6 +209,8 @@ def build_and_run(coreclr_args):
                                "--application.environmentVariables", "COMPlus_EnableExtraSuperPmiQueries=1",
                                "--application.options.downloadFiles", "*.mc",
                                "--application.options.displayOutput", "true",
+#                               "--application.options.dumpType", "full",
+#                               "--application.options.fetch", "true",
                                "--application.options.outputFiles", spmilib,
                                "--application.options.outputFiles", jitlib,
                                "--application.options.outputFiles", coreclr,
@@ -226,21 +229,6 @@ def build_and_run(coreclr_args):
                 print("")
 
                 subprocess.run([crank_app] + crank_arguments + runtime_arguments, cwd=temp_location)
-
-        # extract
-        crankZipFiles = [os.path.join(temp_location, item) for item in os.listdir(temp_location) if item.endswith(".zip")]
-
-        if len(crankZipFiles) > 0:
-            for zipFile in crankZipFiles:
-                with zipfile.ZipFile(zipFile, "r") as zipObject:
-                    listOfFileNames = zipObject.namelist()
-                    for zippedFileName in listOfFileNames:
-                        if zippedFileName.endswith('.mc'):
-                            zipObject.extract(zippedFileName, temp_location)
-                            print("MC summary for " + zippedFileName)
-                            command = [mcs_path, "-jitflags", zippedFileName]
-                            run_command(command, temp_location)
-
         # merge
         command = [mcs_path, "-merge", "temp.mch", "*.mc", "-dedup", "-thin"]
         run_command(command, temp_location)
