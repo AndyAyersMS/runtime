@@ -1638,6 +1638,63 @@ PhaseStatus Compiler::fgInstrumentMethod()
         return PhaseStatus::MODIFIED_NOTHING;
     }
 
+#ifdef DEBUG
+    if (JitConfig.JitVerifyPgoSchema() > 0)
+    {
+        JITDUMP("Verifying schema roundtrip (runtime compression/decompression)\n");
+
+        ICorJitInfo::PgoInstrumentationSchema* rtPgoSchema      = nullptr;
+        BYTE*                                  rtPgoData        = 0;
+        UINT32                                 rtPgoSchemaCount = 0;
+        HRESULT rtPgoQueryResult = info.compCompHnd->getPgoInstrumentationResults(info.compMethodHnd, &rtPgoSchema,
+                                                                                  &rtPgoSchemaCount, &rtPgoData);
+
+        assert(SUCCEEDED(rtPgoQueryResult));
+        assert(rtPgoSchemaCount == (UINT32)schema.size());
+
+        bool failed = false;
+
+        for (UINT32 i = 0; i < rtPgoSchemaCount; i++)
+        {
+            if (schema[i].InstrumentationKind != rtPgoSchema[i].InstrumentationKind)
+            {
+                JITDUMP("Kind differs at entry %u: %u/%u\n", i, schema[i].InstrumentationKind,
+                        rtPgoSchema[i].InstrumentationKind);
+                failed = true;
+            }
+
+            if (schema[i].ILOffset != rtPgoSchema[i].ILOffset)
+            {
+                JITDUMP("ILOffset differs at entry %u: %u/%u\n", i, schema[i].ILOffset, rtPgoSchema[i].ILOffset);
+                failed = true;
+            }
+
+            if (schema[i].Count != rtPgoSchema[i].Count)
+            {
+                JITDUMP("Count differs at entry %u: %u/%u\n", i, schema[i].Count, rtPgoSchema[i].Count);
+                failed = true;
+            }
+
+            if (schema[i].Other != rtPgoSchema[i].Other)
+            {
+                JITDUMP("Other differs at entry %u: %u/%u\n", i, schema[i].Other, rtPgoSchema[i].Other);
+                failed = true;
+            }
+        }
+
+        if (JitConfig.JitVerifyPgoSchema() > 1)
+        {
+            assert(!failed);
+        }
+
+        JITDUMP("Schema round-trip %s\n", failed ? "failed" : "succeeded");
+    }
+#endif
+
+    // The runtime stores the schema in a compressed format. Ask for the PGO data back and verify
+    // we get back the same schema we provided. THis sanity checks the compression/decompression
+    // done by the runtime.
+
     // Add the instrumentation code
     //
     for (BasicBlock* block = fgFirstBB; (block != nullptr); block = block->bbNext)
@@ -2172,7 +2229,7 @@ void EfficientEdgeCountReconstructor::Prepare()
 
                 if (!m_keyToBlockMap.Lookup(schemaEntry.ILOffset, &sourceBlock))
                 {
-                    JITDUMP("Could not find source block for schema entry %d (IL offset/key %08x\n", iSchema,
+                    JITDUMP("Could not find source block for schema entry %d (IL offset/key %08x)\n", iSchema,
                             schemaEntry.ILOffset);
                 }
 
@@ -2180,7 +2237,7 @@ void EfficientEdgeCountReconstructor::Prepare()
 
                 if (!m_keyToBlockMap.Lookup(schemaEntry.Other, &targetBlock))
                 {
-                    JITDUMP("Could not find target block for schema entry %d (IL offset/key %08x\n", iSchema,
+                    JITDUMP("Could not find target block for schema entry %d (IL offset/key %08x)\n", iSchema,
                             schemaEntry.ILOffset);
                 }
 
@@ -2220,11 +2277,24 @@ void EfficientEdgeCountReconstructor::Solve()
 {
     // If issues arose earlier, then don't try solving.
     //
-    if (m_badcode || m_mismatch || m_allWeightsZero)
+    if (m_badcode || m_allWeightsZero || (m_mismatch && (JitConfig.JitIgnoreSchemaMismatch() == 0)))
     {
         JITDUMP("... not solving because of the %s\n",
                 m_badcode ? "badcode" : m_allWeightsZero ? "zero counts" : "mismatch");
         return;
+    }
+
+    // Note because of the sparsity of edge based profiles, we should be able to reach a solution
+    // even if we lose or mis-attribute some of the counters. So carrying on here despite a mismatch,
+    // while not ideal, is not as crazy as it might seen.
+    //
+    if (m_mismatch)
+    {
+        if (JitConfig.JitIgnoreSchemaMismatch() > 1)
+        {
+            assert(!"PGO schema mismatch");
+        }
+        JITDUMP("... attempting to solve despite mismatched schema.");
     }
 
     unsigned       nPasses = 0;
@@ -2470,17 +2540,17 @@ void EfficientEdgeCountReconstructor::Solve()
 //
 void EfficientEdgeCountReconstructor::Propagate()
 {
-    // We don't expect mismatches or convergence failures.
+    // We don't expect convergence failures.
     //
-
-    // Mismatches are currently expected as the flow for static pgo doesn't prevent them now.
-    //    assert(!m_mismatch);
-
+    // Mismatches are optionally tolerated as the flow for static pgo doesn't prevent them now,
+    // and we may still be able to extract some useful information.
+    //
     assert(!m_failedToConverge);
 
     // If any issues arose during reconstruction, don't set weights.
     //
-    if (m_badcode || m_mismatch || m_failedToConverge || m_allWeightsZero)
+    if (m_badcode || m_failedToConverge || m_allWeightsZero ||
+        (m_mismatch && (JitConfig.JitIgnoreSchemaMismatch() == 0)))
     {
         JITDUMP("... discarding profile data because of %s\n",
                 m_badcode ? "badcode" : m_mismatch ? "mismatch" : m_allWeightsZero ? "zero counts"

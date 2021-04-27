@@ -476,11 +476,17 @@ CONFIG_INTEGER(JitMinimalPrejitProfiling, W("JitMinimalPrejitProfiling"), 0)
 CONFIG_INTEGER(JitClassProfiling, W("JitClassProfiling"), 1)
 CONFIG_INTEGER(JitEdgeProfiling, W("JitEdgeProfiling"), 1)
 
+#if defined(DEBUG)
+CONFIG_INTEGER(JitVerifyPgoSchema, W("JitVerifyPgoSchema"), 0) // Validate runtime schema compression/decompression
+#endif
+
 // Profile consumption options
-CONFIG_INTEGER(JitDisablePgo, W("JitDisablePgo"), 0) // Ignore pgo data for all methods
+CONFIG_INTEGER(JitDisablePgo, W("JitDisablePgo"), 0)                     // Ignore pgo data for all methods
+CONFIG_INTEGER(JitIgnoreSchemaMismatch, W("JitIgnoreSchemaMismatch"), 1) // Try and use pgo data even if schema doesn't
+                                                                         // match up
 #if defined(DEBUG)
 CONFIG_STRING(JitEnablePgoRange, W("JitEnablePgoRange")) // Enable pgo data for only some methods
-#endif                                                   // debug
+#endif
 
 // Control when Virtual Calls are expanded
 CONFIG_INTEGER(JitExpandCallsEarly, W("JitExpandCallsEarly"), 1) // Expand Call targets early (in the global morph
