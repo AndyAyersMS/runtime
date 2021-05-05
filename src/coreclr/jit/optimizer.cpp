@@ -1279,6 +1279,8 @@ void Compiler::optPrintLoopRecording(unsigned loopInd) const
     optPrintLoopInfo(optLoopCount, // Not necessarily the loop index, but the number of loops that have been added.
                      loop.lpHead, loop.lpFirst, loop.lpTop, loop.lpEntry, loop.lpBottom, loop.lpExitCnt, loop.lpExit);
 
+    printf(" [flags %08x]", loop.lpFlags);
+
     // If an iterator loop print the iterator and the initialization.
     if (loop.lpFlags & LPFLG_ITER)
     {
@@ -5561,10 +5563,10 @@ void Compiler::optPerformHoistExpr(GenTree* origExpr, unsigned lnum)
 
     /* Put the statement in the preheader */
 
-    fgCreateLoopPreHeader(lnum);
+    // fgCreateLoopPreHeader(lnum);
 
     BasicBlock* preHead = optLoopTable[lnum].lpHead;
-    assert(preHead->bbJumpKind == BBJ_NONE);
+    // assert(preHead->bbJumpKind == BBJ_NONE);
 
     // fgMorphTree requires that compCurBB be the block that contains
     // (or in this case, will contain) the expression.
@@ -5676,6 +5678,7 @@ void Compiler::optHoistLoopCode()
     // If we don't have any loops in the method then take an early out now.
     if (optLoopCount == 0)
     {
+        JITDUMP("\nNo loops; no hoisting\n");
         return;
     }
 
@@ -5726,17 +5729,23 @@ void Compiler::optHoistLoopCode()
     // Consider all the loop nests, in outer-to-inner order (thus hoisting expressions outside the largest loop in which
     // they are invariant.)
     LoopHoistContext hoistCtxt(this);
+    JITDUMP("\n%u loops to consider\n", optLoopCount);
+
     for (unsigned lnum = 0; lnum < optLoopCount; lnum++)
     {
         if (optLoopTable[lnum].lpFlags & LPFLG_REMOVED)
         {
+            JITDUMP("\nLoop L%02u was removed\n", lnum);
             continue;
         }
 
         if (optLoopTable[lnum].lpParent == BasicBlock::NOT_IN_LOOP)
         {
+            JITDUMP("\nLoop L%02u is top level\n", lnum);
             optHoistLoopNest(lnum, &hoistCtxt);
         }
+
+        JITDUMP("\nLoop L%02u is not top level\n", lnum);
     }
 
 #if DEBUG
@@ -5789,6 +5798,8 @@ void Compiler::optHoistLoopNest(unsigned lnum, LoopHoistContext* hoistCtxt)
 {
     // Do this loop, then recursively do all nested loops.
     CLANG_FORMAT_COMMENT_ANCHOR;
+
+    JITDUMP("\nLoop nest starting at L%02u\n", lnum);
 
 #if LOOP_HOIST_STATS
     // Record stats
@@ -5843,37 +5854,39 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
 
     if (pLoopDsc->lpFlags & LPFLG_REMOVED)
     {
+        JITDUMP("   ... not hoisting " FMT_LP ": removed\n", lnum);
         return;
     }
 
-    /* Get the head and tail of the loop */
+    // ensure there's a suitable preheader, or bail.
+    //
+    fgCreateLoopPreHeader(lnum);
 
-    BasicBlock* head = pLoopDsc->lpHead;
-    BasicBlock* tail = pLoopDsc->lpBottom;
-    BasicBlock* lbeg = pLoopDsc->lpEntry;
-
-    // We must have a do-while loop
-    if ((pLoopDsc->lpFlags & LPFLG_DO_WHILE) == 0)
+    if ((pLoopDsc->lpFlags & LPFLG_HAS_PREHEAD) == 0)
     {
+        JITDUMP("   ... not hoisting " FMT_LP ": no preheader\n", lnum);
         return;
     }
 
-    // The loop-head must dominate the loop-entry.
-    // TODO-CQ: Couldn't we make this true if it's not?
-    if (!fgDominate(head, lbeg))
-    {
-        return;
-    }
+    BasicBlock* const head = pLoopDsc->lpHead;
+    BasicBlock* const tail = pLoopDsc->lpBottom;
+    BasicBlock* const lbeg = pLoopDsc->lpEntry;
+
+    assert(fgDominate(head, lbeg));
 
     // if lbeg is the start of a new try block then we won't be able to hoist
+    // (seems wrong, can't we put the preheader as the new try start?)
+    //
     if (!BasicBlock::sameTryRegion(head, lbeg))
     {
+        JITDUMP("   ... not hoisting in " FMT_LP ", eh region constraint\n", lnum);
         return;
     }
 
     // We don't bother hoisting when inside of a catch block
     if ((lbeg->bbCatchTyp != BBCT_NONE) && (lbeg->bbCatchTyp != BBCT_FINALLY))
     {
+        JITDUMP("   ... not hoisting in " FMT_LP ", within catch\n", lnum);
         return;
     }
 
@@ -6189,6 +6202,8 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
 
         void HoistBlock(BasicBlock* block)
         {
+            JITDUMP("Hoist: analyzing opportunities in " FMT_BB "\n", block->bbNum);
+
             for (Statement* stmt : StatementList(block->FirstNonPhiDef()))
             {
                 WalkTree(stmt->GetRootNodePointer(), nullptr);
@@ -6253,6 +6268,12 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                     // LCL_FLD nodes (because then the variable cannot be enregistered and the node always turns
                     // into a memory access).
                     top.m_hoistable = IsNodeHoistable(tree);
+
+                    JITDUMP("   [%06u] is invariant%s\n", dspTreeID(tree), top.m_hoistable ? " and hoistable" : " but not hoistable");
+                }
+                else
+                {
+                    JITDUMP("   [%06u] is NOT invariant\n", dspTreeID(tree));
                 }
 
                 return fgWalkResult::WALK_CONTINUE;
@@ -6316,6 +6337,8 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
             // unless it has a static var reference that can't be hoisted past its cctor call.
             bool treeIsHoistable = treeIsInvariant && !treeIsCctorDependent;
 
+            JITDUMP("   [%06u] has invariant children and is not cctor dependent\n", dspTreeID(tree));
+
             // But we must see if anything else prevents "tree" from being hoisted.
             //
             if (treeIsInvariant)
@@ -6323,6 +6346,8 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                 if (treeIsHoistable)
                 {
                     treeIsHoistable = IsNodeHoistable(tree);
+
+                    if (!treeIsHoistable) JITDUMP("   .. but not hoistable\n");
                 }
 
                 // If it's a call, it must be a helper call, and be pure.
@@ -6334,17 +6359,20 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                     if (call->gtCallType != CT_HELPER)
                     {
                         treeIsHoistable = false;
+                        JITDUMP("   .. non-hoistable call (not helper)n");
                     }
                     else
                     {
                         CorInfoHelpFunc helpFunc = eeGetHelperNum(call->gtCallMethHnd);
                         if (!s_helperCallProperties.IsPure(helpFunc))
                         {
+                            JITDUMP("   .. non-hoistable helper call (not pure helper)n");
                             treeIsHoistable = false;
                         }
                         else if (s_helperCallProperties.MayRunCctor(helpFunc) &&
                                  ((call->gtFlags & GTF_CALL_HOISTABLE) == 0))
                         {
+                            JITDUMP("   .. non-hoistable helper call (may run cctor)\n");
                             treeIsHoistable = false;
                         }
                     }
@@ -6361,6 +6389,7 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                         //
                         if ((tree->gtFlags & GTF_EXCEPT) != 0)
                         {
+                            JITDUMP("   ... has side effect, and is after first side effect\n");
                             treeIsHoistable = false;
                         }
                     }
@@ -6373,8 +6402,11 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                 if (!treeIsInvariant)
                 {
                     // Here we have a tree that is not loop invariant and we thus cannot hoist
+                    JITDUMP("   ... not VN invariant\n");
                     treeIsHoistable = false;
                 }
+
+               JITDUMP("   ... hoistable\n");
             }
 
             // Next check if we need to set 'm_beforeSideEffect' to false.
@@ -6454,6 +6486,7 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                     // then don't hoist and stop any further hoisting after this node
                     treeIsHoistable    = false;
                     m_beforeSideEffect = false;
+                    JITDUMP("   ... atomic op or memory barrier\n");                    
                 }
             }
 
@@ -6664,7 +6697,7 @@ bool Compiler::optVNIsLoopInvariant(ValueNum vn, unsigned lnum, VNToBoolMap* loo
 
 /*****************************************************************************
  *
- *  Creates a pre-header block for the given loop - a preheader is a BBJ_NONE
+ *  Creates or identifies a pre-header block for the given loop - a preheader is a BBJ_NONE
  *  header. The pre-header will replace the current lpHead in the loop table.
  *  The loop has to be a do-while loop. Thus, all blocks dominated by lpHead
  *  will also be dominated by the loop-top, lpHead->bbNext.
@@ -6673,37 +6706,76 @@ bool Compiler::optVNIsLoopInvariant(ValueNum vn, unsigned lnum, VNToBoolMap* loo
 
 void Compiler::fgCreateLoopPreHeader(unsigned lnum)
 {
-    LoopDsc* pLoopDsc = &optLoopTable[lnum];
+    LoopDsc* const pLoopDsc = &optLoopTable[lnum];
 
-    /* This loop has to be a "do-while" loop */
-
-    assert(pLoopDsc->lpFlags & LPFLG_DO_WHILE);
-
-    /* Have we already created a loop-preheader block? */
-
+    // Have we already created or identified a loop-preheader block?
+    // 
     if (pLoopDsc->lpFlags & LPFLG_HAS_PREHEAD)
     {
+        assert(pLoopDsc->lpHead->GetUniqueSucc() == pLoopDsc->lpEntry);
         return;
     }
 
-    BasicBlock* head  = pLoopDsc->lpHead;
-    BasicBlock* top   = pLoopDsc->lpTop;
-    BasicBlock* entry = pLoopDsc->lpEntry;
+    BasicBlock* const head  = pLoopDsc->lpHead;
+    BasicBlock* const top   = pLoopDsc->lpTop;
+    BasicBlock* const entry = pLoopDsc->lpEntry;
 
-    // if 'entry' and 'head' are in different try regions then we won't be able to hoist
+    // We need a new block, if any of the following is true
+    //   * the head and entry are in different try regions
+    //   * the head has multiple successors 
+    //   * the head's bbNext is not top (lexically compact loops)
+    //   * the entry has multiple non-loop predecessors
+    //
+    bool needNewBlock = false;
+
     if (!BasicBlock::sameTryRegion(head, entry))
     {
+        needNewBlock = true;
+    }
+    else if (head->GetUniqueSucc() != entry)
+    {
+        needNewBlock = true;
+    }
+    else if (head->bbNext != top)
+    {
+        needNewBlock = true;
+    }
+    else 
+    {
+        for (flowList* edge = entry->bbPreds; edge != nullptr; edge = edge->flNext)
+        {
+            BasicBlock* const pred = edge->getBlock();
+            
+            if (fgDominate(entry, pred))
+            {
+                // must be a back edge... that's ok
+            }
+            else if (pred != head)
+            {
+                // found a pred that's not head.
+                needNewBlock = true;
+                break;
+            }
+        }
+    }
+
+    if (!needNewBlock)
+    {
+        JITDUMP("In " FMT_LP ": existing head " FMT_BB " is a perfectly fine preheader\n", lnum, head->bbNum);
+        pLoopDsc->lpFlags |=  LPFLG_HAS_PREHEAD;
         return;
     }
 
-    // Ensure that lpHead always dominates lpEntry
-
-    noway_assert(fgDominate(head, entry));
-
-    /* Get hold of the first block of the loop body */
-
-    assert(top == entry);
-
+    // If we need a new block, only add one for the do-while case (for now)
+    // as what follows seems (perhaps) overly complex...
+    //
+    if ((pLoopDsc->lpFlags & LPFLG_DO_WHILE) == 0)
+    {
+        JITDUMP("In " FMT_LP ": existing head " FMT_BB " is NOT a perfectly fine preheader; "
+            " but this is not a do-while, so deferring\n", lnum, head->bbNum);
+        return;
+    }
+       
     /* Allocate a new basic block */
 
     BasicBlock* preHead = bbNewBasicBlock(BBJ_NONE);
@@ -6717,9 +6789,8 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
     // we clear any BBF_PROF_WEIGHT flag that we may have picked up from head.
     //
     preHead->inheritWeight(head);
-    preHead->bbFlags &= ~BBF_PROF_WEIGHT;
 
-    // Copy the bbReach set from head for the new preHead block
+    // Copy the bbReach set from head for the new preHead block (dubious)
     preHead->bbReach = BlockSetOps::MakeEmpty(this);
     BlockSetOps::Assign(this, preHead->bbReach, head->bbReach);
     // Also include 'head' in the preHead bbReach set
