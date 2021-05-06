@@ -88,6 +88,7 @@ public:
     DWORD         TieredCompilation_CallCountingDelayMs() const { LIMITED_METHOD_CONTRACT; return tieredCompilation_CallCountingDelayMs; }
     bool          TieredCompilation_UseCallCountingStubs() const { LIMITED_METHOD_CONTRACT; return fTieredCompilation_UseCallCountingStubs; }
     DWORD         TieredCompilation_DeleteCallCountingStubsAfter() const { LIMITED_METHOD_CONTRACT; return tieredCompilation_DeleteCallCountingStubsAfter; }
+    bool          TieredCompilation_AggressiveOptimization() const { LIMITED_METHOD_CONTRACT; return fTieredCompilation_AggressiveOptimization; }
 #endif
 
 #if defined(FEATURE_ON_STACK_REPLACEMENT)
@@ -683,6 +684,7 @@ private: //----------------------------------------------------------------
     bool fTieredCompilation_QuickJitForLoops;
     bool fTieredCompilation_CallCounting;
     bool fTieredCompilation_UseCallCountingStubs;
+    bool fTieredCompilation_AggressiveOptimization;
     UINT16 tieredCompilation_CallCountThreshold;
     DWORD tieredCompilation_BackgroundWorkerTimeoutMs;
     DWORD tieredCompilation_CallCountingDelayMs;

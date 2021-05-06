@@ -247,6 +247,7 @@ HRESULT EEConfig::Init()
     tieredCompilation_BackgroundWorkerTimeoutMs = 0;
     tieredCompilation_CallCountingDelayMs = 0;
     tieredCompilation_DeleteCallCountingStubsAfter = 0;
+    fTieredCompilation_AggressiveOptimization = true;
 #endif
 
 #if defined(FEATURE_ON_STACK_REPLACEMENT)
@@ -857,6 +858,12 @@ HRESULT EEConfig::sync()
             // code for each tier at least once before progressing to the next tier.
             tieredCompilation_CallCountThreshold = 1;
             tieredCompilation_CallCountingDelayMs = 0;
+        }
+
+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_TC_AggressiveOptimization) == 0)
+        {
+            // TC_AggressiveOptimization allows some methods to bypass tiering and always jit at tier1.
+            fTieredCompilation_AggressiveOptimization = false;
         }
 
         if (ETW::CompilationLog::TieredCompilation::Runtime::IsEnabled())

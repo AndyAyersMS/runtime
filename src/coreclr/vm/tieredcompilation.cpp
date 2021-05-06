@@ -1053,6 +1053,7 @@ CORJIT_FLAGS TieredCompilationManager::GetJitFlags(PrepareCodeConfig *config)
         {
             newOptimizationTier = NativeCodeVersion::OptimizationTier1;
             flags.Set(CORJIT_FLAGS::CORJIT_FLAG_TIER1);
+            flags.Set(CORJIT_FLAGS::CORJIT_FLAG_AGGRESSIVE_OPT);
         }
 
         methodDesc->GetLoaderAllocator()->GetCallCountingManager()->DisableCallCounting(nativeCodeVersion);

@@ -1415,9 +1415,15 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return
-            IsIL() && // only makes sense for IL methods, and this implies !IsNoMetadata()
+        // only makes sense for IL methods, and this implies !IsNoMetadata()
+        bool result = IsIL() &&
             IsMiAggressiveOptimization(GetImplAttrs());
+
+#if defined(FEATURE_TIERED_COMPILATION) 
+        result &= g_pConfig->TieredCompilation_AggressiveOptimization();
+#endif
+
+        return result;
     }
 
     // Does this method force the NativeCodeSlot to stay fixed after it
