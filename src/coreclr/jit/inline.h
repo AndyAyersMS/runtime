@@ -529,9 +529,7 @@ struct GuardedDevirtualizationCandidateInfo : ClassProfileCandidateInfo
 {
     CORINFO_CLASS_HANDLE  guardedClassHandle;
     CORINFO_METHOD_HANDLE guardedMethodHandle;
-    CORINFO_METHOD_HANDLE guardedMethodUnboxedEntryHandle;
     unsigned              likelihood;
-    bool                  requiresInstMethodTableArg;
 };
 
 // InlineCandidateInfo provides basic information about a particular

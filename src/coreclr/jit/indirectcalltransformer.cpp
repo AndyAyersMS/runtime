@@ -517,7 +517,6 @@ private:
                     compiler->dspTreeID(origCall), currBlock->bbNum);
 
             // We currently need inline candidate info to guarded devirt.
-            //
             if (!origCall->IsInlineCandidate())
             {
                 JITDUMP("*** %s Bailing on [%06u] -- not an inline candidate\n", Name(), compiler->dspTreeID(origCall));
@@ -746,82 +745,54 @@ private:
 
             JITDUMP("Direct call [%06u] in block " FMT_BB "\n", compiler->dspTreeID(call), thenBlock->bbNum);
 
-            // Then invoke impDevirtualizeCall to actually transform the call for us,
-            // given the original (base) method and the exact guarded class. It should succeed.
-            //
-            CORINFO_METHOD_HANDLE  methodHnd              = call->gtCallMethHnd;
-            unsigned               methodFlags            = compiler->info.compCompHnd->getMethodAttribs(methodHnd);
+            // Then invoke impDevirtualizeCall to actually
+            // transform the call for us. It should succeed.... as we have
+            // now provided an exact typed this.
+            CORINFO_METHOD_HANDLE  methodHnd              = inlineInfo->methInfo.ftn;
+            unsigned               methodFlags            = inlineInfo->methAttr;
             CORINFO_CONTEXT_HANDLE context                = inlineInfo->exactContextHnd;
             const bool             isLateDevirtualization = true;
-            const bool explicitTailCall = (call->AsCall()->gtCallMoreFlags & GTF_CALL_M_EXPLICIT_TAILCALL) != 0;
+            bool explicitTailCall = (call->AsCall()->gtCallMoreFlags & GTF_CALL_M_EXPLICIT_TAILCALL) != 0;
             compiler->impDevirtualizeCall(call, &methodHnd, &methodFlags, &context, nullptr, isLateDevirtualization,
                                           explicitTailCall);
 
-            // We know this call can devirtualize or we would not have set up GDV here.
-            // So impDevirtualizeCall should succeed in devirtualizing.
-            //
+            // Presumably devirt might fail? If so we should try and avoid
+            // making this a guarded devirt candidate instead of ending
+            // up here.
             assert(!call->IsVirtual());
 
-            // If the devirtualizer was unable to transform the call to invoke the unboxed entry, the inline info
-            // we set up may be invalid. We won't be able to inline anyways. So demote the call as an inline candidate.
+            // Re-establish this call as an inline candidate.
             //
-            CORINFO_METHOD_HANDLE unboxedMethodHnd = inlineInfo->guardedMethodUnboxedEntryHandle;
-            if ((unboxedMethodHnd != nullptr) && (methodHnd != unboxedMethodHnd))
-            {
-                // Demote this call to a non-inline candidate
-                //
-                JITDUMP("Devirtualization was unable to use the unboxed entry; so marking call (to boxed entry) as not "
-                        "inlineable\n");
+            GenTree* oldRetExpr              = inlineInfo->retExpr;
+            inlineInfo->clsHandle            = compiler->info.compCompHnd->getMethodClass(methodHnd);
+            inlineInfo->exactContextHnd      = context;
+            inlineInfo->preexistingSpillTemp = returnTemp;
+            call->gtInlineCandidateInfo      = inlineInfo;
 
-                call->gtFlags &= ~GTF_CALL_INLINE_CANDIDATE;
-                call->gtInlineCandidateInfo = nullptr;
+            // Add the call.
+            compiler->fgNewStmtAtEnd(thenBlock, call);
+
+            // If there was a ret expr for this call, we need to create a new one
+            // and append it just after the call.
+            //
+            // Note the original GT_RET_EXPR is sitting at the join point of the
+            // guarded expansion and for non-void calls, and now refers to a temp local;
+            // we set all this up in FixupRetExpr().
+            if (oldRetExpr != nullptr)
+            {
+                GenTree* retExpr = compiler->gtNewInlineCandidateReturnExpr(call, call->TypeGet(), thenBlock->bbFlags);
+                inlineInfo->retExpr = retExpr;
 
                 if (returnTemp != BAD_VAR_NUM)
                 {
-                    GenTree* const assign = compiler->gtNewTempAssign(returnTemp, call);
-                    compiler->fgNewStmtAtEnd(thenBlock, assign);
+                    retExpr = compiler->gtNewTempAssign(returnTemp, retExpr);
                 }
                 else
                 {
-                    compiler->fgNewStmtAtEnd(thenBlock, call);
+                    // We should always have a return temp if we return results by value
+                    assert(origCall->TypeGet() == TYP_VOID);
                 }
-            }
-            else
-            {
-                // Add the call.
-                //
-                compiler->fgNewStmtAtEnd(thenBlock, call);
-
-                // Re-establish this call as an inline candidate.
-                //
-                GenTree* oldRetExpr              = inlineInfo->retExpr;
-                inlineInfo->clsHandle            = compiler->info.compCompHnd->getMethodClass(methodHnd);
-                inlineInfo->exactContextHnd      = context;
-                inlineInfo->preexistingSpillTemp = returnTemp;
-                call->gtInlineCandidateInfo      = inlineInfo;
-
-                // If there was a ret expr for this call, we need to create a new one
-                // and append it just after the call.
-                //
-                // Note the original GT_RET_EXPR has been bashed to a temp.
-                // we set all this up in FixupRetExpr().
-                if (oldRetExpr != nullptr)
-                {
-                    GenTree* retExpr =
-                        compiler->gtNewInlineCandidateReturnExpr(call, call->TypeGet(), thenBlock->bbFlags);
-                    inlineInfo->retExpr = retExpr;
-
-                    if (returnTemp != BAD_VAR_NUM)
-                    {
-                        retExpr = compiler->gtNewTempAssign(returnTemp, retExpr);
-                    }
-                    else
-                    {
-                        // We should always have a return temp if we return results by value
-                        assert(origCall->TypeGet() == TYP_VOID);
-                    }
-                    compiler->fgNewStmtAtEnd(thenBlock, retExpr);
-                }
+                compiler->fgNewStmtAtEnd(thenBlock, retExpr);
             }
         }
 
