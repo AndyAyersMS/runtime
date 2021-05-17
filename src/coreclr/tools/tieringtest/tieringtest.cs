@@ -3,6 +3,7 @@
 //
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -38,51 +39,112 @@ class Program
 
         // Repeatedly invoke main to get things to pass through Tier0 and rejit at Tier1
         //
-        int warmup = 50;
-        int final = 50;
+        int warmup = 40;
+        int final = 5;
+        int total = warmup + final;
+        int i = 0;
+        Stopwatch s = new Stopwatch();
+        s.Start();
 
-        for (int i = 0; i < warmup; i++)
-        {
-            if (mainParams.Length == 0)
+        // We might decide to give up on this test, for reasons.
+        //
+        // If the test fails at iteration 0, assume it's incompatible with the way we're running it
+        // and don't report as a failure.
+        //
+        // If the test fails at iteration 1, assume it's got some bit of state that carries over
+        // from one call to main to the next, and so don't report it as failure.
+        //
+        // If the test takes too long, just give up on iterating it.
+        //
+        bool giveUp = false;
+
+        try {
+
+            for (; i < warmup  && !giveUp; i++)
             {
-                result = (int)main.Invoke(null, new object[] { });
+                if (mainParams.Length == 0)
+                {
+                    result = (int)main.Invoke(null, new object[] { });
+                }
+                else
+                {
+                    result = (int)main.Invoke(null, new object[] { mainArgs });
+                }
+                
+                if (result != 100)
+                {
+                    if (i < 2)
+                    {
+                        Console.WriteLine($"[tieringtest] test failed at iteration {i} with result {result}. Test is likely incompatible.");
+                        result = 100;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[tieringtest] test failed at iteration {i}: {result}");
+                    }
+                    giveUp = true;
+                    break;
+                }
+
+                // Don't iterate if test is running long.
+                //
+                if (s.ElapsedMilliseconds > 10_000)
+                {
+                    Console.WriteLine($"[tieringtest] test running long ({s.ElapsedMilliseconds / (i + 1)} ms/iteration). Giving up at iteration {i}");
+                    giveUp = true;
+                    break;
+                }
+
+                Thread.Sleep(15);
+            }
+
+            for (; i < total && !giveUp; i++)
+            {
+                if (mainParams.Length == 0)
+                {
+                    result = (int)main.Invoke(null, new object[] { });
+                }
+                else
+                {
+                    result = (int)main.Invoke(null, new object[] { mainArgs });
+                }
+                
+                if (result != 100)
+                {
+                    Console.WriteLine($"[tieringtest] failed at iteration {i}: {result}");
+                    giveUp = true;
+                    break;
+                }
+                
+                // Don't iterate if test is running long.
+                //
+                if (s.ElapsedMilliseconds > 10_000)
+                {
+                    Console.WriteLine($"[tieringtest] test running long ({s.ElapsedMilliseconds / (i + 1)} ms/iteration). Giving up at iteration {i}");
+                    giveUp = true;
+                    break;
+                }
+            }
+            
+            if (result == 100)
+            {
+                Console.WriteLine($"[tieringtest] ran {total} test iterations sucessfully");
+            }
+        }
+        catch(Exception e)
+        {
+            if (i < 2)
+            {
+                Console.WriteLine($"[tieringtest] test failed at iteration {i} with exception {e.Message}. Test is likely incompatible.");
+                result = 100;
             }
             else
             {
-                result = (int)main.Invoke(null, new object[] { mainArgs });
-            }
-
-            if (result != 100)
-            {
-                Console.WriteLine($"Failed at warmup iteration {i}: {result}");
-                break;
-            }
-            Thread.Sleep(15);
-        }
-
-        for (int i = 0; i < final; i++)
-        {
-            if (mainParams.Length == 0)
-            {
-                result = (int)main.Invoke(null, new object[] { });
-            }
-            else
-            {
-                result = (int)main.Invoke(null, new object[] { mainArgs });
-            }
-
-            if (result != 100)
-            {
-                Console.WriteLine($"Failed at final iteration {i}: {result}");
-                break;
+                Console.WriteLine($"[tieringtest] test failed at iteration {i} with exception {e.Message}");
+                result = -1;
             }
         }
-
-        if (result == 100)
-        {
-            Console.WriteLine($"Ran {warmup + final} iterations sucessfully");
-        }
-
+            
         return result;
     }
 }
