@@ -388,13 +388,31 @@ bool ObjectAllocator::MorphAllocObjNodes()
                 GenTreeAllocObj*     asAllocObj = op2->AsAllocObj();
                 unsigned int         lclNum     = op1->AsLclVar()->GetLclNum();
                 CORINFO_CLASS_HANDLE clsHnd     = op2->AsAllocObj()->gtAllocObjClsHnd;
+                const char* onHeapReason        = nullptr;
+                bool canStack = false;
 
                 // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
-                if (IsObjectStackAllocationEnabled() && !basicBlockHasBackwardJump &&
-                    CanAllocateLclVarOnStack(lclNum, clsHnd))
+                //
+                if (!IsObjectStackAllocationEnabled())
                 {
-                    JITDUMP("Allocating local variable V%02u on the stack\n", lclNum);
-
+                    onHeapReason = "[object stack allocation disabled]";
+                    canStack = false;
+                }
+                else if (basicBlockHasBackwardJump)
+                {
+                    onHeapReason = "[alloc in loop]";
+                    canStack = false;
+                }
+                else if (!CanAllocateLclVarOnStack(lclNum, clsHnd, &onHeapReason))
+                {
+                    // reason set by the call
+                    canStack = false;
+                }
+                else
+                {
+                    JITDUMP("Allocating V%02u on the stack\n", lclNum);
+                    canStack = true;
+                        
                     const unsigned int stackLclNum = MorphAllocObjNodeIntoStackAlloc(asAllocObj, block, stmt);
                     m_HeapLocalToStackLocalMap.AddOrUpdate(lclNum, stackLclNum);
                     // We keep the set of possibly-stack-pointing pointers as a superset of the set of
@@ -405,13 +423,11 @@ bool ObjectAllocator::MorphAllocObjNodes()
                     comp->optMethodFlags |= OMF_HAS_OBJSTACKALLOC;
                     didStackAllocate = true;
                 }
-                else
-                {
-                    if (IsObjectStackAllocationEnabled())
-                    {
-                        JITDUMP("Allocating local variable V%02u on the heap\n", lclNum);
-                    }
 
+                if (!canStack)
+                {
+                    assert(onHeapReason != nullptr);
+                    JITDUMP("Allocating V%02u on the heap: %s\n", lclNum, onHeapReason);
                     op2 = MorphAllocObjNodeIntoHelperCall(asAllocObj);
                 }
 
@@ -600,11 +616,14 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
             canLclVarEscapeViaParentStack = false;
             break;
         }
+        
 
         canLclVarEscapeViaParentStack = true;
         GenTree* tree                 = parentStack->Top(parentIndex - 1);
         GenTree* parent               = parentStack->Top(parentIndex);
         keepChecking                  = false;
+
+        JITDUMP("... L%02u ... checking [%06u]\n", lclNum, comp->dspTreeID(parent));
 
         switch (parent->OperGet())
         {
@@ -653,6 +672,7 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
 
             case GT_EQ:
             case GT_NE:
+            case GT_NULLCHECK:
                 canLclVarEscapeViaParentStack = false;
                 break;
 
@@ -667,6 +687,7 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
             case GT_COLON:
             case GT_QMARK:
             case GT_ADD:
+            case GT_BOX:
                 // Check whether the local escapes via its grandparent.
                 ++parentIndex;
                 keepChecking = true;
@@ -674,6 +695,8 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
 
             case GT_FIELD:
             case GT_IND:
+            case GT_OBJ:
+            case GT_BLK:
             {
                 int grandParentIndex = parentIndex + 1;
                 if ((parentStack->Height() > grandParentIndex) &&
@@ -761,6 +784,8 @@ void ObjectAllocator::UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* p
 
             case GT_EQ:
             case GT_NE:
+            case GT_NULLCHECK:
+            case GT_BOX:
                 break;
 
             case GT_COMMA:
@@ -783,6 +808,8 @@ void ObjectAllocator::UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* p
 
             case GT_FIELD:
             case GT_IND:
+            case GT_OBJ:
+            case GT_BLK:
             {
                 if (newType == TYP_BYREF)
                 {

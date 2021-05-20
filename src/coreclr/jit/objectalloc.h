@@ -47,7 +47,7 @@ protected:
     virtual PhaseStatus DoPhase() override;
 
 private:
-    bool CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd);
+    bool CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd, const char** reason);
     bool CanLclVarEscape(unsigned int lclNum);
     void MarkLclVarAsPossiblyStackPointing(unsigned int lclNum);
     void MarkLclVarAsDefinitelyStackPointing(unsigned int lclNum);
@@ -113,6 +113,7 @@ inline void ObjectAllocator::EnableObjectStackAllocation()
 // Arguments:
 //    lclNum   - Local variable number
 //    clsHnd   - Class handle of the variable class
+//    reason  - [out, required] if result is false, reason why
 //
 // Return Value:
 //    Returns true iff local variable can be allocated on the stack.
@@ -120,26 +121,35 @@ inline void ObjectAllocator::EnableObjectStackAllocation()
 // Notes:
 //    Stack allocation of objects with gc fields and boxed objects is currently disabled.
 
-inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd)
+inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd, const char** reason)
 {
     assert(m_AnalysisDone);
 
     DWORD classAttribs = comp->info.compCompHnd->getClassAttribs(clsHnd);
 
-    if ((classAttribs & CORINFO_FLG_VALUECLASS) != 0)
-    {
-        // TODO-ObjectStackAllocation: enable stack allocation of boxed structs
-        return false;
-    }
-
     if (!comp->info.compCompHnd->canAllocateOnStack(clsHnd))
     {
+        *reason = "[runtime disallows]";
         return false;
     }
 
     const unsigned int classSize = comp->info.compCompHnd->getHeapClassSize(clsHnd);
 
-    return !CanLclVarEscape(lclNum) && (classSize <= s_StackAllocMaxSize);
+    if (classSize > s_StackAllocMaxSize)
+    {
+        *reason = "[too large]";
+        return false;
+    }
+
+    const bool escapes = CanLclVarEscape(lclNum);
+
+    if (escapes)
+    {
+        *reason = "[escapes]";
+        return false;
+    }
+
+    return true;
 }
 
 //------------------------------------------------------------------------
