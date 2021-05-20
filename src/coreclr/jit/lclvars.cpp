@@ -2680,6 +2680,8 @@ void Compiler::lvaSetVarDoNotEnregister(unsigned varNum DEBUGARG(DoNotEnregister
 // this information is already available on the fgArgTabEntry, and shouldn't need to be
 // recomputed.
 //
+// Also seems like this info could be cached in the layout.
+//
 bool Compiler::lvaIsMultiregStruct(LclVarDsc* varDsc, bool isVarArg)
 {
     if (varTypeIsStruct(varDsc->TypeGet()))
@@ -2706,10 +2708,23 @@ bool Compiler::lvaIsMultiregStruct(LclVarDsc* varDsc, bool isVarArg)
     return false;
 }
 
-/*****************************************************************************
- * Set the lvClass for a local variable of a struct type */
-
-void Compiler::lvaSetStruct(unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool unsafeValueClsCheck, bool setTypeInfo)
+//------------------------------------------------------------------------
+// lvaSetStruct: set struct information for a local variable
+//
+// Arguments:
+//   varNum - local of interest
+//   typeHnd - class handle (can be value class, or ref class)
+//   unsafeValueClsCheck - whether to check for an unsafe value class
+//   setTypeInfo - whether to set the verifier type info
+//   isBoxedValueClass - true if this local is a boxed value class
+//
+// Notes:
+//   May be called more than once; there is limited checking that the
+//   second and subsequent calls provide information compatible with
+//   the first call.
+//
+void Compiler::lvaSetStruct(
+    unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool unsafeValueClsCheck, bool setTypeInfo, bool isBoxedValueClass)
 {
     noway_assert(varNum < lvaCount);
 
@@ -2724,16 +2739,25 @@ void Compiler::lvaSetStruct(unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool 
     {
         varDsc->lvType = TYP_STRUCT;
     }
+
     if (varDsc->GetLayout() == nullptr)
     {
-        ClassLayout* layout = typGetObjLayout(typeHnd);
+        ClassLayout* const layout = typGetObjLayout(typeHnd, isBoxedValueClass);
+
+        if (isBoxedValueClass)
+        {
+            assert(layout->GetSize() > TARGET_POINTER_SIZE);
+        }
+
         varDsc->SetLayout(layout);
 
         assert(varDsc->lvExactSize == 0);
         varDsc->lvExactSize = layout->GetSize();
         assert(varDsc->lvExactSize != 0);
 
-        if (layout->IsValueClass())
+        // Boxed value classes are always passed explicitly by ref, and are never simd/hfa.
+        //
+        if (layout->IsValueClass() && !isBoxedValueClass)
         {
             CorInfoType simdBaseJitType = CORINFO_TYPE_UNDEF;
             varDsc->lvType              = impNormStructType(typeHnd, &simdBaseJitType);
@@ -2785,6 +2809,7 @@ void Compiler::lvaSetStruct(unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool 
     }
     else
     {
+        assert(!isBoxedValueClass);
 #if FEATURE_SIMD
         assert(!varTypeIsSIMD(varDsc) || (varDsc->GetSimdBaseType() != TYP_UNKNOWN));
 #endif // FEATURE_SIMD

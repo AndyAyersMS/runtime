@@ -4028,7 +4028,11 @@ public:
 
     // If the local is a TYP_STRUCT, get/set a class handle describing it
     CORINFO_CLASS_HANDLE lvaGetStruct(unsigned varNum);
-    void lvaSetStruct(unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool unsafeValueClsCheck, bool setTypeInfo = true);
+    void lvaSetStruct(unsigned             varNum,
+                      CORINFO_CLASS_HANDLE typeHnd,
+                      bool                 unsafeValueClsCheck,
+                      bool                 setTypeInfo       = true,
+                      bool                 isBoxedValueClass = false);
     void lvaSetStructUsedAsVarArg(unsigned varNum);
 
     // If the local is TYP_REF, set or update the associated class information.
@@ -10242,9 +10246,9 @@ public:
     // Get the number of a layout having the specified size but no class handle.
     unsigned typGetBlkLayoutNum(unsigned blockSize);
     // Get the layout for the specified class handle.
-    ClassLayout* typGetObjLayout(CORINFO_CLASS_HANDLE classHandle);
+    ClassLayout* typGetObjLayout(CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass = false);
     // Get the number of a layout for the specified class handle.
-    unsigned typGetObjLayoutNum(CORINFO_CLASS_HANDLE classHandle);
+    unsigned typGetObjLayoutNum(CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass = false);
 
 //-------------------------- Global Compiler Data ------------------------------------
 

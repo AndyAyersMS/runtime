@@ -479,6 +479,8 @@ CONFIG_INTEGER(JitInlinePolicyModel, W("JitInlinePolicyModel"), 0)
 CONFIG_INTEGER(JitInlinePolicyProfile, W("JitInlinePolicyProfile"), 0)
 CONFIG_INTEGER(JitInlinePolicyProfileThreshold, W("JitInlinePolicyProfileThreshold"), 40)
 CONFIG_INTEGER(JitObjectStackAllocation, W("JitObjectStackAllocation"), 0)
+CONFIG_INTEGER(JitObjectStackAllocationRefClass, W("JitObjectStackAllocationRefClass"), 0)
+CONFIG_INTEGER(JitObjectStackAllocationBoxedValueClass, W("JitObjectStackAllocationBoxedValueClass"), 0)
 
 CONFIG_INTEGER(JitEECallTimingInfo, W("JitEECallTimingInfo"), 0)
 
