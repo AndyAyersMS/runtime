@@ -6499,6 +6499,7 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
             //
             if (!treeIsHoistable && treeHasHoistableChildren)
             {
+                JITDUMP("   ... [%06u] not hoistable but has hoistable children\n", dspTreeID(tree));                    
                 // The current tree is not hoistable but it has hoistable children that we need
                 // to hoist now.
                 //
@@ -6530,6 +6531,7 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
 
                     if (value.m_hoistable)
                     {
+                        JITDUMP("   ... child hoist [%06u]\n", dspTreeID(value.Node()));
                         assert(value.Node() != tree);
 
                         // Don't hoist this tree again.
@@ -6537,6 +6539,10 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
                         value.m_invariant = false;
 
                         m_compiler->optHoistCandidate(value.Node(), m_loopNum, m_hoistContext);
+                    }
+                    else
+                    {
+                        JITDUMP("   ... failed child hoist [%06u]\n", dspTreeID(value.Node()));
                     }
                 }
             }
@@ -6586,18 +6592,21 @@ void Compiler::optHoistCandidate(GenTree* tree, unsigned lnum, LoopHoistContext*
     // It must pass the hoistable profitablity tests for this loop level
     if (!optIsProfitableToHoistableTree(tree, lnum))
     {
+        JITDUMP("   ... not profitable to hoist [%06u]\n", dspTreeID(tree));
         return;
     }
 
     bool b;
     if (hoistCtxt->m_hoistedInParentLoops.Lookup(tree->gtVNPair.GetLiberal(), &b))
     {
+        JITDUMP("   ... already hoisted same VN in parent\n");
         // already hoisted in a parent loop, so don't hoist this expression.
         return;
     }
 
     if (hoistCtxt->GetHoistedInCurLoop(this)->Lookup(tree->gtVNPair.GetLiberal(), &b))
     {
+        JITDUMP("   ... already hoisted same VN in current\n");
         // already hoisted this expression in the current loop, so don't hoist this expression.
         return;
     }
