@@ -5563,10 +5563,10 @@ void Compiler::optPerformHoistExpr(GenTree* origExpr, unsigned lnum)
 
     /* Put the statement in the preheader */
 
-    // fgCreateLoopPreHeader(lnum);
+    fgCreateLoopPreHeader(lnum);
 
     BasicBlock* preHead = optLoopTable[lnum].lpHead;
-    // assert(preHead->bbJumpKind == BBJ_NONE);
+    assert(preHead->bbJumpKind == BBJ_NONE);
 
     // fgMorphTree requires that compCurBB be the block that contains
     // (or in this case, will contain) the expression.
@@ -5860,7 +5860,7 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
 
     // ensure there's a suitable preheader, or bail.
     //
-    fgCreateLoopPreHeader(lnum);
+    // fgCreateLoopPreHeader(lnum);
 
     if ((pLoopDsc->lpFlags & LPFLG_HAS_PREHEAD) == 0)
     {
@@ -5871,8 +5871,12 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
     BasicBlock* const head = pLoopDsc->lpHead;
     BasicBlock* const tail = pLoopDsc->lpBottom;
     BasicBlock* const lbeg = pLoopDsc->lpEntry;
-
-    assert(fgDominate(head, lbeg));
+    // TODO-CQ: Couldn't we make this true if it's not?
+    if (!fgDominate(head, lbeg))
+    {
+        JITDUMP("   ... not hoisting " FMT_LP ": head does not dominate beg\n", lnum);
+        return;
+    }
 
     // if lbeg is the start of a new try block then we won't be able to hoist
     // (seems wrong, can't we put the preheader as the new try start?)
@@ -6706,76 +6710,37 @@ bool Compiler::optVNIsLoopInvariant(ValueNum vn, unsigned lnum, VNToBoolMap* loo
 
 void Compiler::fgCreateLoopPreHeader(unsigned lnum)
 {
-    LoopDsc* const pLoopDsc = &optLoopTable[lnum];
+    LoopDsc* pLoopDsc = &optLoopTable[lnum];
 
-    // Have we already created or identified a loop-preheader block?
-    // 
+    /* This loop has to be a "do-while" loop */
+
+    assert(pLoopDsc->lpFlags & LPFLG_DO_WHILE);
+
+    /* Have we already created a loop-preheader block? */
+
     if (pLoopDsc->lpFlags & LPFLG_HAS_PREHEAD)
     {
-        assert(pLoopDsc->lpHead->GetUniqueSucc() == pLoopDsc->lpEntry);
         return;
     }
 
-    BasicBlock* const head  = pLoopDsc->lpHead;
-    BasicBlock* const top   = pLoopDsc->lpTop;
-    BasicBlock* const entry = pLoopDsc->lpEntry;
+    BasicBlock* head  = pLoopDsc->lpHead;
+    BasicBlock* top   = pLoopDsc->lpTop;
+    BasicBlock* entry = pLoopDsc->lpEntry;
 
-    // We need a new block, if any of the following is true
-    //   * the head and entry are in different try regions
-    //   * the head has multiple successors 
-    //   * the head's bbNext is not top (lexically compact loops)
-    //   * the entry has multiple non-loop predecessors
-    //
-    bool needNewBlock = false;
-
+    // if 'entry' and 'head' are in different try regions then we won't be able to hoist
     if (!BasicBlock::sameTryRegion(head, entry))
     {
-        needNewBlock = true;
-    }
-    else if (head->GetUniqueSucc() != entry)
-    {
-        needNewBlock = true;
-    }
-    else if (head->bbNext != top)
-    {
-        needNewBlock = true;
-    }
-    else 
-    {
-        for (flowList* edge = entry->bbPreds; edge != nullptr; edge = edge->flNext)
-        {
-            BasicBlock* const pred = edge->getBlock();
-            
-            if (fgDominate(entry, pred))
-            {
-                // must be a back edge... that's ok
-            }
-            else if (pred != head)
-            {
-                // found a pred that's not head.
-                needNewBlock = true;
-                break;
-            }
-        }
-    }
-
-    if (!needNewBlock)
-    {
-        JITDUMP("In " FMT_LP ": existing head " FMT_BB " is a perfectly fine preheader\n", lnum, head->bbNum);
-        pLoopDsc->lpFlags |=  LPFLG_HAS_PREHEAD;
         return;
     }
 
-    // If we need a new block, only add one for the do-while case (for now)
-    // as what follows seems (perhaps) overly complex...
-    //
-    if ((pLoopDsc->lpFlags & LPFLG_DO_WHILE) == 0)
-    {
-        JITDUMP("In " FMT_LP ": existing head " FMT_BB " is NOT a perfectly fine preheader; "
-            " but this is not a do-while, so deferring\n", lnum, head->bbNum);
-        return;
-    }
-       
+    // Ensure that lpHead always dominates lpEntry
+
+    noway_assert(fgDominate(head, entry));
+
+    /* Get hold of the first block of the loop body */
+
+    assert(top == entry);
+
     /* Allocate a new basic block */
 
     BasicBlock* preHead = bbNewBasicBlock(BBJ_NONE);
@@ -6789,6 +6754,7 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
     // we clear any BBF_PROF_WEIGHT flag that we may have picked up from head.
     //
     preHead->inheritWeight(head);
+    preHead->bbFlags &= ~BBF_PROF_WEIGHT;
 
     // Copy the bbReach set from head for the new preHead block (dubious)
     preHead->bbReach = BlockSetOps::MakeEmpty(this);
