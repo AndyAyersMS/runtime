@@ -5862,9 +5862,9 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
     //
     // fgCreateLoopPreHeader(lnum);
 
-    if ((pLoopDsc->lpFlags & LPFLG_HAS_PREHEAD) == 0)
+    if ((pLoopDsc->lpFlags & LPFLG_DO_WHILE) == 0)
     {
-        JITDUMP("   ... not hoisting " FMT_LP ": no preheader\n", lnum);
+        JITDUMP("   ... not hoisting " FMT_LP ": not do-while\n", lnum);
         return;
     }
 
