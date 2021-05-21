@@ -6084,12 +6084,16 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
     // as we believe it will be placed in the stack or one of the other
     // loopVars will be spilled into the stack
     //
+    bool profitable = true;
+
     if (loopVarCount >= availRegCount)
     {
         // Don't hoist expressions that are not heavy: tree->GetCostEx() < (2*IND_COST_EX)
         if (tree->GetCostEx() < (2 * IND_COST_EX))
         {
-            return false;
+            JITDUMP("    tree cost too light: %d < %d (lvc %u >= arc %u)\n",
+                tree->GetCostEx(), 2 * IND_COST_EX, loopVarCount, availRegCount);
+            profitable = false;
         }
     }
 
@@ -6106,11 +6110,14 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
         // Don't hoist expressions that barely meet CSE cost requirements: tree->GetCostEx() == MIN_CSE_COST
         if (tree->GetCostEx() <= MIN_CSE_COST + 1)
         {
-            return false;
+            JITDUMP("    tree not good CSE: %d <= %d (vioc %u > arc %u)\n",
+                tree->GetCostEx(), 2 * MIN_CSE_COST + 1, varInOutCount, availRegCount);
+
+            profitable = false;
         }
     }
 
-    return true;
+    return profitable;
 }
 
 //------------------------------------------------------------------------
