@@ -6075,6 +6075,11 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
     // always be a subset of the InOut variables for the loop
     assert(loopVarCount <= varInOutCount);
 
+    // Be a bit optimistic and assume all those loop vars
+    // won't conflict.
+
+    loopVarCount = (loopVarCount * 15) / 10;
+
     // When loopVarCount >= availRegCount we believe that all of the
     // available registers will get used to hold LclVars inside the loop.
     // This pessimistically assumes that each loopVar has a conflicting
