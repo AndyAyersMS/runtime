@@ -180,7 +180,8 @@ private:
         {
             for (unsigned i = 0; i < m_layoutCount; i++)
             {
-                if ((m_layoutArray[i]->GetClassHandle() == classHandle) && (isBoxedValueClass == m_layoutArray[i]->IsBoxedValueClass()))
+                if ((m_layoutArray[i]->GetClassHandle() == classHandle) &&
+                    (isBoxedValueClass == m_layoutArray[i]->IsBoxedValueClass()))
                 {
                     return i;
                 }
@@ -357,7 +358,7 @@ ClassLayout* ClassLayout::Create(Compiler* compiler, CORINFO_CLASS_HANDLE classH
     {
         size = compiler->info.compCompHnd->getClassSize(classHandle);
 
-        if (isBoxedValueClass) 
+        if (isBoxedValueClass)
         {
             size += TARGET_POINTER_SIZE;
         }
@@ -370,8 +371,8 @@ ClassLayout* ClassLayout::Create(Compiler* compiler, CORINFO_CLASS_HANDLE classH
 
     INDEBUG(const char* className = compiler->info.compCompHnd->getClassName(classHandle);)
 
-    ClassLayout* layout =
-        new (compiler, CMK_ClassLayout) ClassLayout(classHandle, isValueClass, isBoxedValueClass, size DEBUGARG(className));
+    ClassLayout* layout = new (compiler, CMK_ClassLayout)
+        ClassLayout(classHandle, isValueClass, isBoxedValueClass, size DEBUGARG(className));
     layout->InitializeGCPtrs(compiler);
     return layout;
 }
@@ -416,6 +417,41 @@ void ClassLayout::InitializeGCPtrs(Compiler* compiler)
 
     INDEBUG(m_gcPtrsInitialized = true;)
 }
+
+#ifdef TARGET_AMD64
+ClassLayout* ClassLayout::GetPPPQuirkLayout(CompAllocator alloc)
+{
+    assert(m_gcPtrsInitialized);
+    assert(m_classHandle != NO_CLASS_HANDLE);
+    assert(m_isValueClass);
+    assert(!m_isBoxedValueClass);
+    assert(m_size == 32);
+
+    if (m_pppQuirkLayout == nullptr)
+    {
+        constexpr bool isBoxedValueClass = false;
+        m_pppQuirkLayout =
+            new (alloc) ClassLayout(m_classHandle, m_isValueClass, m_isBoxedValueClass, 64 DEBUGARG(m_className));
+        m_pppQuirkLayout->m_gcPtrCount = m_gcPtrCount;
+
+        static_assert_no_msg(_countof(m_gcPtrsArray) == 8);
+
+        for (int i = 0; i < 4; i++)
+        {
+            m_pppQuirkLayout->m_gcPtrsArray[i] = m_gcPtrsArray[i];
+        }
+
+        for (int i = 4; i < 8; i++)
+        {
+            m_pppQuirkLayout->m_gcPtrsArray[i] = TYPE_GC_NONE;
+        }
+
+        INDEBUG(m_pppQuirkLayout->m_gcPtrsInitialized = true;)
+    }
+
+    return m_pppQuirkLayout;
+}
+#endif // TARGET_AMD64
 
 //------------------------------------------------------------------------
 // AreCompatible: check if 2 layouts are the same for copying.

@@ -2723,7 +2723,8 @@ bool Compiler::lvaIsMultiregStruct(LclVarDsc* varDsc, bool isVarArg)
 //   second and subsequent calls provide information compatible with
 //   the first call.
 //
-void Compiler::lvaSetStruct(unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool unsafeValueClsCheck, bool setTypeInfo, bool isBoxedValueClass)
+void Compiler::lvaSetStruct(
+    unsigned varNum, CORINFO_CLASS_HANDLE typeHnd, bool unsafeValueClsCheck, bool setTypeInfo, bool isBoxedValueClass)
 {
     noway_assert(varNum < lvaCount);
 

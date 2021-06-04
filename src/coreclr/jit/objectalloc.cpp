@@ -385,23 +385,23 @@ bool ObjectAllocator::MorphAllocObjNodes()
                 assert(op2 != nullptr);
                 assert(op2->OperGet() == GT_ALLOCOBJ);
 
-                GenTreeAllocObj*     asAllocObj = op2->AsAllocObj();
-                unsigned int         lclNum     = op1->AsLclVar()->GetLclNum();
-                CORINFO_CLASS_HANDLE clsHnd     = op2->AsAllocObj()->gtAllocObjClsHnd;
-                const char* onHeapReason        = nullptr;
-                bool canStack = false;
+                GenTreeAllocObj*     asAllocObj   = op2->AsAllocObj();
+                unsigned int         lclNum       = op1->AsLclVar()->GetLclNum();
+                CORINFO_CLASS_HANDLE clsHnd       = op2->AsAllocObj()->gtAllocObjClsHnd;
+                const char*          onHeapReason = nullptr;
+                bool                 canStack     = false;
 
                 // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
                 //
                 if (!IsObjectStackAllocationEnabled())
                 {
                     onHeapReason = "[object stack allocation disabled]";
-                    canStack = false;
+                    canStack     = false;
                 }
                 else if (basicBlockHasBackwardJump)
                 {
                     onHeapReason = "[alloc in loop]";
-                    canStack = false;
+                    canStack     = false;
                 }
                 else if (!CanAllocateLclVarOnStack(lclNum, clsHnd, &onHeapReason))
                 {
@@ -412,7 +412,7 @@ bool ObjectAllocator::MorphAllocObjNodes()
                 {
                     JITDUMP("Allocating V%02u on the stack\n", lclNum);
                     canStack = true;
-                        
+
                     const unsigned int stackLclNum = MorphAllocObjNodeIntoStackAlloc(asAllocObj, block, stmt);
                     m_HeapLocalToStackLocalMap.AddOrUpdate(lclNum, stackLclNum);
                     // We keep the set of possibly-stack-pointing pointers as a superset of the set of
@@ -528,10 +528,11 @@ unsigned int ObjectAllocator::MorphAllocObjNodeIntoStackAlloc(GenTreeAllocObj* a
     assert(allocObj != nullptr);
     assert(m_AnalysisDone);
 
-    const bool isValueClass = comp->info.compCompHnd->isValueClass(allocObj->gtAllocObjClsHnd);
-    const bool         shortLifetime = false;
+    const bool isValueClass  = comp->info.compCompHnd->isValueClass(allocObj->gtAllocObjClsHnd);
+    const bool shortLifetime = false;
 
-    const unsigned int lclNum     = comp->lvaGrabTemp(shortLifetime DEBUGARG(isValueClass ? "stack allocated boxed value class temp" : "stack allocated ref class temp"));
+    const unsigned int lclNum = comp->lvaGrabTemp(shortLifetime DEBUGARG(
+        isValueClass ? "stack allocated boxed value class temp" : "stack allocated ref class temp"));
     comp->lvaSetStruct(lclNum, allocObj->gtAllocObjClsHnd, true, false, isValueClass);
 
     // Initialize the object memory if necessary.
@@ -573,17 +574,17 @@ unsigned int ObjectAllocator::MorphAllocObjNodeIntoStackAlloc(GenTreeAllocObj* a
     //   |     \--*  LCL_VAR   struct
     //   \--*  CNS_INT(h) long
     //------------------------------------------------------------------------
-    
+
     // Create a local representing the object
     GenTree* tree = comp->gtNewLclvNode(lclNum, TYP_STRUCT);
-    
+
     // Add a pseudo-field for the method table pointer and initialize it
     tree = comp->gtNewOperNode(GT_ADDR, TYP_BYREF, tree);
     tree = comp->gtNewFieldRef(TYP_I_IMPL, FieldSeqStore::FirstElemPseudoField, tree, 0);
     tree = comp->gtNewAssignNode(tree, allocObj->gtGetOp1());
-    
+
     Statement* newStmt = comp->gtNewStmt(tree);
-    
+
     comp->fgInsertStmtBefore(block, stmt, newStmt);
 
     return lclNum;
@@ -619,7 +620,6 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
             canLclVarEscapeViaParentStack = false;
             break;
         }
-        
 
         canLclVarEscapeViaParentStack = true;
         GenTree* tree                 = parentStack->Top(parentIndex - 1);

@@ -118,7 +118,9 @@ inline void ObjectAllocator::EnableObjectStackAllocation()
 // Return Value:
 //    Returns true iff local variable can be allocated on the stack.
 //
-inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd, const char** reason)
+inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int         lclNum,
+                                                      CORINFO_CLASS_HANDLE clsHnd,
+                                                      const char**         reason)
 {
     assert(m_AnalysisDone);
 

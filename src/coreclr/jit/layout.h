@@ -25,7 +25,7 @@ class ClassLayout
     const unsigned m_isBoxedValueClass : 1;
 
     INDEBUG(unsigned m_gcPtrsInitialized : 1;)
-    // The number of GC pointers in this layout. 
+    // The number of GC pointers in this layout.
     // TODO: show 24 bits suffices
     unsigned m_gcPtrCount : 24;
 
@@ -61,7 +61,10 @@ class ClassLayout
 
     static ClassLayout* Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass = false);
 
-    ClassLayout(CORINFO_CLASS_HANDLE classHandle, bool isValueClass, bool isBoxedValueClass, unsigned size DEBUGARG(const char* className))
+    ClassLayout(CORINFO_CLASS_HANDLE classHandle,
+                bool                 isValueClass,
+                bool                 isBoxedValueClass,
+                unsigned size DEBUGARG(const char* className))
         : m_classHandle(classHandle)
         , m_size(size)
         , m_isValueClass(isValueClass)
@@ -215,7 +218,7 @@ private:
             {
                 return TYPE_GC_NONE;
             }
-            return static_cast<CorInfoGCType>(GetGCPtrs()[slot - 1]);            
+            return static_cast<CorInfoGCType>(GetGCPtrs()[slot - 1]);
         }
 
         return static_cast<CorInfoGCType>(GetGCPtrs()[slot]);
