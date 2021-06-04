@@ -124,14 +124,35 @@ inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int         lclNu
 {
     assert(m_AnalysisDone);
 
+    bool enableBoxedValueClasses = true;
+    bool enableRefClasses = true;
+    *reason = "[ok]";
+
+#ifdef DEBUG
+    enableBoxedValueClasses = (JitConfig.JitObjectStackAllocationBoxedValueClass() != 0);
+    enableRefClasses = (JitConfig.JitObjectStackAllocationRefClass() != 0);
+#endif
+
     unsigned int classSize = 0;
 
     if (comp->info.compCompHnd->isValueClass(clsHnd))
     {
+        if (!enableBoxedValueClasses)
+        {
+            *reason = "[disabled by config]";
+            return false;
+        }
+
         classSize = comp->info.compCompHnd->getClassSize(clsHnd);
     }
     else
     {
+        if (!enableRefClasses)
+        {
+            *reason = "[disabled by config]";
+            return false;
+        }
+
         if (!comp->info.compCompHnd->canAllocateOnStack(clsHnd))
         {
             *reason = "[runtime disallows]";

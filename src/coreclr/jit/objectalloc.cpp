@@ -413,6 +413,8 @@ bool ObjectAllocator::MorphAllocObjNodes()
                     JITDUMP("Allocating V%02u on the stack\n", lclNum);
                     canStack = true;
 
+                    printf("@@@ SA V%02u (%s) in %s\n", lclNum, comp->eeGetClassName(clsHnd), comp->info.compFullName);
+
                     const unsigned int stackLclNum = MorphAllocObjNodeIntoStackAlloc(asAllocObj, block, stmt);
                     m_HeapLocalToStackLocalMap.AddOrUpdate(lclNum, stackLclNum);
                     // We keep the set of possibly-stack-pointing pointers as a superset of the set of
