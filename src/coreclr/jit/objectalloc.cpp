@@ -528,10 +528,11 @@ unsigned int ObjectAllocator::MorphAllocObjNodeIntoStackAlloc(GenTreeAllocObj* a
     assert(allocObj != nullptr);
     assert(m_AnalysisDone);
 
+    const bool isValueClass = comp->info.compCompHnd->isValueClass(allocObj->gtAllocObjClsHnd);
     const bool         shortLifetime = false;
-    const unsigned int lclNum     = comp->lvaGrabTemp(shortLifetime DEBUGARG("MorphAllocObjNodeIntoStackAlloc temp"));
-    const int unsafeValueClsCheck = true;
-    comp->lvaSetStruct(lclNum, allocObj->gtAllocObjClsHnd, unsafeValueClsCheck);
+
+    const unsigned int lclNum     = comp->lvaGrabTemp(shortLifetime DEBUGARG(isValueClass ? "stack allocated boxed value class temp" : "stack allocated ref class temp"));
+    comp->lvaSetStruct(lclNum, allocObj->gtAllocObjClsHnd, true, false, isValueClass);
 
     // Initialize the object memory if necessary.
     bool             bbInALoop  = (block->bbFlags & BBF_BACKWARD_JUMP) != 0;
@@ -562,6 +563,8 @@ unsigned int ObjectAllocator::MorphAllocObjNodeIntoStackAlloc(GenTreeAllocObj* a
         comp->compSuppressedZeroInit = true;
     }
 
+    // Initialize the vtable slot.
+    //
     //------------------------------------------------------------------------
     // STMTx (IL 0x... ???)
     //   * ASG       long
@@ -570,17 +573,17 @@ unsigned int ObjectAllocator::MorphAllocObjNodeIntoStackAlloc(GenTreeAllocObj* a
     //   |     \--*  LCL_VAR   struct
     //   \--*  CNS_INT(h) long
     //------------------------------------------------------------------------
-
+    
     // Create a local representing the object
     GenTree* tree = comp->gtNewLclvNode(lclNum, TYP_STRUCT);
-
+    
     // Add a pseudo-field for the method table pointer and initialize it
     tree = comp->gtNewOperNode(GT_ADDR, TYP_BYREF, tree);
     tree = comp->gtNewFieldRef(TYP_I_IMPL, FieldSeqStore::FirstElemPseudoField, tree, 0);
     tree = comp->gtNewAssignNode(tree, allocObj->gtGetOp1());
-
+    
     Statement* newStmt = comp->gtNewStmt(tree);
-
+    
     comp->fgInsertStmtBefore(block, stmt, newStmt);
 
     return lclNum;

@@ -112,28 +112,32 @@ inline void ObjectAllocator::EnableObjectStackAllocation()
 //
 // Arguments:
 //    lclNum   - Local variable number
-//    clsHnd   - Class handle of the variable class
+//    clsHnd   - Class/struct handle of the variable class
 //    reason  - [out, required] if result is false, reason why
 //
 // Return Value:
 //    Returns true iff local variable can be allocated on the stack.
 //
-// Notes:
-//    Stack allocation of objects with gc fields and boxed objects is currently disabled.
-
 inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd, const char** reason)
 {
     assert(m_AnalysisDone);
 
-    DWORD classAttribs = comp->info.compCompHnd->getClassAttribs(clsHnd);
+    unsigned int classSize = 0;
 
-    if (!comp->info.compCompHnd->canAllocateOnStack(clsHnd))
+    if (comp->info.compCompHnd->isValueClass(clsHnd))
     {
-        *reason = "[runtime disallows]";
-        return false;
+        classSize = comp->info.compCompHnd->getClassSize(clsHnd);
     }
+    else
+    {
+        if (!comp->info.compCompHnd->canAllocateOnStack(clsHnd))
+        {
+            *reason = "[runtime disallows]";
+            return false;
+        }
 
-    const unsigned int classSize = comp->info.compCompHnd->getHeapClassSize(clsHnd);
+        classSize = comp->info.compCompHnd->getHeapClassSize(clsHnd);
+    }
 
     if (classSize > s_StackAllocMaxSize)
     {

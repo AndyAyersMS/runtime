@@ -22,10 +22,12 @@ class ClassLayout
     const unsigned m_size;
 
     const unsigned m_isValueClass : 1;
+    const unsigned m_isBoxedValueClass : 1;
+
     INDEBUG(unsigned m_gcPtrsInitialized : 1;)
-    // The number of GC pointers in this layout. Since the the maximum size is 2^32-1 the count
-    // can fit in at most 30 bits.
-    unsigned m_gcPtrCount : 30;
+    // The number of GC pointers in this layout. 
+    // TODO: show 24 bits suffices
+    unsigned m_gcPtrCount : 24;
 
     // Array of CorInfoGCType (as BYTE) that describes the GC layout of the class.
     // For small classes the array is stored inline, avoiding an extra allocation
@@ -45,6 +47,7 @@ class ClassLayout
         : m_classHandle(NO_CLASS_HANDLE)
         , m_size(size)
         , m_isValueClass(false)
+        , m_isBoxedValueClass(false)
 #ifdef DEBUG
         , m_gcPtrsInitialized(true)
 #endif
@@ -56,12 +59,13 @@ class ClassLayout
     {
     }
 
-    static ClassLayout* Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle);
+    static ClassLayout* Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass = false);
 
-    ClassLayout(CORINFO_CLASS_HANDLE classHandle, bool isValueClass, unsigned size DEBUGARG(const char* className))
+    ClassLayout(CORINFO_CLASS_HANDLE classHandle, bool isValueClass, bool isBoxedValueClass, unsigned size DEBUGARG(const char* className))
         : m_classHandle(classHandle)
         , m_size(size)
         , m_isValueClass(isValueClass)
+        , m_isBoxedValueClass(isBoxedValueClass)
 #ifdef DEBUG
         , m_gcPtrsInitialized(false)
 #endif
@@ -96,9 +100,12 @@ public:
 
     bool IsValueClass() const
     {
-        assert(!IsBlockLayout());
-
         return m_isValueClass;
+    }
+
+    bool IsBoxedValueClass() const
+    {
+        return m_isBoxedValueClass;
     }
 
     unsigned GetSize() const
@@ -200,6 +207,15 @@ private:
         if (m_gcPtrCount == 0)
         {
             return TYPE_GC_NONE;
+        }
+
+        if (m_isBoxedValueClass)
+        {
+            if (slot == 0)
+            {
+                return TYPE_GC_NONE;
+            }
+            return static_cast<CorInfoGCType>(GetGCPtrs()[slot - 1]);            
         }
 
         return static_cast<CorInfoGCType>(GetGCPtrs()[slot]);
