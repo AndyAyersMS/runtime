@@ -6092,19 +6092,35 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
         bool IsTreeVNInvariant(GenTree* tree)
         {
             ValueNum vn = tree->gtVNPair.GetLiberal();
-            if (m_compiler->vnStore->IsVNConstant(vn))
+            const bool vnIsInvariant = m_compiler->optVNIsLoopInvariant(vn, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache);
+
+            if (vnIsInvariant)
             {
-                // It is unsafe to allow a GT_CLS_VAR that has been assigned a constant.
-                // The logic in optVNIsLoopInvariant would consider it to be loop-invariant, even
-                // if the assignment of the constant to the GT_CLS_VAR was inside the loop.
+                // Check for implicit memory dependence.
                 //
-                if (tree->OperIs(GT_CLS_VAR))
+                if (tree->OperIsIndir() && (tree->gtFlags & GTF_IND_INVARIANT) != 0)
                 {
-                    return false;
+                    return true;
+                }
+                
+                if (tree->OperIsIndir() || tree->OperIs(GT_CLS_VAR))
+                {
+                    BasicBlock* const loopEntry = m_compiler->optLoopTable[m_loopNum].lpEntry;
+                    
+                    // Todo: use knowledge of where address points to avoid considering some memory kinds
+                    //
+                    for (MemoryKind memoryKind : allMemoryKinds())
+                    {
+                        ValueNum loopMemoryVN = m_compiler->GetMemoryPerSsaData(loopEntry->bbMemorySsaNumIn[memoryKind])->m_vnPair.GetLiberal();
+                        if (!m_compiler->optVNIsLoopInvariant(loopMemoryVN, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache))
+                        {
+                            return false;
+                        }
+                    }
                 }
             }
-
-            return m_compiler->optVNIsLoopInvariant(vn, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache);
+            
+            return true;
         }
 
     public:
