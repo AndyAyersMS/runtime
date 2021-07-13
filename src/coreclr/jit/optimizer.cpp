@@ -5487,6 +5487,9 @@ void Compiler::optPerformHoistExpr(GenTree* origExpr, unsigned lnum)
     // so clear the RegNum if it was set in the original expression
     hoistExpr->ClearRegNum();
 
+    // Copy any loop memory dependence.
+    optCopyLoopMemoryDependence(origExpr, hoistExpr);
+
     // At this point we should have a cloned expression, marked with the GTF_MAKE_CSE flag
     assert(hoistExpr != origExpr);
     assert(hoistExpr->gtFlags & GTF_MAKE_CSE);
@@ -6036,6 +6039,97 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
 }
 
 //------------------------------------------------------------------------
+// optRecordLoopMemoryDependence: record that tree's value number
+//   is dependent on a particular memory VN
+//
+// Arguments:
+//   tree -- tree in question
+//   block -- block containing tree
+//   memoryVN -- VN for a "map" from a select operation encounterd
+//     while computing the tree's VN
+//
+// Notes:
+//   Only tracks trees in loops, and memory updates in the same loop nest.
+//   So this is a coarse-grained dependence that is only usable for
+//   hoisting tree out of its enclosing loops.
+//
+void Compiler::optRecordLoopMemoryDependence(GenTree* tree, BasicBlock* block, ValueNum memoryVN)
+{
+    // If tree is not in a loop, we don't need to track its loop dependence.
+    //
+    unsigned const loopNum = block->bbNatLoopNum;
+
+    if (loopNum == BasicBlock::NOT_IN_LOOP)
+    {
+        return;
+    }
+
+    // Find the loop associated with this memory VN.
+    //
+    unsigned const updateLoopNum = vnStore->LoopOfVN(memoryVN);
+
+    if (updateLoopNum == BasicBlock::NOT_IN_LOOP)
+    {
+        // memoryVN defined outside of any loop, we can ignore.
+        //
+        return;
+    }
+
+    // If the update block is not the the header of a loop containing
+    // block, we can also ignore the update.
+    //
+    if (!optLoopContains(updateLoopNum, loopNum))
+    {
+        return;
+    }
+
+    // If we already have a recorded a loop entry block for this
+    // tree, see if the new update is for a more closely nested
+    // loop.
+    //
+    NodeToLoopMemoryBlockMap* const map      = GetNodeToLoopMemoryBlockMap();
+    BasicBlock*                     mapBlock = nullptr;
+
+    if (map->Lookup(tree, &mapBlock))
+    {
+        unsigned const mapLoopNum = mapBlock->bbNatLoopNum;
+
+        // If the new update contains the existing map value,
+        // the existing map value is more constraining. So no
+        // update needed.
+        //
+        if (optLoopContains(updateLoopNum, mapLoopNum))
+        {
+            return;
+        }
+    }
+
+    // MemoryVN now describes the most constraining memory dependence
+    // we know of. Update the map.
+    //
+    map->Set(tree, optLoopTable[loopNum].lpEntry);
+}
+
+//------------------------------------------------------------------------
+// optCopyLoopMemoryDependence: record that tree's loop memory dependence
+//   is the same as some other tree.
+//
+// Arguments:
+//   fromTree -- tree to copy dependence from
+//   toTree -- tree in question
+//
+void Compiler::optCopyLoopMemoryDependence(GenTree* fromTree, GenTree* toTree)
+{
+    NodeToLoopMemoryBlockMap* const map      = GetNodeToLoopMemoryBlockMap();
+    BasicBlock*                     mapBlock = nullptr;
+
+    if (map->Lookup(fromTree, &mapBlock))
+    {
+        map->Set(toTree, mapBlock);
+    }
+}
+
+//------------------------------------------------------------------------
 // optHoistLoopBlocks: Hoist invariant expression out of the loop.
 //
 // Arguments:
@@ -6092,34 +6186,64 @@ void Compiler::optHoistLoopBlocks(unsigned loopNum, ArrayStack<BasicBlock*>* blo
         bool IsTreeVNInvariant(GenTree* tree)
         {
             ValueNum vn = tree->gtVNPair.GetLiberal();
-            const bool vnIsInvariant = m_compiler->optVNIsLoopInvariant(vn, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache);
+            bool     vnIsInvariant =
+                m_compiler->optVNIsLoopInvariant(vn, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache);
 
+            // Even though VN is invariant in the loop (say a constant) its value may depend on position
+            // of tree, so for loop hoisting we must also check that any memory read by tree
+            // is also invariant in the loop.
+            //
             if (vnIsInvariant)
             {
-                // Check for implicit memory dependence.
-                //
-                if (tree->OperIsIndir() && (tree->gtFlags & GTF_IND_INVARIANT) != 0)
+                vnIsInvariant = IsTreeLoopMemoryInvariant(tree);
+            }
+            return vnIsInvariant;
+        }
+
+        //------------------------------------------------------------------------
+        // IsTreeLoopMemoryInvariant: determine if the value number of tree
+        //   is dependent on the tree being executed within the current loop
+        //
+        // Arguments:
+        //   tree -- tree in question
+        //
+        // Returns:
+        //   true if tree could be evaluated just before loop and get the
+        //   same value.
+        //
+        // Note:
+        //   Calls are optimistically assumed to be invariant.
+        //   Caller must do their own analysis for these tree types.
+        //
+        bool IsTreeLoopMemoryInvariant(GenTree* tree)
+        {
+            if (tree->OperIsIndir() && ((tree->gtFlags & GTF_IND_INVARIANT) != 0))
+            {
+                return true;
+            }
+
+            // Todo: other operators that read memory
+            //
+            if (tree->OperIsIndir() || tree->OperIs(GT_CLS_VAR))
+            {
+                NodeToLoopMemoryBlockMap* const map            = m_compiler->GetNodeToLoopMemoryBlockMap();
+                BasicBlock*                     loopEntryBlock = nullptr;
+                if (map->Lookup(tree, &loopEntryBlock))
                 {
-                    return true;
-                }
-                
-                if (tree->OperIsIndir() || tree->OperIs(GT_CLS_VAR))
-                {
-                    BasicBlock* const loopEntry = m_compiler->optLoopTable[m_loopNum].lpEntry;
-                    
-                    // Todo: use knowledge of where address points to avoid considering some memory kinds
-                    //
                     for (MemoryKind memoryKind : allMemoryKinds())
                     {
-                        ValueNum loopMemoryVN = m_compiler->GetMemoryPerSsaData(loopEntry->bbMemorySsaNumIn[memoryKind])->m_vnPair.GetLiberal();
-                        if (!m_compiler->optVNIsLoopInvariant(loopMemoryVN, m_loopNum, &m_hoistContext->m_curLoopVnInvariantCache))
+                        ValueNum loopMemoryVN =
+                            m_compiler->GetMemoryPerSsaData(loopEntryBlock->bbMemorySsaNumIn[memoryKind])
+                                ->m_vnPair.GetLiberal();
+                        if (!m_compiler->optVNIsLoopInvariant(loopMemoryVN, m_loopNum,
+                                                              &m_hoistContext->m_curLoopVnInvariantCache))
                         {
                             return false;
                         }
                     }
                 }
             }
-            
+
             return true;
         }
 
