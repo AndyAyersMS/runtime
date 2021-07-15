@@ -2196,12 +2196,12 @@ ValueNum ValueNumStore::VNForMapStore(var_types typ, ValueNum arg0VN, ValueNum a
 //------------------------------------------------------------------------------
 // VNForMapSelect : Evaluate VNF_MapSelect with the given arguments.
 //
-//
 // Arguments:
 //    vnk  -    Value number kind
 //    typ  -    Value type
 //    arg0VN  - Map value number
 //    arg1VN  - Index value number
+//    tree - tree whose VN is being computed (may be nullptr, if this is not a memory read)
 //
 // Return Value:
 //    Value number for the result of the evaluation.
@@ -2210,12 +2210,16 @@ ValueNum ValueNumStore::VNForMapStore(var_types typ, ValueNum arg0VN, ValueNum a
 //    This requires a "ValueNumKind" because it will attempt, given "select(phi(m1, ..., mk), ind)", to evaluate
 //    "select(m1, ind)", ..., "select(mk, ind)" to see if they agree.  It needs to know which kind of value number
 //    (liberal/conservative) to read from the SSA def referenced in the phi argument.
-
-ValueNum ValueNumStore::VNForMapSelect(ValueNumKind vnk, var_types typ, ValueNum arg0VN, ValueNum arg1VN)
+//
+//    Tree must be non-null when computing the VN for any tree that can read memory.
+//    As part of the VN computation we also record the implicit memory dependence of any non-opaque VN
+//    via optRecordLoopMemoryDependence.
+//
+ValueNum ValueNumStore::VNForMapSelect(ValueNumKind vnk, var_types typ, ValueNum arg0VN, ValueNum arg1VN, GenTree* tree)
 {
     int      budget          = m_mapSelectBudget;
     bool     usedRecursiveVN = false;
-    ValueNum result          = VNForMapSelectWork(vnk, typ, arg0VN, arg1VN, &budget, &usedRecursiveVN);
+    ValueNum result          = VNForMapSelectWork(vnk, typ, arg0VN, arg1VN, &budget, &usedRecursiveVN, tree);
 
     // The remaining budget should always be between [0..m_mapSelectBudget]
     assert((budget >= 0) && (budget <= m_mapSelectBudget));
@@ -2234,7 +2238,6 @@ ValueNum ValueNumStore::VNForMapSelect(ValueNumKind vnk, var_types typ, ValueNum
 //------------------------------------------------------------------------------
 // VNForMapSelectWork : A method that does the work for VNForMapSelect and may call itself recursively.
 //
-//
 // Arguments:
 //    vnk  -             Value number kind
 //    typ  -             Value type
@@ -2243,6 +2246,7 @@ ValueNum ValueNumStore::VNForMapSelect(ValueNumKind vnk, var_types typ, ValueNum
 //    pBudget -          Remaining budget for the outer evaluation
 //    pUsedRecursiveVN - Out-parameter that is set to true iff RecursiveVN was returned from this method
 //                       or from a method called during one of recursive invocations.
+//    tree - tree whose VN is being computed (may be nullptr, if this is not a memory read)
 //
 // Return Value:
 //    Value number for the result of the evaluation.
@@ -2253,7 +2257,7 @@ ValueNum ValueNumStore::VNForMapSelect(ValueNumKind vnk, var_types typ, ValueNum
 //    (liberal/conservative) to read from the SSA def referenced in the phi argument.
 
 ValueNum ValueNumStore::VNForMapSelectWork(
-    ValueNumKind vnk, var_types typ, ValueNum arg0VN, ValueNum arg1VN, int* pBudget, bool* pUsedRecursiveVN)
+    ValueNumKind vnk, var_types typ, ValueNum arg0VN, ValueNum arg1VN, int* pBudget, bool* pUsedRecursiveVN, GenTree* tree)
 {
 TailCall:
     // This label allows us to directly implement a tail call by setting up the arguments, and doing a goto to here.
@@ -2319,6 +2323,8 @@ TailCall:
                             ") ==> " FMT_VN ".\n",
                             funcApp.m_args[0], arg0VN, funcApp.m_args[1], funcApp.m_args[2], arg1VN, funcApp.m_args[2]);
 #endif
+
+                    m_pComp->optRecordLoopMemoryDependence(tree, m_pComp->compCurBB, arg0VN);
                     return funcApp.m_args[2];
                 }
                 // i # j ==> select(store(m, i, v), j) == select(m, j)
@@ -2380,7 +2386,7 @@ TailCall:
                         bool     allSame = true;
                         ValueNum argRest = phiFuncApp.m_args[1];
                         ValueNum sameSelResult =
-                            VNForMapSelectWork(vnk, typ, phiArgVN, arg1VN, pBudget, pUsedRecursiveVN);
+                            VNForMapSelectWork(vnk, typ, phiArgVN, arg1VN, pBudget, pUsedRecursiveVN, tree);
 
                         // It is possible that we just now exceeded our budget, if so we need to force an early exit
                         // and stop calling VNForMapSelectWork
@@ -2422,7 +2428,7 @@ TailCall:
                             {
                                 bool     usedRecursiveVN = false;
                                 ValueNum curResult =
-                                    VNForMapSelectWork(vnk, typ, phiArgVN, arg1VN, pBudget, &usedRecursiveVN);
+                                    VNForMapSelectWork(vnk, typ, phiArgVN, arg1VN, pBudget, &usedRecursiveVN, tree);
                                 *pUsedRecursiveVN |= usedRecursiveVN;
                                 if (sameSelResult == ValueNumStore::RecursiveVN)
                                 {
@@ -3678,11 +3684,13 @@ ValueNum ValueNumStore::VNForExpr(BasicBlock* block, var_types typ)
 
 ValueNum ValueNumStore::VNApplySelectors(ValueNumKind  vnk,
                                          ValueNum      map,
+                                         GenTree*      tree,
                                          FieldSeqNode* fieldSeq,
                                          size_t*       wbFinalStructSize)
 {
     if (fieldSeq == nullptr)
     {
+        m_pComp->optRecordLoopMemoryDependence(tree, m_pComp->compCurBB, map);
         return map;
     }
     else
@@ -3692,7 +3700,7 @@ ValueNum ValueNumStore::VNApplySelectors(ValueNumKind  vnk,
         // Skip any "FirstElem" pseudo-fields or any "ConstantIndex" pseudo-fields
         if (fieldSeq->IsPseudoField())
         {
-            return VNApplySelectors(vnk, map, fieldSeq->m_next, wbFinalStructSize);
+            return VNApplySelectors(vnk, map, tree, fieldSeq->m_next, wbFinalStructSize);
         }
 
         // Otherwise, is a real field handle.
@@ -3736,12 +3744,12 @@ ValueNum ValueNumStore::VNApplySelectors(ValueNumKind  vnk,
 
         if (fieldSeq->m_next != nullptr)
         {
-            ValueNum newMap = VNForMapSelect(vnk, fieldType, map, fldHndVN);
-            return VNApplySelectors(vnk, newMap, fieldSeq->m_next, wbFinalStructSize);
+            ValueNum newMap = VNForMapSelect(vnk, fieldType, map, fldHndVN, tree);
+            return VNApplySelectors(vnk, newMap, tree, fieldSeq->m_next, wbFinalStructSize);
         }
         else // end of fieldSeq
         {
-            return VNForMapSelect(vnk, fieldType, map, fldHndVN);
+            return VNForMapSelect(vnk, fieldType, map, fldHndVN, tree);
         }
     }
 }
@@ -3901,7 +3909,9 @@ ValueNum ValueNumStore::VNApplySelectorsAssign(
                        varTypeName(fieldType));
             }
 #endif
-            ValueNum fseqMap = VNForMapSelect(vnk, fieldType, map, fldHndVN);
+            // Since this is a store, we don't need to track memory dependence.
+            GenTree* tree = nullptr;
+            ValueNum fseqMap = VNForMapSelect(vnk, fieldType, map, fldHndVN, tree);
             elemAfter        = VNApplySelectorsAssign(vnk, fseqMap, fieldSeq->m_next, elem, indType, block);
         }
         else
@@ -3927,14 +3937,17 @@ ValueNum ValueNumStore::VNApplySelectorsAssign(
     }
 }
 
-ValueNumPair ValueNumStore::VNPairApplySelectors(ValueNumPair map, FieldSeqNode* fieldSeq, var_types indType)
+ValueNumPair ValueNumStore::VNPairApplySelectors(ValueNumPair map, FieldSeqNode* fieldSeq, var_types indType, GenTree* tree)
 {
     size_t   structSize = 0;
-    ValueNum liberalVN  = VNApplySelectors(VNK_Liberal, map.GetLiberal(), fieldSeq, &structSize);
+    ValueNum liberalVN  = VNApplySelectors(VNK_Liberal, map.GetLiberal(), tree, fieldSeq, &structSize);
     liberalVN           = VNApplySelectorsTypeCheck(liberalVN, indType, structSize);
 
+    // We only need to track the liberal VN's memory dependence.
+    //
+    GenTree* conservTree = nullptr;
     structSize         = 0;
-    ValueNum conservVN = VNApplySelectors(VNK_Conservative, map.GetConservative(), fieldSeq, &structSize);
+    ValueNum conservVN = VNApplySelectors(VNK_Conservative, map.GetConservative(), conservTree, fieldSeq, &structSize);
     conservVN          = VNApplySelectorsTypeCheck(conservVN, indType, structSize);
 
     return ValueNumPair(liberalVN, conservVN);
@@ -4106,9 +4119,10 @@ ValueNum Compiler::fgValueNumberArrIndexAssign(CORINFO_CLASS_HANDLE elemTypeEq,
     bool      invalidateArray      = false;
     ValueNum  elemTypeEqVN         = vnStore->VNForHandle(ssize_t(elemTypeEq), GTF_ICON_CLASS_HDL);
     var_types arrElemType          = DecodeElemType(elemTypeEq);
-    ValueNum  hAtArrType           = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, fgCurMemoryVN[GcHeap], elemTypeEqVN);
-    ValueNum  hAtArrTypeAtArr      = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, hAtArrType, arrVN);
-    ValueNum  hAtArrTypeAtArrAtInx = vnStore->VNForMapSelect(VNK_Liberal, arrElemType, hAtArrTypeAtArr, inxVN);
+    GenTree* subtree = nullptr;
+    ValueNum  hAtArrType           = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, fgCurMemoryVN[GcHeap], elemTypeEqVN, subtree);
+    ValueNum  hAtArrTypeAtArr      = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, hAtArrType, arrVN, subtree);
+    ValueNum  hAtArrTypeAtArrAtInx = vnStore->VNForMapSelect(VNK_Liberal, arrElemType, hAtArrTypeAtArr, inxVN, subtree);
 
     ValueNum newValAtInx     = ValueNumStore::NoVN;
     ValueNum newValAtArr     = ValueNumStore::NoVN;
@@ -4247,10 +4261,11 @@ ValueNum Compiler::fgValueNumberArrIndexVal(GenTree*             tree,
     }
     else
     {
+        GenTree* subtree = nullptr;
         ValueNum elemTypeEqVN    = vnStore->VNForHandle(ssize_t(elemTypeEq), GTF_ICON_CLASS_HDL);
-        ValueNum hAtArrType      = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, fgCurMemoryVN[GcHeap], elemTypeEqVN);
-        ValueNum hAtArrTypeAtArr = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, hAtArrType, arrVN);
-        ValueNum wholeElem       = vnStore->VNForMapSelect(VNK_Liberal, elemTyp, hAtArrTypeAtArr, inxVN);
+        ValueNum hAtArrType      = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, fgCurMemoryVN[GcHeap], elemTypeEqVN, subtree);
+        ValueNum hAtArrTypeAtArr = vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, hAtArrType, arrVN, subtree);
+        ValueNum wholeElem       = vnStore->VNForMapSelect(VNK_Liberal, elemTyp, hAtArrTypeAtArr, inxVN, subtree);
 
 #ifdef DEBUG
         if (verbose)
@@ -4277,7 +4292,7 @@ ValueNum Compiler::fgValueNumberArrIndexVal(GenTree*             tree,
         size_t elemStructSize = 0;
         if (fldSeq)
         {
-            selectedElem = vnStore->VNApplySelectors(VNK_Liberal, wholeElem, fldSeq, &elemStructSize);
+            selectedElem = vnStore->VNApplySelectors(VNK_Liberal, wholeElem, tree, fldSeq, &elemStructSize);
             elemTyp      = vnStore->TypeOfVN(selectedElem);
         }
         selectedElem = vnStore->VNApplySelectorsTypeCheck(selectedElem, indType, elemStructSize);
@@ -7123,7 +7138,7 @@ void Compiler::fgValueNumberBlockAssignment(GenTree* tree)
                                             ->m_vnPair;
                             var_types indType = rhsLclVarTree->TypeGet();
 
-                            rhsVNPair = vnStore->VNPairApplySelectors(rhsVNPair, rhsFldSeq, indType);
+                            rhsVNPair = vnStore->VNPairApplySelectors(rhsVNPair, rhsFldSeq, indType, rhs);
                         }
                     }
                     else
@@ -7151,7 +7166,7 @@ void Compiler::fgValueNumberBlockAssignment(GenTree* tree)
                                             ->m_vnPair;
                             var_types indType = rhsLclVarTree->TypeGet();
 
-                            rhsVNPair = vnStore->VNPairApplySelectors(rhsVNPair, rhsFldSeq, indType);
+                            rhsVNPair = vnStore->VNPairApplySelectors(rhsVNPair, rhsFldSeq, indType, rhs);
                         }
                     }
                     else if (vnStore->GetVNFunc(vnStore->VNLiberalNormalValue(srcAddr->gtVNPair), &srcAddrFuncApp))
@@ -7174,7 +7189,7 @@ void Compiler::fgValueNumberBlockAssignment(GenTree* tree)
                                 // We model statics as indices into GcHeap (which is a subset of ByrefExposed).
                                 ValueNum selectedStaticVar;
                                 size_t   structSize = 0;
-                                selectedStaticVar   = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap],
+                                selectedStaticVar   = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], rhs,
                                                                               fldSeqForStaticVar, &structSize);
                                 selectedStaticVar =
                                     vnStore->VNApplySelectorsTypeCheck(selectedStaticVar, indType, structSize);
@@ -7526,7 +7541,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                     else
                     {
                         ValueNumPair lclVNPair = varDsc->GetPerSsaData(ssaNum)->m_vnPair;
-                        tree->gtVNPair = vnStore->VNPairApplySelectors(lclVNPair, lclFld->GetFieldSeq(), indType);
+                        tree->gtVNPair = vnStore->VNPairApplySelectors(lclVNPair, lclFld->GetFieldSeq(), indType, tree);
                     }
                 }
             }
@@ -7586,7 +7601,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                         FieldSeqNode* fldSeqForStaticVar =
                             GetFieldSeqStore()->CreateSingleton(tree->AsClsVar()->gtClsVarHnd);
                         size_t structSize = 0;
-                        selectedStaticVar = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap],
+                        selectedStaticVar = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], tree,
                                                                       fldSeqForStaticVar, &structSize);
                         selectedStaticVar =
                             vnStore->VNApplySelectorsTypeCheck(selectedStaticVar, tree->TypeGet(), structSize);
@@ -8077,7 +8092,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                                 // The final field in the sequence will need to match the 'indType'
                                 var_types indType = lhs->TypeGet();
                                 ValueNum  fldMapVN =
-                                    vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], firstFieldOnly);
+                                    vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], nullptr, firstFieldOnly);
 
                                 // The type of the field is "struct" if there are more fields in the sequence,
                                 // otherwise it is the type returned from VNApplySelectors above.
@@ -8104,14 +8119,14 @@ void Compiler::fgValueNumberTree(GenTree* tree)
 
                                         // construct the ValueNumber for 'fldMap at obj'
                                         valAtAddr =
-                                            vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, normVal);
+                                            vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, normVal, nullptr);
                                     }
                                     else // (staticOffset != nullptr)
                                     {
                                         // construct the ValueNumber for 'fldMap at staticOffset'
                                         normVal = vnStore->VNLiberalNormalValue(staticOffset->gtVNPair);
                                         valAtAddr =
-                                            vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, normVal);
+                                            vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, normVal, nullptr);
                                     }
                                     // Now get rid of any remaining struct field dereferences. (if they exist)
                                     if (fldSeq->m_next)
@@ -8343,7 +8358,6 @@ void Compiler::fgValueNumberTree(GenTree* tree)
 
                 if (!wasNewobj)
                 {
-
                     // Is this invariant indirect expected to always return a non-null value?
                     if ((tree->gtFlags & GTF_IND_NONNULL) != 0)
                     {
@@ -8362,11 +8376,14 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                     }
                     else
                     {
+                        // We don't need to track memory dependence for invariant reads.
+                        //
+                        GenTree* trackTree = nullptr;
                         tree->gtVNPair =
                             ValueNumPair(vnStore->VNForMapSelect(VNK_Liberal, TYP_REF, ValueNumStore::VNForROH(),
-                                                                 addrNvnp.GetLiberal()),
+                                                                 addrNvnp.GetLiberal(), trackTree),
                                          vnStore->VNForMapSelect(VNK_Conservative, TYP_REF, ValueNumStore::VNForROH(),
-                                                                 addrNvnp.GetConservative()));
+                                             addrNvnp.GetConservative(), trackTree));
                         tree->gtVNPair = vnStore->VNPWithExc(tree->gtVNPair, addrXvnp);
                     }
                 }
@@ -8473,8 +8490,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                     {
                         var_types    indType   = tree->TypeGet();
                         ValueNumPair lclVNPair = varDsc->GetPerSsaData(ssaNum)->m_vnPair;
-                        tree->gtVNPair         = vnStore->VNPairApplySelectors(lclVNPair, localFldSeq, indType);
-                        ;
+                        tree->gtVNPair         = vnStore->VNPairApplySelectors(lclVNPair, localFldSeq, indType, tree);
                     }
                     tree->gtVNPair = vnStore->VNPWithExc(tree->gtVNPair, addrXvnp);
                 }
@@ -8490,7 +8506,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                         ValueNum selectedStaticVar;
                         // We model statics as indices into the GcHeap (which is a subset of ByrefExposed).
                         size_t structSize = 0;
-                        selectedStaticVar = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap],
+                        selectedStaticVar = vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], tree,
                                                                       fldSeqForStaticVar, &structSize);
                         selectedStaticVar = vnStore->VNApplySelectorsTypeCheck(selectedStaticVar, indType, structSize);
 
@@ -8536,7 +8552,7 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                         FieldSeqNode* firstFieldOnly = GetFieldSeqStore()->CreateSingleton(fldSeq2->m_fieldHnd);
                         size_t        structSize     = 0;
                         ValueNum      fldMapVN =
-                            vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], firstFieldOnly, &structSize);
+                            vnStore->VNApplySelectors(VNK_Liberal, fgCurMemoryVN[GcHeap], tree, firstFieldOnly, &structSize);
 
                         // The final field in the sequence will need to match the 'indType'
                         var_types indType = tree->TypeGet();
@@ -8550,19 +8566,19 @@ void Compiler::fgValueNumberTree(GenTree* tree)
                         {
                             // construct the ValueNumber for 'fldMap at obj'
                             ValueNum objNormVal = vnStore->VNLiberalNormalValue(obj->gtVNPair);
-                            valAtAddr = vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, objNormVal);
+                            valAtAddr = vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, objNormVal, tree);
                         }
                         else if (staticOffset != nullptr)
                         {
                             // construct the ValueNumber for 'fldMap at staticOffset'
                             ValueNum offsetNormVal = vnStore->VNLiberalNormalValue(staticOffset->gtVNPair);
-                            valAtAddr = vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, offsetNormVal);
+                            valAtAddr = vnStore->VNForMapSelect(VNK_Liberal, firstFieldType, fldMapVN, offsetNormVal, tree);
                         }
 
                         // Now get rid of any remaining struct field dereferences.
                         if (fldSeq2->m_next)
                         {
-                            valAtAddr = vnStore->VNApplySelectors(VNK_Liberal, valAtAddr, fldSeq2->m_next, &structSize);
+                            valAtAddr = vnStore->VNApplySelectors(VNK_Liberal, valAtAddr, tree, fldSeq2->m_next, &structSize);
                         }
                         valAtAddr = vnStore->VNApplySelectorsTypeCheck(valAtAddr, indType, structSize);
 

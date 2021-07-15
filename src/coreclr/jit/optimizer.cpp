@@ -6043,7 +6043,7 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
 //   is dependent on a particular memory VN
 //
 // Arguments:
-//   tree -- tree in question
+//   tree -- tree in question (may be nullptr)
 //   block -- block containing tree
 //   memoryVN -- VN for a "map" from a select operation encounterd
 //     while computing the tree's VN
@@ -6055,6 +6055,13 @@ bool Compiler::optIsProfitableToHoistableTree(GenTree* tree, unsigned lnum)
 //
 void Compiler::optRecordLoopMemoryDependence(GenTree* tree, BasicBlock* block, ValueNum memoryVN)
 {
+    // If tree is nullptr, nothing to do.
+    //
+    if (tree == nullptr)
+    {
+        return;
+    }
+
     // If tree is not in a loop, we don't need to track its loop dependence.
     //
     unsigned const loopNum = block->bbNatLoopNum;
@@ -6105,8 +6112,10 @@ void Compiler::optRecordLoopMemoryDependence(GenTree* tree, BasicBlock* block, V
     }
 
     // MemoryVN now describes the most constraining memory dependence
-    // we know of. Update the map.
+    // we know of. Update the map. These will appear during computation
+    // of VN for tree.
     //
+    JITDUMP("Updated loop memory dependence of [%06u] to " FMT_LP "\n", loopNum);
     map->Set(tree, optLoopTable[loopNum].lpEntry);
 }
 
