@@ -6929,6 +6929,15 @@ void CodeGen::genFnProlog()
 
 #ifdef DEBUG
 
+    if ((compiler->info.compMethodName != nullptr) && 
+        (strstr(compiler->info.compMethodName, "PickPivotAndPartition") != nullptr))
+    {
+        for (int i = 0; i < JitConfig.JitNopPadding(); i++)
+        {
+            instGen(INS_nop);
+        }
+    }
+
     if (compiler->compJitHaltMethod())
     {
         /* put a nop first because the debugger and other tools are likely to
