@@ -18851,7 +18851,6 @@ void Compiler::impImport()
     // Skip leading internal blocks.
     // These can arise from needing a leading scratch BB, from EH normalization, and from OSR entry redirects.
     //
-    // We expect a linear flow to the first non-internal block. But not necessarily straght-line flow.
     BasicBlock* entryBlock = fgFirstBB;
 
     while (entryBlock->bbFlags & BBF_INTERNAL)
@@ -18863,15 +18862,28 @@ void Compiler::impImport()
         {
             entryBlock = entryBlock->bbNext;
         }
-        else if (entryBlock->bbJumpKind == BBJ_ALWAYS)
+        else if (opts.IsOSR() && ((entryBlock->bbJumpKind == BBJ_ALWAYS) || (entryBlock->bbJumpKind == BBJ_COND)))
         {
-            // Only expected for OSR
-            assert(opts.IsOSR());
+            // OSR try step-blocks will jump to reach the OSR entry point.
+            //
             entryBlock = entryBlock->bbJumpDest;
+
+            // Sigh...
+            //
+            if (entryBlock->bbJumpKind == BBJ_COND)
+            {
+                assert((entryBlock->bbNext->bbFlags & BBF_INTERNAL) == 0);
+                impImportBlockPending(entryBlock->bbNext);
+            }
         }
         else
         {
             assert(!"unexpected bbJumpKind in entry sequence");
+        }
+
+        if (opts.IsOSR() && (entryBlock == fgOSREntryBB))
+        {
+            break;
         }
     }
 

@@ -50,6 +50,7 @@ void Compiler::fgInit()
     fgLastBB         = nullptr;
     fgFirstColdBlock = nullptr;
     fgEntryBB        = nullptr;
+    fgOSREntryBB     = nullptr;
 
 #if defined(FEATURE_EH_FUNCLETS)
     fgFirstFuncletBB  = nullptr;
@@ -3130,15 +3131,6 @@ void Compiler::fgFindBasicBlocks()
         return;
     }
 
-    // If we are doing OSR, add an entry block that transfers control to the
-    // appropriate IL offset.
-    //
-    // If that offset is within a try region, things are 
-    if (opts.IsOSR())
-    {
-        fgFixEntryFlowForOSR();
-    }
-
     /* Mark all blocks within 'try' blocks as such */
 
     if (info.compXcptnsCount == 0)
@@ -3544,83 +3536,93 @@ void Compiler::fgFindBasicBlocks()
 void Compiler::fgFixEntryFlowForOSR()
 {
     // Remember the original entry block in case this method is tail recursive.
-    // 
+    //
     fgEntryBB = fgLookupBB(0);
 
     // Find the OSR entry block.
     //
     assert(info.compILEntry >= 0);
-    BasicBlock* const osrEntry = fgLookupBB(info.compILEntry);
-    BasicBlock* entryJumpTarget = osrEntry;
+    BasicBlock* const osrEntry        = fgLookupBB(info.compILEntry);
+    BasicBlock*       entryJumpTarget = osrEntry;
+
+    // Remember the OSR entry block so we can find the right set of leading
+    // blocks to skip in the importer.
+    //
+    fgOSREntryBB = osrEntry;
 
     // If the OSR entry is mid-try or in a nested try,
     // we'll need to add the conditional branch flow.
     //
     if (osrEntry->hasTryIndex())
     {
-        EHblkDsc* enclosingTry = ehGetBlockTryDsc(osrEntry);
-        bool inNestedTry = (enclosingTry->ebdEnclosingTryIndex != EHblkDsc::NO_ENCLOSING_INDEX);
-        BasicBlock* tryEntry = enclosingTry->ebdTryBeg;
-        bool const osrEntryMidTry = (osrEntry != tryEntry);
+        EHblkDsc*   enclosingTry   = ehGetBlockTryDsc(osrEntry);
+        BasicBlock* tryEntry       = enclosingTry->ebdTryBeg;
+        bool const  inNestedTry    = (enclosingTry->ebdEnclosingTryIndex != EHblkDsc::NO_ENCLOSING_INDEX);
+        bool const  osrEntryMidTry = (osrEntry != tryEntry);
 
         if (inNestedTry || osrEntryMidTry)
         {
-            JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is %s%s try region EH#%02u\n",
-                info.compILEntry, osrEntry->bbNum,
-                osrEntryMidTry ? "within" : "start of",
-                inNestedTry ? "nested" : "",
-                osrEntry->getTryIndex());
+            JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is %s%s try region EH#%u\n", info.compILEntry,
+                    osrEntry->bbNum, osrEntryMidTry ? "within " : "at the start of ", inNestedTry ? "nested" : "",
+                    osrEntry->getTryIndex());
 
             // We'll need a state variable to control the branching.
             //
-            // It will be zero when the OSR method is entered and set to one 
+            // It will be zero when the OSR method is entered and set to one
             // once flow reaches the osrEntry.
             //
-            unsigned const entryStateVar = lvaGrabTemp(false DEBUGARG("OSR entry state var"));
-            lvaTable[entryStateVar].lvType = TYP_INT;
+            unsigned const entryStateVar       = lvaGrabTemp(false DEBUGARG("OSR entry state var"));
+            lvaTable[entryStateVar].lvType     = TYP_INT;
             lvaTable[entryStateVar].lvMustInit = true;
+
+            // Set the state variable when we reach the entry.
+            //
+            // Note we are upstream of the importer, and the importer doesn't expect to see
+            // any IR in the blocks it imports. So split the osr entry block and put the update
+            // in an internal block just before, and update the "true" entry to be the trailing
+            // part (which will be the first block the importer fills in).
+            //
+            fgOSREntryBB                 = fgSplitBlockAtBeginning(osrEntry);
             GenTree* const setEntryState = gtNewTempAssign(entryStateVar, gtNewOneConNode(TYP_INT));
             fgNewStmtAtBeg(osrEntry, setEntryState);
+            osrEntry->bbFlags |= BBF_INTERNAL;
+
+            // Helper method to add flow
+            //
+            auto addConditionalFlow = [this, entryStateVar, &entryJumpTarget](BasicBlock* fromBlock,
+                                                                              BasicBlock* toBlock) {
+                fgSplitBlockAtBeginning(fromBlock);
+                fromBlock->bbFlags |= BBF_INTERNAL;
+
+                GenTree* const entryStateLcl = gtNewLclvNode(entryStateVar, TYP_INT);
+                GenTree* const compareEntryStateToZero =
+                    gtNewOperNode(GT_EQ, TYP_INT, entryStateLcl, gtNewZeroConNode(TYP_INT));
+                GenTree* const jumpIfEntryStateZero = gtNewOperNode(GT_JTRUE, TYP_VOID, compareEntryStateToZero);
+                fgNewStmtAtBeg(fromBlock, jumpIfEntryStateZero);
+
+                fromBlock->bbJumpKind = BBJ_COND;
+                fromBlock->bbJumpDest = toBlock;
+                fgAddRefPred(toBlock, fromBlock);
+
+                entryJumpTarget = fromBlock;
+            };
 
             // If this is a mid-try entry, add a conditional branch from the start of the try to the patchpoint.
             //
             if (osrEntryMidTry)
             {
-                fgSplitBlockAtBeginning(tryEntry);
-
-                GenTree* const entryStateLcl = gtNewLclvNode(entryStateVar, TYP_INT);
-                GenTree* const compareEntryStateToZero = gtNewOperNode(GT_EQ, TYP_INT, entryStateLcl, gtNewZeroConNode(TYP_INT));
-                GenTree* const jumpIfEntryStateZero = gtNewOperNode(GT_JTRUE, TYP_VOID, compareEntryStateToZero);
-                fgNewStmtAtBeg(tryEntry, jumpIfEntryStateZero);
-
-                tryEntry->bbJumpKind = BBJ_COND;
-                tryEntry->bbJumpDest = osrEntry;
-                fgAddRefPred(osrEntry, tryEntry);
-
-                entryJumpTarget = tryEntry;
+                addConditionalFlow(tryEntry, osrEntry);
             }
 
             // Add conditional branches for each successive enclosing try.
             //
             while (enclosingTry->ebdEnclosingTryIndex != EHblkDsc::NO_ENCLOSING_INDEX)
             {
-                EHblkDsc* const nextTry = ehGetDsc(enclosingTry->ebdEnclosingTryIndex);
+                EHblkDsc* const   nextTry      = ehGetDsc(enclosingTry->ebdEnclosingTryIndex);
                 BasicBlock* const nextTryEntry = nextTry->ebdTryBeg;
-
-                fgSplitBlockAtBeginning(nextTryEntry);
-
-                GenTree* const entryStateLcl = gtNewLclvNode(entryStateVar, TYP_INT);
-                GenTree* const compareEntryStateToZero = gtNewOperNode(GT_EQ, TYP_INT, entryStateLcl, gtNewZeroConNode(TYP_INT));
-                GenTree* const jumpIfEntryStateZero = gtNewOperNode(GT_JTRUE, TYP_VOID, compareEntryStateToZero);
-                fgNewStmtAtBeg(nextTryEntry, jumpIfEntryStateZero);
-
-                nextTryEntry->bbJumpKind = BBJ_COND;
-                nextTryEntry->bbJumpDest = tryEntry;
-                fgAddRefPred(tryEntry, nextTryEntry);
-
+                addConditionalFlow(nextTryEntry, tryEntry);
                 enclosingTry = nextTry;
-                tryEntry = nextTryEntry;
-                entryJumpTarget = nextTryEntry;
+                tryEntry     = nextTryEntry;
             }
         }
         else
@@ -3628,14 +3630,18 @@ void Compiler::fgFixEntryFlowForOSR()
             // We won't hit this case today as we don't allow the try entry to be the target of a backedge,
             // and currently patchpoints only appear at targets of backedges.
             //
-            JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is start of an un-nested try region\n", info.compILEntry, osrEntry->bbNum);
+            JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is start of an un-nested try region\n",
+                    info.compILEntry, osrEntry->bbNum);
             assert(entryJumpTarget == osrEntry);
+            assert(fgOSREntryBB == osrEntry);
         }
     }
     else
     {
-        JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is not in a try region\n", info.compILEntry, osrEntry->bbNum);
+        JITDUMP("OSR Entry point at IL offset 0x%0x (" FMT_BB ") is not in a try region\n", info.compILEntry,
+                osrEntry->bbNum);
         assert(entryJumpTarget == osrEntry);
+        assert(fgOSREntryBB == osrEntry);
     }
 
     // Now branch from method start to the right spot.
@@ -3645,9 +3651,8 @@ void Compiler::fgFixEntryFlowForOSR()
     fgFirstBB->bbJumpDest = entryJumpTarget;
     fgAddRefPred(entryJumpTarget, fgFirstBB);
 
-    JITDUMP("OSR: redirecting flow at entry from entry " FMT_BB " to " FMT_BB "%s\n", fgFirstBB->bbNum,
-        entryJumpTarget->bbNum,
-        entryJumpTarget == osrEntry ? " plus conditional branches" : "" );
+    JITDUMP("OSR: redirecting flow at entry from entry " FMT_BB " to OSR entry " FMT_BB "%s\n", fgFirstBB->bbNum,
+            fgOSREntryBB->bbNum, entryJumpTarget == osrEntry ? "" : " via conditional branches");
 
     // rebuild lookup table... we may be able to avoid this by leaving room up front.
     //
