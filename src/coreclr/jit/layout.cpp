@@ -19,24 +19,22 @@ class ClassLayoutTable
 
     typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, unsigned>               BlkLayoutIndexMap;
     typedef JitHashTable<CORINFO_CLASS_HANDLE, JitPtrKeyFuncs<CORINFO_CLASS_STRUCT_>, unsigned> ObjLayoutIndexMap;
-    typedef JitHashTable<CORINFO_CLASS_HANDLE, JitPtrKeyFuncs<CORINFO_CLASS_STRUCT_>, unsigned> BoxLayoutIndexMap;
 
     union {
-        // Up to 4 layouts can be stored "inline" and finding a layout by handle/size can be done using linear search.
+        // Up to 3 layouts can be stored "inline" and finding a layout by handle/size can be done using linear search.
         // Most methods need no more than 2 layouts.
-        ClassLayout* m_layoutArray[4];
+        ClassLayout* m_layoutArray[3];
         // Otherwise a dynamic array is allocated and hashtables are used to map from handle/size to layout array index.
         struct
         {
             ClassLayout**      m_layoutLargeArray;
             BlkLayoutIndexMap* m_blkLayoutMap;
             ObjLayoutIndexMap* m_objLayoutMap;
-            BoxLayoutIndexMap* m_boxLayoutMap;
         };
     };
     // The number of layout objects stored in this table.
     unsigned m_layoutCount;
-    // The capacity of m_layoutLargeArray (when more than 4 layouts are stored).
+    // The capacity of m_layoutLargeArray (when more than 3 layouts are stored).
     unsigned m_layoutLargeCapacity;
 
 public:
@@ -70,15 +68,15 @@ public:
     }
 
     // Get the layout for the specified class handle.
-    ClassLayout* GetObjLayout(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+    ClassLayout* GetObjLayout(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle)
     {
-        return GetLayoutByIndex(GetObjLayoutIndex(compiler, classHandle, isBoxedValueClass));
+        return GetLayoutByIndex(GetObjLayoutIndex(compiler, classHandle));
     }
 
     // Get the number of a layout for the specified class handle.
-    unsigned GetObjLayoutNum(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+    unsigned GetObjLayoutNum(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle)
     {
-        return GetObjLayoutIndex(compiler, classHandle, isBoxedValueClass) + FirstLayoutNum;
+        return GetObjLayoutIndex(compiler, classHandle) + FirstLayoutNum;
     }
 
 private:
@@ -118,9 +116,7 @@ private:
         else
         {
             unsigned index = 0;
-
             if ((layout->IsBlockLayout() && m_blkLayoutMap->Lookup(layout->GetSize(), &index)) ||
-                (layout->IsBoxedValueClass() && m_boxLayoutMap->Lookup(layout->GetClassHandle(), &index)) ||
                 m_objLayoutMap->Lookup(layout->GetClassHandle(), &index))
             {
                 return index;
@@ -172,7 +168,7 @@ private:
         return index;
     }
 
-    unsigned GetObjLayoutIndex(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+    unsigned GetObjLayoutIndex(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle)
     {
         assert(classHandle != NO_CLASS_HANDLE);
 
@@ -180,19 +176,10 @@ private:
         {
             for (unsigned i = 0; i < m_layoutCount; i++)
             {
-                if ((m_layoutArray[i]->GetClassHandle() == classHandle) &&
-                    (isBoxedValueClass == m_layoutArray[i]->IsBoxedValueClass()))
+                if (m_layoutArray[i]->GetClassHandle() == classHandle)
                 {
                     return i;
                 }
-            }
-        }
-        else if (isBoxedValueClass)
-        {
-            unsigned index;
-            if (m_boxLayoutMap->Lookup(classHandle, &index))
-            {
-                return index;
             }
         }
         else
@@ -204,12 +191,12 @@ private:
             }
         }
 
-        return AddObjLayout(compiler, CreateObjLayout(compiler, classHandle, isBoxedValueClass));
+        return AddObjLayout(compiler, CreateObjLayout(compiler, classHandle));
     }
 
-    ClassLayout* CreateObjLayout(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+    ClassLayout* CreateObjLayout(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle)
     {
-        return ClassLayout::Create(compiler, classHandle, isBoxedValueClass);
+        return ClassLayout::Create(compiler, classHandle);
     }
 
     unsigned AddObjLayout(Compiler* compiler, ClassLayout* layout)
@@ -221,15 +208,7 @@ private:
         }
 
         unsigned index = AddLayoutLarge(compiler, layout);
-
-        if (layout->IsBoxedValueClass())
-        {
-            m_boxLayoutMap->Set(layout->GetClassHandle(), index);
-        }
-        else
-        {
-            m_objLayoutMap->Set(layout->GetClassHandle(), index);
-        }
+        m_objLayoutMap->Set(layout->GetClassHandle(), index);
         return index;
     }
 
@@ -245,7 +224,6 @@ private:
             {
                 BlkLayoutIndexMap* blkLayoutMap = new (alloc) BlkLayoutIndexMap(alloc);
                 ObjLayoutIndexMap* objLayoutMap = new (alloc) ObjLayoutIndexMap(alloc);
-                BoxLayoutIndexMap* boxLayoutMap = new (alloc) BoxLayoutIndexMap(alloc);
 
                 for (unsigned i = 0; i < m_layoutCount; i++)
                 {
@@ -256,10 +234,6 @@ private:
                     {
                         blkLayoutMap->Set(l->GetSize(), i);
                     }
-                    else if (l->IsBoxedValueClass())
-                    {
-                        boxLayoutMap->Set(l->GetClassHandle(), i);
-                    }
                     else
                     {
                         objLayoutMap->Set(l->GetClassHandle(), i);
@@ -268,7 +242,6 @@ private:
 
                 m_blkLayoutMap = blkLayoutMap;
                 m_objLayoutMap = objLayoutMap;
-                m_boxLayoutMap = boxLayoutMap;
             }
             else
             {
@@ -337,19 +310,17 @@ ClassLayout* Compiler::typGetBlkLayout(unsigned blockSize)
     return typGetClassLayoutTable()->GetBlkLayout(this, blockSize);
 }
 
-unsigned Compiler::typGetObjLayoutNum(CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+unsigned Compiler::typGetObjLayoutNum(CORINFO_CLASS_HANDLE classHandle)
 {
-    return typGetClassLayoutTable()->GetObjLayoutNum(this, classHandle, isBoxedValueClass);
+    return typGetClassLayoutTable()->GetObjLayoutNum(this, classHandle);
 }
 
-ClassLayout* Compiler::typGetObjLayout(CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+ClassLayout* Compiler::typGetObjLayout(CORINFO_CLASS_HANDLE classHandle)
 {
-    ClassLayout* const result = typGetClassLayoutTable()->GetObjLayout(this, classHandle, isBoxedValueClass);
-    assert(result->IsBoxedValueClass() == isBoxedValueClass);
-    return result;
+    return typGetClassLayoutTable()->GetObjLayout(this, classHandle);
 }
 
-ClassLayout* ClassLayout::Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle, bool isBoxedValueClass)
+ClassLayout* ClassLayout::Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle)
 {
     bool     isValueClass = compiler->info.compCompHnd->isValueClass(classHandle);
     unsigned size;
@@ -357,22 +328,16 @@ ClassLayout* ClassLayout::Create(Compiler* compiler, CORINFO_CLASS_HANDLE classH
     if (isValueClass)
     {
         size = compiler->info.compCompHnd->getClassSize(classHandle);
-
-        if (isBoxedValueClass)
-        {
-            size += TARGET_POINTER_SIZE;
-        }
     }
     else
     {
-        assert(!isBoxedValueClass);
         size = compiler->info.compCompHnd->getHeapClassSize(classHandle);
     }
 
     INDEBUG(const char* className = compiler->info.compCompHnd->getClassName(classHandle);)
 
-    ClassLayout* layout = new (compiler, CMK_ClassLayout)
-        ClassLayout(classHandle, isValueClass, isBoxedValueClass, size DEBUGARG(className));
+    ClassLayout* layout =
+        new (compiler, CMK_ClassLayout) ClassLayout(classHandle, isValueClass, size DEBUGARG(className));
     layout->InitializeGCPtrs(compiler);
     return layout;
 }
@@ -402,56 +367,20 @@ void ClassLayout::InitializeGCPtrs(Compiler* compiler)
             gcPtrs = m_gcPtrsArray;
         }
 
-        // The gcPtrs array will have the right size for boxed value classes, but all
-        // entries will be shifted down one slot to match the unboxed rep.
-        //
         unsigned gcPtrCount = compiler->info.compCompHnd->getClassGClayout(m_classHandle, gcPtrs);
 
         assert((gcPtrCount == 0) || ((compiler->info.compCompHnd->getClassAttribs(m_classHandle) &
                                       (CORINFO_FLG_CONTAINS_GC_PTR | CORINFO_FLG_CONTAINS_STACK_PTR)) != 0));
 
-        assert(gcPtrCount < (1 << 24));
+        // Since class size is unsigned there's no way we could have more than 2^30 slots
+        // so it should be safe to fit this into a 30 bits bit field.
+        assert(gcPtrCount < (1 << 30));
 
         m_gcPtrCount = gcPtrCount;
     }
 
     INDEBUG(m_gcPtrsInitialized = true;)
 }
-
-#ifdef TARGET_AMD64
-ClassLayout* ClassLayout::GetPPPQuirkLayout(CompAllocator alloc)
-{
-    assert(m_gcPtrsInitialized);
-    assert(m_classHandle != NO_CLASS_HANDLE);
-    assert(m_isValueClass);
-    assert(!m_isBoxedValueClass);
-    assert(m_size == 32);
-
-    if (m_pppQuirkLayout == nullptr)
-    {
-        constexpr bool isBoxedValueClass = false;
-        m_pppQuirkLayout =
-            new (alloc) ClassLayout(m_classHandle, m_isValueClass, m_isBoxedValueClass, 64 DEBUGARG(m_className));
-        m_pppQuirkLayout->m_gcPtrCount = m_gcPtrCount;
-
-        static_assert_no_msg(_countof(m_gcPtrsArray) == 8);
-
-        for (int i = 0; i < 4; i++)
-        {
-            m_pppQuirkLayout->m_gcPtrsArray[i] = m_gcPtrsArray[i];
-        }
-
-        for (int i = 4; i < 8; i++)
-        {
-            m_pppQuirkLayout->m_gcPtrsArray[i] = TYPE_GC_NONE;
-        }
-
-        INDEBUG(m_pppQuirkLayout->m_gcPtrsInitialized = true;)
-    }
-
-    return m_pppQuirkLayout;
-}
-#endif // TARGET_AMD64
 
 //------------------------------------------------------------------------
 // AreCompatible: check if 2 layouts are the same for copying.
@@ -477,11 +406,6 @@ bool ClassLayout::AreCompatible(const ClassLayout* layout1, const ClassLayout* l
     if ((clsHnd1 != NO_CLASS_HANDLE) && (clsHnd1 == clsHnd2))
     {
         return true;
-    }
-
-    if (layout1->IsBoxedValueClass() != layout2->IsBoxedValueClass())
-    {
-        return false;
     }
 
     if (layout1->GetSize() != layout2->GetSize())
