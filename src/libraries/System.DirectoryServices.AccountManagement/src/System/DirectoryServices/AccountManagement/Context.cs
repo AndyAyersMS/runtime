@@ -225,8 +225,8 @@ namespace System.DirectoryServices.AccountManagement
         private void lockedLdapBind(LdapConnection current, NetworkCredential creds, ContextOptions contextOptions)
         {
             current.AuthType = ((ContextOptions.SimpleBind & contextOptions) > 0 ? AuthType.Basic : AuthType.Negotiate);
-            current.SessionOptions.Signing = ((ContextOptions.Signing & contextOptions) > 0 ? true : false);
-            current.SessionOptions.Sealing = ((ContextOptions.Sealing & contextOptions) > 0 ? true : false);
+            current.SessionOptions.Signing = (ContextOptions.Signing & contextOptions) > 0;
+            current.SessionOptions.Sealing = (ContextOptions.Sealing & contextOptions) > 0;
             if ((null == creds.UserName) && (null == creds.Password))
             {
                 current.Bind();

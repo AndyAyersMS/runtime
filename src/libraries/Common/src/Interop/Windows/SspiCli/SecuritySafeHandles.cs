@@ -364,7 +364,7 @@ namespace System.Net.Security
             Interop.SspiCli.SecBufferDesc outSecurityBufferDescriptor = new Interop.SspiCli.SecBufferDesc(1);
 
             // Actually, this is returned in outFlags.
-            bool isSspiAllocated = (inFlags & Interop.SspiCli.ContextFlags.AllocateMemory) != 0 ? true : false;
+            bool isSspiAllocated = (inFlags & Interop.SspiCli.ContextFlags.AllocateMemory) != 0;
 
             int errorCode = -1;
 
@@ -681,7 +681,7 @@ namespace System.Net.Security
             Interop.SspiCli.SecBufferDesc outSecurityBufferDescriptor = new Interop.SspiCli.SecBufferDesc(count: 2);
 
             // Actually, this is returned in outFlags.
-            bool isSspiAllocated = (inFlags & Interop.SspiCli.ContextFlags.AllocateMemory) != 0 ? true : false;
+            bool isSspiAllocated = (inFlags & Interop.SspiCli.ContextFlags.AllocateMemory) != 0;
 
             int errorCode = -1;
 

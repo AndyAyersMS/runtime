@@ -709,7 +709,7 @@ namespace System.Data
                         }
                     }
                     _defaultValue = newDefaultValue;
-                    _defaultValueIsNull = ((newDefaultValue == DBNull.Value) || (ImplementsINullable && DataStorage.IsObjectSqlNull(newDefaultValue))) ? true : false;
+                    _defaultValueIsNull = ((newDefaultValue == DBNull.Value) || (ImplementsINullable && DataStorage.IsObjectSqlNull(newDefaultValue)));
                 }
             }
         }
@@ -1506,7 +1506,7 @@ namespace System.Data
                 // if strings, then do exact character by character check
                 if (leftType == typeof(string) && rightType == typeof(string))
                 {
-                    return string.CompareOrdinal((string)_storage.Get(record1), (string)value) == 0 ? true : false;
+                    return string.CompareOrdinal((string)_storage.Get(record1), (string)value) == 0;
                 }
                 // make sure same type
                 else if (leftType == rightType)
@@ -1555,7 +1555,7 @@ namespace System.Data
             clone._columnPrefix = _columnPrefix;
             clone.DataType = DataType;
             clone._defaultValue = _defaultValue;
-            clone._defaultValueIsNull = ((_defaultValue == DBNull.Value) || (clone.ImplementsINullable && DataStorage.IsObjectSqlNull(_defaultValue))) ? true : false;
+            clone._defaultValueIsNull = ((_defaultValue == DBNull.Value) || (clone.ImplementsINullable && DataStorage.IsObjectSqlNull(_defaultValue)));
             clone._columnMapping = _columnMapping; // clone column Mapping since we dont let MaxLength to be set throu API
             clone._readOnly = _readOnly;
             clone.MaxLength = MaxLength;

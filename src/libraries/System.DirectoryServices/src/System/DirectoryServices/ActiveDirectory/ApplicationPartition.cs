@@ -765,7 +765,7 @@ namespace System.DirectoryServices.ActiveDirectory
                 if (_cachedDirectoryServers == null)
                 {
                     ReadOnlyDirectoryServerCollection servers = (_committed) ? FindAllDirectoryServers() : new ReadOnlyDirectoryServerCollection();
-                    bool isADAM = (_appType == ApplicationPartitionType.ADAMApplicationPartition) ? true : false;
+                    bool isADAM = (_appType == ApplicationPartitionType.ADAMApplicationPartition);
 
                     // Get the cross ref entry if we don't already have it
                     if (_committed)

@@ -1047,7 +1047,7 @@ namespace System.Xml.Schema
                 throw new XmlSchemaInferenceException(SR.SchInf_schema, 0, 0);
             }
 
-            bool bItemNotUsedYet = ((lastUsedSeqItem == -1) ? true : false);
+            bool bItemNotUsedYet = (lastUsedSeqItem == -1);
             XmlSchemaObjectCollection minOccursCandidates = new XmlSchemaObjectCollection(); //elements that are skipped in the sequence and need minOccurs modified.
             if (ct.Particle!.GetType() == typeof(XmlSchemaSequence))
             {

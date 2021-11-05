@@ -107,7 +107,7 @@ namespace System.Net
                 Encoding secondaryEncoding = GetEncoding(EncodingType.Secondary);
                 result = BuildRequestUriUsingRawPath(secondaryEncoding);
             }
-            isValid = (result == ParsingResult.Success) ? true : false;
+            isValid = (result == ParsingResult.Success);
 
             // Log that we weren't able to create a Uri from the raw string.
             if (!isValid)

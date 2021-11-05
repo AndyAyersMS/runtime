@@ -1030,7 +1030,7 @@ namespace System.Reflection.Emit
 
         protected override bool IsCOMObjectImpl()
         {
-            return ((GetAttributeFlagsImpl() & TypeAttributes.Import) != 0) ? true : false;
+            return (GetAttributeFlagsImpl() & TypeAttributes.Import) != 0;
         }
 
         public override Type GetElementType()

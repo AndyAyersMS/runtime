@@ -263,7 +263,7 @@ namespace ILCompiler
                 {
                     string instructionSet = instructionSetSpecifier.Substring(1, instructionSetSpecifier.Length - 1);
 
-                    bool enabled = instructionSetSpecifier[0] == '+' ? true : false;
+                    bool enabled = instructionSetSpecifier[0] == '+';
                     if (enabled)
                     {
                         if (!instructionSetSupportBuilder.AddSupportedInstructionSet(instructionSet))

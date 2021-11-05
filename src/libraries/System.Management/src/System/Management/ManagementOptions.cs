@@ -248,7 +248,7 @@ namespace System.Management
         internal bool SendStatus
         {
             get
-            { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_SEND_STATUS) != 0) ? true : false); }
+            { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_SEND_STATUS) != 0); }
             set
             {
                 Flags = (value == false) ? (Flags & (int)~tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_SEND_STATUS) :
@@ -330,7 +330,7 @@ namespace System.Management
         /// </value>
         public bool ReturnImmediately
         {
-            get { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_RETURN_IMMEDIATELY) != 0) ? true : false); }
+            get { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_RETURN_IMMEDIATELY) != 0); }
             set
             {
                 Flags = (value == false) ? (Flags & (int)~tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_RETURN_IMMEDIATELY) :
@@ -406,7 +406,7 @@ namespace System.Management
         /// </remarks>
         public bool UseAmendedQualifiers
         {
-            get { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0) ? true : false); }
+            get { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) :
@@ -429,7 +429,7 @@ namespace System.Management
         public bool EnsureLocatable
         {
             get
-            { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_ENSURE_LOCATABLE) != 0) ? true : false); }
+            { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_ENSURE_LOCATABLE) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_ENSURE_LOCATABLE) :
@@ -452,7 +452,7 @@ namespace System.Management
         public bool PrototypeOnly
         {
             get
-            { return (((Flags & (int)tag_WBEM_QUERY_FLAG_TYPE.WBEM_FLAG_PROTOTYPE) != 0) ? true : false); }
+            { return ((Flags & (int)tag_WBEM_QUERY_FLAG_TYPE.WBEM_FLAG_PROTOTYPE) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_QUERY_FLAG_TYPE.WBEM_FLAG_PROTOTYPE) :
@@ -473,7 +473,7 @@ namespace System.Management
         public bool DirectRead
         {
             get
-            { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_DIRECT_READ) != 0) ? true : false); }
+            { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_DIRECT_READ) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_DIRECT_READ) :
@@ -815,7 +815,7 @@ namespace System.Management
         /// </value>
         public bool UseAmendedQualifiers
         {
-            get { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0) ? true : false); }
+            get { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) :
@@ -948,7 +948,7 @@ namespace System.Management
         /// </value>
         public bool UseAmendedQualifiers
         {
-            get { return (((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0) ? true : false); }
+            get { return ((Flags & (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) != 0); }
             set
             {
                 Flags = (value == true) ? (Flags | (int)tag_WBEM_GENERIC_FLAG_TYPE.WBEM_FLAG_USE_AMENDED_QUALIFIERS) :

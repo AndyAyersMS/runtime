@@ -25,7 +25,7 @@ namespace System.Xml.Linq
             _source = node;
             _root = node;
             _nameTable = nameTable != null ? nameTable : CreateNameTable();
-            _omitDuplicateNamespaces = (options & ReaderOptions.OmitDuplicateNamespaces) != 0 ? true : false;
+            _omitDuplicateNamespaces = (options & ReaderOptions.OmitDuplicateNamespaces) != 0;
         }
 
         internal XNodeReader(XNode node, XmlNameTable? nameTable)

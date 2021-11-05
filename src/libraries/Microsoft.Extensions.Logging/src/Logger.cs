@@ -84,7 +84,7 @@ namespace Microsoft.Extensions.Logging
                 ThrowLoggingError(exceptions);
             }
 
-            return i < loggers.Length ? true : false;
+            return i < loggers.Length;
 
             static bool LoggerIsEnabled(LogLevel logLevel, ILogger logger, ref List<Exception> exceptions)
             {

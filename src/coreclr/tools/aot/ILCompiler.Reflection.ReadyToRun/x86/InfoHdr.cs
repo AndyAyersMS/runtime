@@ -203,7 +203,7 @@ namespace ILCompiler.Reflection.ReadyToRun.x86
                     else if (encoding < (uint)InfoHdrAdjust.SET_UNTRACKED)
                     {
                         header.EpilogCount = (byte)((encoding - (uint)InfoHdrAdjust.SET_EPILOGCNT) / 2);
-                        header.EpilogAtEnd = ((encoding - (uint)InfoHdrAdjust.SET_EPILOGCNT) & 1) == 1 ? true : false;
+                        header.EpilogAtEnd = ((encoding - (uint)InfoHdrAdjust.SET_EPILOGCNT) & 1) == 1;
                     }
                     else if (encoding < (uint)InfoHdrAdjust.FIRST_FLIP)
                     {

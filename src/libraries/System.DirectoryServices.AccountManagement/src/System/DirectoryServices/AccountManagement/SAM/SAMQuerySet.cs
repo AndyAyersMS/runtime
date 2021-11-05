@@ -772,7 +772,7 @@ namespace System.DirectoryServices.AccountManagement
             // (if the store object doesn't have a value, then it certainly doesn't match
             // whatever value they specified)
             if (!nullableStoreValue.HasValue)
-                return (_matchType == MatchType.NotEquals) ? true : false;
+                return (_matchType == MatchType.NotEquals);
 
             Debug.Assert(nullableStoreValue.HasValue);
             DateTime storeValue = nullableStoreValue.Value;

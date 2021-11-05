@@ -469,7 +469,7 @@ namespace System.Net.Sockets
         {
             get
             {
-                return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ExclusiveAddressUse)! != 0 ? true : false;
+                return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ExclusiveAddressUse)! != 0;
             }
             set
             {
@@ -576,7 +576,7 @@ namespace System.Net.Sockets
         {
             get
             {
-                return (int)GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay)! != 0 ? true : false;
+                return (int)GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay)! != 0;
             }
             set
             {
@@ -632,7 +632,7 @@ namespace System.Net.Sockets
             {
                 if (_addressFamily == AddressFamily.InterNetwork)
                 {
-                    return (int)GetSocketOption(SocketOptionLevel.IP, SocketOptionName.DontFragment)! != 0 ? true : false;
+                    return (int)GetSocketOption(SocketOptionLevel.IP, SocketOptionName.DontFragment)! != 0;
                 }
                 else
                 {
@@ -659,11 +659,11 @@ namespace System.Net.Sockets
             {
                 if (_addressFamily == AddressFamily.InterNetwork)
                 {
-                    return (int)GetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback)! != 0 ? true : false;
+                    return (int)GetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback)! != 0;
                 }
                 else if (_addressFamily == AddressFamily.InterNetworkV6)
                 {
-                    return (int)GetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastLoopback)! != 0 ? true : false;
+                    return (int)GetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastLoopback)! != 0;
                 }
                 else
                 {
@@ -693,7 +693,7 @@ namespace System.Net.Sockets
         {
             get
             {
-                return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast)! != 0 ? true : false;
+                return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast)! != 0;
             }
             set
             {

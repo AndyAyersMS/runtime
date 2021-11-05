@@ -1206,7 +1206,7 @@ namespace System.Xml.Schema
         {
             XmlSchema currentSchema;
             SortedList copyFromList = otherSet.SortedSchemas;
-            bool setIsCompiled = _schemas.Count == 0 ? true : false;
+            bool setIsCompiled = _schemas.Count == 0;
             ArrayList existingSchemas = new ArrayList();
 
             SchemaInfo newCompiledInfo = new SchemaInfo();

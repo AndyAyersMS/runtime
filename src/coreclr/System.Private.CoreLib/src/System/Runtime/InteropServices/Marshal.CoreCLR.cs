@@ -378,7 +378,7 @@ namespace System.Runtime.InteropServices
                 throw new ArgumentNullException(nameof(T));
             }
 
-            bool bEnableCustomizedQueryInterface = ((mode == CustomQueryInterfaceMode.Allow) ? true : false);
+            bool bEnableCustomizedQueryInterface = (mode == CustomQueryInterfaceMode.Allow);
             return GetComInterfaceForObjectNative(o, T, bEnableCustomizedQueryInterface);
         }
 

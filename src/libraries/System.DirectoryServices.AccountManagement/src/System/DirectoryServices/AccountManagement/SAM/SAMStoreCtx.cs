@@ -1082,7 +1082,7 @@ namespace System.DirectoryServices.AccountManagement
 
             if (s_validPropertyMap.TryGetValue(propertyName, out value))
             {
-                return ((s_maskMap[p.GetType()] & value) > 0 ? true : false);
+                return (s_maskMap[p.GetType()] & value) > 0;
             }
             else
             {

@@ -105,7 +105,7 @@ namespace Microsoft.NETCore.Platforms.BuildTasks
         {
             if (v2 is null)
             {
-                return (v1 is null) ? true : false;
+                return v1 is null;
             }
 
             return ReferenceEquals(v2, v1) ? true : v2.Equals(v1);

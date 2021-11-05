@@ -383,8 +383,7 @@ namespace System
             // so it can become a simple test
             if (v2 is null)
             {
-                // return true/false not the test result https://github.com/dotnet/runtime/issues/4207
-                return (v1 is null) ? true : false;
+                return v1 is null;
             }
 
             // Quick reference equality test prior to calling the virtual Equality
