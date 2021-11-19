@@ -75,6 +75,14 @@ public unsafe class Program
     [UnmanagedCallersOnly]
     public static int ManagedDoubleCallback(int n)
     {
+        int y = 0;
+        int z = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            y += i;
+            z =- i;
+        }
+
         return DoubleImpl(n);
     }
 
@@ -104,7 +112,15 @@ public unsafe class Program
     [UnmanagedCallersOnly]
     public static int ManagedCallback_Prepared(int n)
     {
-        return DoubleImpl(n);
+        int y = 0;
+        int z = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            y += i;
+            z =- i;
+        }
+            
+        return DoubleImpl(n + y + z);
     }
 
     // This test is about the interaction between Tiered Compilation and the UnmanagedCallersOnlyAttribute.
@@ -133,6 +149,14 @@ public unsafe class Program
         // This callback is designed to test if the JIT handles
         // cases where a P/Invoke is inlined into a function
         // marked with UnmanagedCallersOnly.
+        int y = 0;
+        int z = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            y += i;
+            z =- i;
+        }
+
         return UnmanagedCallersOnlyDll.DoubleImplNative(n);
     }
 
@@ -155,6 +179,14 @@ public unsafe class Program
     [UnmanagedCallersOnly]
     public static int CallbackThrows(int val)
     {
+        int y = 0;
+        int z = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            y += i;
+            z =- i;
+        }
+
         throw new Exception() { HResult = CallbackThrowsErrorCode };
     }
 
@@ -249,6 +281,14 @@ public unsafe class Program
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     public static int CallbackViaUnmanagedCalli(int val)
     {
+        int y = 0;
+        int z = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            y += i;
+            z =- i;
+        }
+
         return DoubleImpl(val);
     }
 

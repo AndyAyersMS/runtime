@@ -11594,24 +11594,40 @@ void Compiler::impImportBlockCode(BasicBlock* block)
     if (compHasBackwardJump)
     {
         // Are patchpoints enabled and supported?
-        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TIER0) && (JitConfig.TC_OnStackReplacement() > 0) &&
-            compCanHavePatchpoints())
-        {
-            // We don't inline at Tier0, if we do, we may need rethink our approach.
-            // Could probably support inlines that don't introduce flow.
-            assert(!compIsForInlining());
 
-            // Is the start of this block a suitable patchpoint?
-            // Current strategy is blocks that are stack-empty and backwards branch targets and not in a handler
-            //
-            // Todo (perhaps): bail out of OSR and jit this method with optimization.
-            //
-            if (!block->hasHndIndex() && ((block->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0) &&
-                (verCurrentState.esStackDepth == 0))
+        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TIER0) && (JitConfig.TC_OnStackReplacement() > 0))
+        {
+            const char* reason = nullptr;
+            if (compCanHavePatchpoints(&reason))
             {
-                block->bbFlags |= BBF_PATCHPOINT;
-                setMethodHasPatchpoint();
+                // We don't inline at Tier0, if we do, we may need rethink our approach.
+                // Could probably support inlines that don't introduce flow.
+                assert(!compIsForInlining());
+                
+                // Is the start of this block a suitable patchpoint?
+                // Current strategy is blocks that are stack-empty and backwards branch targets and not in a handler
+                //
+                // Todo (perhaps): bail out of OSR and jit this method with optimization.
+                //
+                if (!block->hasHndIndex() && ((block->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0) &&
+                    (verCurrentState.esStackDepth == 0))
+                {
+                    block->bbFlags |= BBF_PATCHPOINT;
+                    setMethodHasPatchpoint();
+                }
+                else
+                {
+                    JITDUMP("No PP for " FMT_BB ": no pp allowed here\n", block->bbNum);
+                }
             }
+            else
+            {
+                JITDUMP("No PP for " FMT_BB ": no pp allowed in method: %s\n", block->bbNum, reason);
+            }
+        }
+        else
+        {
+            JITDUMP("No PP for " FMT_BB ": no pp enabled for method\n", block->bbNum);
         }
     }
     else

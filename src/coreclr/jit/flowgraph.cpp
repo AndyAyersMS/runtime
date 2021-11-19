@@ -2001,55 +2001,64 @@ void Compiler::fgAddReversePInvokeEnterExit()
     varDsc->lvExactSize = eeGetEEInfo()->sizeOfReversePInvokeFrame;
 
     // Add enter pinvoke exit callout at the start of prolog
-
-    GenTree* pInvokeFrameVar = gtNewOperNode(GT_ADDR, TYP_I_IMPL, gtNewLclvNode(lvaReversePInvokeFrameVar, TYP_BLK));
-
+    //
     GenTree* tree;
 
-    CorInfoHelpFunc reversePInvokeEnterHelper;
-
-    GenTreeCall::Use* args;
-
-    if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TRACK_TRANSITIONS))
+    if (!opts.IsOSR())
     {
-        reversePInvokeEnterHelper = CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER_TRACK_TRANSITIONS;
-
-        GenTree* stubArgument;
-        if (info.compPublishStubParam)
+        GenTree* const pInvokeFrameVar = gtNewOperNode(GT_ADDR, TYP_I_IMPL, gtNewLclvNode(lvaReversePInvokeFrameVar, TYP_BLK));
+        
+        CorInfoHelpFunc reversePInvokeEnterHelper;
+        
+        GenTreeCall::Use* args;
+        
+        if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TRACK_TRANSITIONS))
         {
-            // If we have a secret param for a Reverse P/Invoke, that means that we are in an IL stub.
-            // In this case, the method handle we pass down to the Reverse P/Invoke helper should be
-            // the target method, which is passed in the secret parameter.
-            stubArgument = gtNewLclvNode(lvaStubArgumentVar, TYP_I_IMPL);
+            reversePInvokeEnterHelper = CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER_TRACK_TRANSITIONS;
+            
+            GenTree* stubArgument;
+            if (info.compPublishStubParam)
+            {
+                // If we have a secret param for a Reverse P/Invoke, that means that we are in an IL stub.
+                // In this case, the method handle we pass down to the Reverse P/Invoke helper should be
+                // the target method, which is passed in the secret parameter.
+                stubArgument = gtNewLclvNode(lvaStubArgumentVar, TYP_I_IMPL);
+            }
+            else
+            {
+                stubArgument = gtNewIconNode(0, TYP_I_IMPL);
+            }
+            
+            args = gtNewCallArgs(pInvokeFrameVar, gtNewIconEmbMethHndNode(info.compMethodHnd), stubArgument);
         }
         else
         {
-            stubArgument = gtNewIconNode(0, TYP_I_IMPL);
+            reversePInvokeEnterHelper = CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER;
+            args                      = gtNewCallArgs(pInvokeFrameVar);
         }
+        
+        tree = gtNewHelperCallNode(reversePInvokeEnterHelper, TYP_VOID, args);
+        
+        fgEnsureFirstBBisScratch();
+        
+        fgNewStmtAtBeg(fgFirstBB, tree);
 
-        args = gtNewCallArgs(pInvokeFrameVar, gtNewIconEmbMethHndNode(info.compMethodHnd), stubArgument);
+#ifdef DEBUG
+        if (verbose)
+        {
+            printf("\nReverse PInvoke method - Add reverse pinvoke enter in first basic block %s\n",
+                fgFirstBB->dspToString());
+            gtDispTree(tree);
+            printf("\n");
+        }
+#endif
     }
     else
     {
-        reversePInvokeEnterHelper = CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER;
-        args                      = gtNewCallArgs(pInvokeFrameVar);
+        // For OSR this happens in the original method.
+        //
+        JITDUMP("\nReverse PInvoke method - (OSR) not adding reverse pinvoke enter\n");
     }
-
-    tree = gtNewHelperCallNode(reversePInvokeEnterHelper, TYP_VOID, args);
-
-    fgEnsureFirstBBisScratch();
-
-    fgNewStmtAtBeg(fgFirstBB, tree);
-
-#ifdef DEBUG
-    if (verbose)
-    {
-        printf("\nReverse PInvoke method - Add reverse pinvoke enter in first basic block %s\n",
-               fgFirstBB->dspToString());
-        gtDispTree(tree);
-        printf("\n");
-    }
-#endif
 
     // Add reverse pinvoke exit callout at the end of epilog
 

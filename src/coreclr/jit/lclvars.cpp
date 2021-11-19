@@ -6545,6 +6545,26 @@ void Compiler::lvaAssignVirtualFrameOffsetsToLocals()
 
                 continue;
             }
+            else if (lclNum == lvaReversePInvokeFrameVar)
+            {
+                // OSR also will re-use the original frame's reverse pinvoke frame.
+                //
+                if (opts.IsOSR())
+                {
+                    assert(info.compPatchpointInfo->HasRPInvokeFrameOffset());
+
+                    // Add frampointer-relative offset of this OSR live local in the original frame
+                    // to the offset of original frame in our new frame.
+                    int originalOffset = info.compPatchpointInfo->RPInvokeFrameOffset();
+                    int offset         = originalFrameStkOffs + originalOffset;
+
+                    JITDUMP("---OSR--- reverse pinvoke frame V%02u (on old frame) old rbp offset %d old frame offset %d new virt offset %d\n",
+                        lclNum, originalOffset, originalFrameStkOffs, offset);
+
+                    lvaTable[lclNum].SetStackOffset(offset);
+                    continue;
+                }
+            }
 
             // These need to be located as the very first variables (highest memory address)
             // and so they have already been assigned an offset

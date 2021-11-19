@@ -5376,6 +5376,14 @@ void Compiler::generatePatchpointInfo()
                 patchpointInfo->MonitorAcquiredOffset());
     }
 
+    if (lvaReversePInvokeFrameVar != BAD_VAR_NUM)
+    {
+        LclVarDsc* const varDsc = lvaGetDesc(lvaReversePInvokeFrameVar);
+        patchpointInfo->SetRPInvokeFrameOffset(varDsc->GetStackOffset());
+        JITDUMP("--OSR-- rpinvoke frame V%02u offset is FP %d\n", lvaReversePInvokeFrameVar,
+                patchpointInfo->RPInvokeFrameOffset());
+    }
+
     // Register this with the runtime.
     info.compCompHnd->setPatchpointInfo(patchpointInfo);
 }

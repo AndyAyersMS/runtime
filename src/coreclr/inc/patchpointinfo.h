@@ -125,6 +125,22 @@ struct PatchpointInfo
         m_monitorAcquiredOffset = offset;
     }
 
+    // Original method FP relative offset for inline rpinvoke frame
+    int RPInvokeFrameOffset() const
+    {
+        return m_rPInvokeFrameOffset;
+    }
+
+    bool HasRPInvokeFrameOffset() const
+    {
+        return m_rPInvokeFrameOffset != -1;
+    }
+
+    void SetRPInvokeFrameOffset(int offset)
+    {
+        m_rPInvokeFrameOffset = offset;
+    }
+
     // True if this local was address exposed in the original method
     bool IsExposed(unsigned localNum) const
     {
@@ -159,6 +175,7 @@ private:
     int      m_keptAliveThisOffset;
     int      m_securityCookieOffset;
     int      m_monitorAcquiredOffset;
+    int      m_rPInvokeFrameOffset;
     int      m_offsetAndExposureData[];
 };
 

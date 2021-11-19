@@ -4736,10 +4736,6 @@ inline bool Compiler::compCanHavePatchpoints(const char** reason)
     {
         whyNot = "localloc";
     }
-    else if (opts.IsReversePInvoke())
-    {
-        whyNot = "reverse pinvoke";
-    }
 #else
     whyNot = "OSR feature not defined in build";
 #endif
