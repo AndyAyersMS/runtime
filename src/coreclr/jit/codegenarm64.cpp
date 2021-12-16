@@ -1142,9 +1142,20 @@ void CodeGen::genFuncletProlog(BasicBlock* block)
     }
     else if (genFuncletInfo.fiFrameType == 3)
     {
-        GetEmitter()->emitIns_R_R_R_I(INS_stp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, genFuncletInfo.fiSpDelta1,
-                                      INS_OPTS_PRE_INDEX);
-        compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
+        // With OSR we may see large values for fiSpDelta1
+        // (we really need to probe the frame, sigh)
+        if (compiler->opts.IsOSR())
+        {
+            genStackPointerAdjustment(genFuncletInfo.fiSpDelta1, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
+            GetEmitter()->emitIns_R_R_R_I(INS_stp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, 0);
+            compiler->unwindSaveRegPair(REG_FP, REG_LR, 0);
+        }
+        else
+        {
+            GetEmitter()->emitIns_R_R_R_I(INS_stp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, genFuncletInfo.fiSpDelta1,
+                                          INS_OPTS_PRE_INDEX);
+            compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
+        }
 
         maskSaveRegsInt &= ~(RBM_LR | RBM_FP); // We've saved these now
     }
@@ -1172,11 +1183,19 @@ void CodeGen::genFuncletProlog(BasicBlock* block)
 
     if ((genFuncletInfo.fiFrameType == 3) || (genFuncletInfo.fiFrameType == 5))
     {
-        // Note that genFuncletInfo.fiSpDelta2 is always a negative value
-        assert(genFuncletInfo.fiSpDelta2 < 0);
+        // Note that genFuncletInfo.fiSpDelta2 is always a non-positive value
+        assert(genFuncletInfo.fiSpDelta2 <= 0);
 
         // generate sub SP,SP,imm
-        genStackPointerAdjustment(genFuncletInfo.fiSpDelta2, REG_R2, nullptr, /* reportUnwindData */ true);
+        if (genFuncletInfo.fiSpDelta2 < 0)
+        {
+            genStackPointerAdjustment(genFuncletInfo.fiSpDelta2, REG_R2, nullptr, /* reportUnwindData */ true);
+        }
+        else
+        {
+            // we will only see fiSpDelta2 == 0 for osr funclets
+            assert(compiler->opts.IsOSR());
+        }
     }
 
     // This is the end of the OS-reported prolog for purposes of unwinding
@@ -1253,11 +1272,19 @@ void CodeGen::genFuncletEpilog()
 
     if ((genFuncletInfo.fiFrameType == 3) || (genFuncletInfo.fiFrameType == 5))
     {
-        // Note that genFuncletInfo.fiSpDelta2 is always a negative value
-        assert(genFuncletInfo.fiSpDelta2 < 0);
+        // Note that genFuncletInfo.fiSpDelta2 is always a non-positive value
+        assert(genFuncletInfo.fiSpDelta2 <= 0);
 
         // generate add SP,SP,imm
-        genStackPointerAdjustment(-genFuncletInfo.fiSpDelta2, REG_R2, nullptr, /* reportUnwindData */ true);
+        if (genFuncletInfo.fiSpDelta2 < 0)
+        {
+            genStackPointerAdjustment(-genFuncletInfo.fiSpDelta2, REG_R2, nullptr, /* reportUnwindData */ true);
+        }
+        else
+        {
+            // we should only zee zero SpDelta2 with osr.
+            assert(compiler->opts.IsOSR());
+        }
     }
 
     regMaskTP regsToRestoreMask = maskRestoreRegsInt | maskRestoreRegsFloat;
@@ -1294,9 +1321,21 @@ void CodeGen::genFuncletEpilog()
     }
     else if (genFuncletInfo.fiFrameType == 3)
     {
-        GetEmitter()->emitIns_R_R_R_I(INS_ldp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, -genFuncletInfo.fiSpDelta1,
-                                      INS_OPTS_POST_INDEX);
-        compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
+        // With OSR we may see large values for fiSpDelta1
+        //
+        if (compiler->opts.IsOSR())
+        {
+            GetEmitter()->emitIns_R_R_R_I(INS_ldp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, 0);
+            compiler->unwindSaveRegPair(REG_FP, REG_LR, 0);
+
+            genStackPointerAdjustment(-genFuncletInfo.fiSpDelta1, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
+        }
+        else
+        {
+            GetEmitter()->emitIns_R_R_R_I(INS_ldp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, -genFuncletInfo.fiSpDelta1,
+                                          INS_OPTS_POST_INDEX);
+            compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
+        }
     }
     else if (genFuncletInfo.fiFrameType == 4)
     {
@@ -1457,7 +1496,7 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
             genFuncletInfo.fiFrameType = 3;
         }
 
-        genFuncletInfo.fiSpDelta1 = -(int)saveRegsPlusPSPSizeAligned;
+        genFuncletInfo.fiSpDelta1 = -(int)(osrPad + saveRegsPlusPSPSizeAligned);
         genFuncletInfo.fiSpDelta2 = -(int)outgoingArgSpaceAligned;
 
         assert(genFuncletInfo.fiSpDelta1 + genFuncletInfo.fiSpDelta2 == -(int)maxFuncletFrameSizeAligned);
