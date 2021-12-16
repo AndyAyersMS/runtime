@@ -1347,13 +1347,22 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
     // The frame size and offsets must be finalized
     assert(compiler->lvaDoneFrameLayout == Compiler::FINAL_FRAME_LAYOUT);
 
-    genFuncletInfo.fiFunction_CallerSP_to_FP_delta = genCallerSPtoFPdelta();
+    unsigned const PSPSize = (compiler->lvaPSPSym != BAD_VAR_NUM) ? REGSIZE_BYTES : 0;
+    
+    // Because a method and funclets must have the same caller-relative PSPSym offset,
+    // if there is a PSPSym, we have to pad the funclet frame size for OSR.
+    //
+    unsigned osrPad = 0;
+    if (compiler->opts.IsOSR() && (PSPSize > 0))
+    {
+        osrPad = compiler->info.compPatchpointInfo->TotalFrameSize();
+    }
+
+    genFuncletInfo.fiFunction_CallerSP_to_FP_delta = genCallerSPtoFPdelta() - osrPad;
 
     regMaskTP rsMaskSaveRegs = regSet.rsMaskCalleeSaved;
     assert((rsMaskSaveRegs & RBM_LR) != 0);
     assert((rsMaskSaveRegs & RBM_FP) != 0);
-
-    unsigned PSPSize = (compiler->lvaPSPSym != BAD_VAR_NUM) ? REGSIZE_BYTES : 0;
 
     unsigned saveRegsCount       = genCountBits(rsMaskSaveRegs);
     unsigned saveRegsPlusPSPSize = saveRegsCount * REGSIZE_BYTES + PSPSize;
@@ -1363,23 +1372,24 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
         // so that they are contiguous with the incoming stack arguments.
         saveRegsPlusPSPSize += MAX_REG_ARG * REGSIZE_BYTES;
     }
-    unsigned saveRegsPlusPSPSizeAligned = roundUp(saveRegsPlusPSPSize, STACK_ALIGN);
+
+    unsigned const saveRegsPlusPSPSizeAligned = roundUp(saveRegsPlusPSPSize, STACK_ALIGN);
 
     assert(compiler->lvaOutgoingArgSpaceSize % REGSIZE_BYTES == 0);
-    unsigned outgoingArgSpaceAligned = roundUp(compiler->lvaOutgoingArgSpaceSize, STACK_ALIGN);
+    unsigned const outgoingArgSpaceAligned = roundUp(compiler->lvaOutgoingArgSpaceSize, STACK_ALIGN);
 
-    unsigned maxFuncletFrameSizeAligned = saveRegsPlusPSPSizeAligned + outgoingArgSpaceAligned;
+    unsigned const maxFuncletFrameSizeAligned = saveRegsPlusPSPSizeAligned + osrPad + outgoingArgSpaceAligned;
     assert((maxFuncletFrameSizeAligned % STACK_ALIGN) == 0);
 
     int SP_to_FPLR_save_delta;
     int SP_to_PSP_slot_delta;
     int CallerSP_to_PSP_slot_delta;
 
-    unsigned funcletFrameSize        = saveRegsPlusPSPSize + compiler->lvaOutgoingArgSpaceSize;
-    unsigned funcletFrameSizeAligned = roundUp(funcletFrameSize, STACK_ALIGN);
+    unsigned const funcletFrameSize        = saveRegsPlusPSPSize + osrPad + compiler->lvaOutgoingArgSpaceSize;
+    unsigned const funcletFrameSizeAligned = roundUp(funcletFrameSize, STACK_ALIGN);
     assert(funcletFrameSizeAligned <= maxFuncletFrameSizeAligned);
 
-    unsigned funcletFrameAlignmentPad = funcletFrameSizeAligned - funcletFrameSize;
+    unsigned const funcletFrameAlignmentPad = funcletFrameSizeAligned - funcletFrameSize;
     assert((funcletFrameAlignmentPad == 0) || (funcletFrameAlignmentPad == REGSIZE_BYTES));
 
     if (maxFuncletFrameSizeAligned <= 512)
@@ -1392,16 +1402,16 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
                 SP_to_FPLR_save_delta -= MAX_REG_ARG * REGSIZE_BYTES;
             }
 
-            SP_to_PSP_slot_delta       = compiler->lvaOutgoingArgSpaceSize + funcletFrameAlignmentPad;
-            CallerSP_to_PSP_slot_delta = -(int)saveRegsPlusPSPSize;
+            SP_to_PSP_slot_delta       = compiler->lvaOutgoingArgSpaceSize + funcletFrameAlignmentPad + osrPad;
+            CallerSP_to_PSP_slot_delta = -(int)(osrPad + saveRegsPlusPSPSize);
 
             genFuncletInfo.fiFrameType = 4;
         }
         else
         {
             SP_to_FPLR_save_delta = compiler->lvaOutgoingArgSpaceSize;
-            SP_to_PSP_slot_delta  = SP_to_FPLR_save_delta + 2 /* FP, LR */ * REGSIZE_BYTES + funcletFrameAlignmentPad;
-            CallerSP_to_PSP_slot_delta = -(int)(saveRegsPlusPSPSize - 2 /* FP, LR */ * REGSIZE_BYTES);
+            SP_to_PSP_slot_delta  = SP_to_FPLR_save_delta + 2 /* FP, LR */ * REGSIZE_BYTES + funcletFrameAlignmentPad + osrPad;
+            CallerSP_to_PSP_slot_delta = -(int)(osrPad + saveRegsPlusPSPSize - 2 /* FP, LR */ * REGSIZE_BYTES);
 
             if (compiler->lvaOutgoingArgSpaceSize == 0)
             {
@@ -1432,17 +1442,17 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
             }
 
             SP_to_PSP_slot_delta =
-                compiler->lvaOutgoingArgSpaceSize + funcletFrameAlignmentPad + saveRegsPlusPSPAlignmentPad;
-            CallerSP_to_PSP_slot_delta = -(int)saveRegsPlusPSPSize;
+                osrPad + compiler->lvaOutgoingArgSpaceSize + funcletFrameAlignmentPad + saveRegsPlusPSPAlignmentPad;
+            CallerSP_to_PSP_slot_delta = -(int)(osrPad + saveRegsPlusPSPSize);
 
             genFuncletInfo.fiFrameType = 5;
         }
         else
         {
             SP_to_FPLR_save_delta = outgoingArgSpaceAligned;
-            SP_to_PSP_slot_delta = SP_to_FPLR_save_delta + 2 /* FP, LR */ * REGSIZE_BYTES + saveRegsPlusPSPAlignmentPad;
+            SP_to_PSP_slot_delta = osrPad + SP_to_FPLR_save_delta + 2 /* FP, LR */ * REGSIZE_BYTES + saveRegsPlusPSPAlignmentPad;
             CallerSP_to_PSP_slot_delta =
-                -(int)(saveRegsPlusPSPSizeAligned - 2 /* FP, LR */ * REGSIZE_BYTES - saveRegsPlusPSPAlignmentPad);
+                -(int)(osrPad + saveRegsPlusPSPSizeAligned - 2 /* FP, LR */ * REGSIZE_BYTES - saveRegsPlusPSPAlignmentPad);
 
             genFuncletInfo.fiFrameType = 3;
         }
@@ -1451,11 +1461,6 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
         genFuncletInfo.fiSpDelta2 = -(int)outgoingArgSpaceAligned;
 
         assert(genFuncletInfo.fiSpDelta1 + genFuncletInfo.fiSpDelta2 == -(int)maxFuncletFrameSizeAligned);
-    }
-
-    if (compiler->opts.IsOSR())
-    {
-        CallerSP_to_PSP_slot_delta -= compiler->info.compPatchpointInfo->TotalFrameSize();
     }
 
     /* Now save it for future use */
