@@ -1115,7 +1115,7 @@ void CodeGen::genFuncletProlog(BasicBlock* block)
     if (genFuncletInfo.fiFrameType == 1)
     {
         GetEmitter()->emitIns_R_R_R_I(INS_stp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, genFuncletInfo.fiSpDelta1,
-            INS_OPTS_PRE_INDEX);
+                                      INS_OPTS_PRE_INDEX);
 
         compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
         maskSaveRegsInt &= ~(RBM_LR | RBM_FP); // We've saved these now
@@ -1143,7 +1143,7 @@ void CodeGen::genFuncletProlog(BasicBlock* block)
     else if (genFuncletInfo.fiFrameType == 3)
     {
         GetEmitter()->emitIns_R_R_R_I(INS_stp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, genFuncletInfo.fiSpDelta1,
-            INS_OPTS_PRE_INDEX);
+                                      INS_OPTS_PRE_INDEX);
         compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
 
         maskSaveRegsInt &= ~(RBM_LR | RBM_FP); // We've saved these now
@@ -1271,7 +1271,7 @@ void CodeGen::genFuncletEpilog()
     if (genFuncletInfo.fiFrameType == 1)
     {
         GetEmitter()->emitIns_R_R_R_I(INS_ldp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, -genFuncletInfo.fiSpDelta1,
-            INS_OPTS_POST_INDEX);
+                                      INS_OPTS_POST_INDEX);
         compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
 
         assert(genFuncletInfo.fiSpDelta2 == 0);
@@ -1295,7 +1295,7 @@ void CodeGen::genFuncletEpilog()
     else if (genFuncletInfo.fiFrameType == 3)
     {
         GetEmitter()->emitIns_R_R_R_I(INS_ldp, EA_PTRSIZE, REG_FP, REG_LR, REG_SPBASE, -genFuncletInfo.fiSpDelta1,
-            INS_OPTS_POST_INDEX);
+                                      INS_OPTS_POST_INDEX);
         compiler->unwindSaveRegPairPreindexed(REG_FP, REG_LR, genFuncletInfo.fiSpDelta1);
     }
     else if (genFuncletInfo.fiFrameType == 4)
@@ -1396,7 +1396,8 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
     {
         if (genSaveFpLrWithAllCalleeSavedRegisters)
         {
-            SP_to_FPLR_save_delta      = funcletFrameSizeAligned - (2 /* FP, LR */ * REGSIZE_BYTES) - homedArgSize;
+            SP_to_FPLR_save_delta =
+                funcletFrameSizeAligned - (2 /* FP, LR */ * REGSIZE_BYTES) - (homedArgSize + PSPSize);
             genFuncletInfo.fiFrameType = 4;
         }
         else
@@ -1425,7 +1426,8 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
 
         if (genSaveFpLrWithAllCalleeSavedRegisters)
         {
-            SP_to_FPLR_save_delta = funcletFrameSizeAligned - (2 /* FP, LR */ * REGSIZE_BYTES) - homedArgSize;
+            SP_to_FPLR_save_delta =
+                funcletFrameSizeAligned - (2 /* FP, LR */ * REGSIZE_BYTES) - (homedArgSize + PSPSize);
 
             genFuncletInfo.fiFrameType = 5;
         }
@@ -1447,7 +1449,7 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
     genFuncletInfo.fiSaveRegs                   = rsMaskSaveRegs;
     genFuncletInfo.fiSP_to_FPLR_save_delta      = SP_to_FPLR_save_delta;
     genFuncletInfo.fiSP_to_PSP_slot_delta       = SP_to_PSP_slot_delta;
-    genFuncletInfo.fiSP_to_CalleeSave_delta     = SP_to_PSP_slot_delta + PSPSize;
+    genFuncletInfo.fiSP_to_CalleeSave_delta     = SP_to_PSP_slot_delta + PSPSize - saveRegsPlusPSPSize;
     genFuncletInfo.fiCallerSP_to_PSP_slot_delta = CallerSP_to_PSP_slot_delta;
 
 #ifdef DEBUG
