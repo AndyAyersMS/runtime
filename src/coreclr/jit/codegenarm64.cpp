@@ -1382,11 +1382,11 @@ void CodeGen::genCaptureFuncletPrologEpilogInfo()
     unsigned const funcletFrameAlignmentPad = funcletFrameSizeAligned - funcletFrameSize;
     assert((funcletFrameAlignmentPad == 0) || (funcletFrameAlignmentPad == REGSIZE_BYTES));
 
-    // PSPSym is always at 0 or -(MAX_REG_ARG * REGSIZE_BYTES), independent of frame type.
+    // PSPSym is always at -8 or -(8 + (MAX_REG_ARG * REGSIZE_BYTES)), independent of frame type.
     // SP is always at bottom of frame, independent of frame type.
     //
-    const int CallerSP_to_PSP_slot_delta = -(int)homedArgSize;
-    const int SP_to_PSP_slot_delta       = funcletFrameSizeAligned - homedArgSize;
+    const int CallerSP_to_PSP_slot_delta = -(int)(homedArgSize + PSPSize);
+    const int SP_to_PSP_slot_delta       = funcletFrameSizeAligned - (homedArgSize + PSPSize);
 
     // SP to FPLR save delta can vary depending on frame type.
     //
