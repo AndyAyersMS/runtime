@@ -1,20 +1,19 @@
 # ARM64 JIT frame layout
 
-NOTE: This document was written before the code was written, and hasn't been
-verified to match existing code. It refers to some documents that might not be
-open source.
+Revised Jan 2022
 
-This document describes the frame layout constraints and options for the ARM64
-JIT compiler.
+This document describes the frame layouts used by the ARM64 JIT compiler.
 
-These frame layouts were taken from the "Windows ARM64 Exception Data"
+## Background
+
+These frame layouts were based on the "Windows ARM64 Exception Data"
 specification, and expanded for use by the JIT.
 
 We will generate chained frames in most case (where we save the frame pointer on
 the stack, and point the frame pointer (x29) at the saved frame pointer),
 including all non-leaf frames, to support ETW stack walks. This is recommended
 by the "Windows ARM64 ABI" document. See `ETW_EBP_FRAMED` in the JIT code. (We
-currently don’t set `ETW_EBP_FRAMED` for ARM64.)
+currently don't `ETW_EBP_FRAMED` for ARM64.)
 
 For frames with alloca (dynamic stack allocation), we must use a frame pointer
 that is fixed after the prolog (and before any alloca), so the stack pointer can
@@ -24,7 +23,7 @@ fixed part of the frame.
 For non-alloca frames, the stack pointer is set and not changed at the end of
 the prolog. In this case, the stack pointer can be used for all frame member
 access. If a frame pointer is also created, the frame pointer can optionally be
-used to access frame members if it gives an encoding advantage.
+used to access frame members, if it gives an encoding advantage.
 
 We require a frame pointer for several cases: (1) functions with exception
 handling establish a frame pointer so handler funclets can use the frame pointer
@@ -96,7 +95,12 @@ epilog before returning. We must do this so the VM can change the return address
 stored on the stack to cause the function to return to a special location to
 support suspension.
 
-Below are some sample frame layouts. In these examples, `#localsz` is the byte
+## Layouts
+
+Below are the five layouts currently used by the JIT. Other layouts are possible.
+Layouts are described in the jit by a "frame type" number that runs from 1-5.
+
+In these examples, `#localsz` is the byte
 size of the locals/temps area (everything except callee-saved registers and the
 outgoing argument space, but including space to save FP and SP), `#outsz` is the
 outgoing stack parameter size, and `#framesz` is the size of the entire stack
@@ -109,7 +113,7 @@ functions, the frame pointer must point at the saved frame pointer. Also, if we
 are to use the positive immediate offset addressing modes, we need the frame
 pointer to be lowest on the stack. In addition, we want the callee-saved
 registers to be "far away", especially for large frames where an immediate
-offset addressing mode won’t be able to reach them, as we want locals to be
+offset addressing mode won't be able to reach them, as we want locals to be
 closer than the callee-saved registers.
 
 To maintain 16 byte stack alignment, we may need to add alignment padding bytes.
@@ -119,13 +123,13 @@ we should only need maximally 12 (or 8?) alignment bytes. Note that every time
 the stack pointer is changed, it needs to be by 16 bytes, so every time we
 adjust the stack might require alignment. (Technically, it might be the case
 that you can change the stack pointer by values not a multiple of 16, but you
-certainly can’t load or store from non-16-byte-aligned SP values. Also, the
+certainly can't load or store from non-16-byte-aligned SP values. Also, the
 ARM64 unwind code `alloc_s` is 8 byte scaled, so it can only handle multiple of
 8 byte changes to SP.) Note that ldp/stp can be given an 8-byte aligned address
 when reading/writing 8-byte register pairs, even though the total data transfer
 for the instruction is 16 bytes.
 
-## 1. chained, `#framesz <= 512`, `#outsz = 0`
+### 1. chained, `#framesz <= 504`, `#outsz = 0`
 
 ```
 stp fp,lr,[sp,-#framesz]!       // pre-indexed, save <fp,lr> at bottom of frame
@@ -167,7 +171,7 @@ stp fp,lr,[sp,-#framesz]!       // pre-indexed, save <fp,lr> at bottom of frame
 mov fp,sp                       // fp points to bottom of stack
 ```
 
-## 2. chained, `#framesz - 16 <= 512`, `#outsz != 0`
+### 2. chained, `#framesz - 16 <= 512`, `#outsz != 0`
 
 ```
 sub sp,sp,#framesz
@@ -192,7 +196,7 @@ As for #1, if there is an odd number of callee-save registers, they can easily
 be put adjacent to the caller SP (at the "top" of the stack), so any alignment
 bytes will be in the locals area.
 
-## 3. chained, `(#framesz - #outsz) <= 512`, `#outsz != 0`.
+### 3. chained, `(#framesz - #outsz) <= 512`, `#outsz != 0`.
 
 Different from #2, as `#framesz` is too big. Might be useful for `#framesz >
 512` but `(#framesz - #outsz) <= 512`.

@@ -6081,6 +6081,8 @@ void Compiler::lvaAssignVirtualFrameOffsetsToLocals()
 #endif
 #endif // !TARGET_ARM
 
+    compLclFrameSize = 0;
+
 #ifdef TARGET_ARM64
     // If the frame pointer is used, then we'll save FP/LR at the bottom of the stack.
     // Otherwise, we won't store FP, and we'll store LR at the top, with the other callee-save
@@ -6128,8 +6130,6 @@ void Compiler::lvaAssignVirtualFrameOffsetsToLocals()
 
     stkOffs -= compCalleeRegsPushed * REGSIZE_BYTES;
 #endif // !TARGET_ARM64
-
-    compLclFrameSize = 0;
 
 #ifdef TARGET_AMD64
     // In case of Amd64 compCalleeRegsPushed includes float regs (Xmm6-xmm15) that
