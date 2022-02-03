@@ -1461,7 +1461,7 @@ void fgArgInfo::SortArgs()
            +------------------------------------+
            | temps (argTable[].needTmp = true)  |
            +------------------------------------+
-           |  args with calls (GTF_CALL)        |
+           |  args w/(GTF_CALL / GTF_GLOB_REF)  |
            +------------------------------------+  <--- argTable[0]
      */
 
@@ -1471,6 +1471,7 @@ void fgArgInfo::SortArgs()
     unsigned begTab        = 0;
     unsigned endTab        = argCount - 1;
     unsigned argsRemaining = argCount;
+    int      callArgCount  = 0;
 
     // First take care of arguments that are constants.
     // [We use a backward iterator pattern]
@@ -1489,12 +1490,17 @@ void fgArgInfo::SortArgs()
 
         assert(curArgTabEntry->lateUse == nullptr);
 
+        GenTree* const argx = curArgTabEntry->GetNode();
+
+        if ((argx->gtFlags & GTF_CALL) != 0)
+        {
+            callArgCount++;
+        }
+
         // Skip any already processed args
         //
         if (!curArgTabEntry->processed)
         {
-            GenTree* argx = curArgTabEntry->GetNode();
-
             // put constants at the end of the table
             //
             if (argx->gtOper == GT_CNS_INT)
@@ -1517,24 +1523,42 @@ void fgArgInfo::SortArgs()
         }
     } while (curInx > 0);
 
-    if (argsRemaining > 0)
+    if ((callArgCount > 0) && (argsRemaining > 0))
     {
         // Next take care of arguments that are calls.
         // [We use a forward iterator pattern]
         //
+        // If there are any calls, then we must also move
+        // all the GTF_GLOB_REF args that currently preceed a call
+        // as well, since they and the calls can interfere.
+        //
+        int callArgsSeen = 0;
+
         for (curInx = begTab; curInx <= endTab; curInx++)
         {
-            fgArgTabEntry* curArgTabEntry = argTable[curInx];
+            fgArgTabEntry* const curArgTabEntry = argTable[curInx];
+            GenTree* const       argx           = curArgTabEntry->GetNode();
+
+            if ((argx->gtFlags & GTF_CALL) != 0)
+            {
+                callArgsSeen++;
+            }
 
             // Skip any already processed args
             //
             if (!curArgTabEntry->processed)
             {
-                GenTree* argx = curArgTabEntry->GetNode();
-
-                // put calls at the beginning of the table
+                // Invariant, nonfaulting indirs can safely be reordered wrt calls.
                 //
-                if (argx->gtFlags & GTF_CALL)
+                if (argx->OperIs(GT_IND) && (argx->gtFlags & (GTF_IND_INVARIANT | GTF_IND_NONFAULTING)))
+                {
+                    continue;
+                }
+
+                // Put calls and glob refs that appear before calls
+                // at the beginning of the table in their proper order.
+                //
+                if ((argx->gtFlags & (GTF_GLOB_REF | GTF_CALL)) != 0)
                 {
                     curArgTabEntry->processed = true;
 
@@ -1549,6 +1573,11 @@ void fgArgInfo::SortArgs()
                     begTab++;
                     argsRemaining--;
                 }
+            }
+
+            if (callArgsSeen == callArgCount)
+            {
+                break;
             }
         }
     }
