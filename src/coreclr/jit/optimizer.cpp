@@ -8817,6 +8817,16 @@ void OptBoolsDsc::optOptimizeBoolsUpdateTrees()
         assert(m_b2->bbNext != nullptr);
     }
 
+    // Rethread/recost test tree
+    // Can't do this earlier as it is sensitive to bbJumpKind
+    //
+    if (m_comp->fgStmtListThreaded)
+    {
+        Statement* const testStmt = m_b1->lastStmt();
+        assert(testStmt->GetRootNode() == m_testInfo1.testTree);
+        m_comp->fgMorphBlockStmt(m_b1, testStmt DEBUGARG("optOptimizeBools"));
+    }
+
     if (!optReturnBlock)
     {
         // Update bbRefs and bbPreds
