@@ -9014,6 +9014,17 @@ void CodeGen::genPushCalleeSavedRegisters()
 {
     assert(compiler->compGeneratingProlog);
 
+#if DEBUG
+    // OSR root frames must handle this differently. See
+    //   genOSRRecordTier0CalleeSavedRegisters()
+    //   genOSRSaveRemainingCalleeSavedRegisters()
+    //
+    if (compiler->opts.IsOSR())
+    {
+        assert(compiler->funCurrentFunc()->funKind != FuncKind::FUNC_ROOT);
+    }
+#endif
+
     // x86/x64 doesn't support push of xmm/ymm regs, therefore consider only integer registers for pushing onto stack
     // here. Space for float registers to be preserved is stack allocated and saved as part of prolog sequence and not
     // here.
@@ -9063,6 +9074,158 @@ void CodeGen::genPushCalleeSavedRegisters()
         }
     }
 }
+
+#ifdef TARGET_AMD64
+
+//------------------------------------------------------------------------
+// genOSRRecordTier0CalleeSavedRegistersAndFrame: for OSR methods, record the
+//  subset of callee saves already saved by the Tier0 method, and the frame
+//  created by Tier0.
+//
+void CodeGen::genOSRRecordTier0CalleeSavedRegistersAndFrame()
+{
+    assert(compiler->compGeneratingProlog);
+    assert(compiler->opts.IsOSR());
+    assert(compiler->funCurrentFunc()->funKind == FuncKind::FUNC_ROOT);
+
+#if ETW_EBP_FRAMED
+    if (!isFramePointerUsed() && regSet.rsRegsModified(RBM_FPBASE))
+    {
+        noway_assert(!"Used register RBM_FPBASE as a scratch register!");
+    }
+#endif
+
+    // Figure out which set of int callee saves was already saved by Tier0.
+    // Emit appropriate unwind.
+    //
+    PatchpointInfo* const patchpointInfo             = compiler->info.compPatchpointInfo;
+    regMaskTP const       tier0CalleeSaves           = (regMaskTP)patchpointInfo->CalleeSaveRegisters();
+    regMaskTP             tier0IntCalleeSaves        = tier0CalleeSaves & RBM_INT_CALLEE_SAVED;
+    int const             tier0IntCalleeSaveUsedSize = genCountBits(tier0IntCalleeSaves) * REGSIZE_BYTES;
+
+    JITDUMP("--OSR--- tier0 has already saved ");
+    JITDUMPEXEC(dspRegMask(tier0IntCalleeSaves));
+    JITDUMP("\n");
+
+    // We must account for the Tier0 callee saves.
+    //
+    // These have already happened at method entry; all these
+    // unwind records should be at offset 0.
+    //
+    // RBP is always aved by Tier0 and always pushed first.
+    //
+    assert((tier0IntCalleeSaves & RBM_FPBASE) == RBM_FPBASE);
+    compiler->unwindPush(REG_RBP);
+    tier0IntCalleeSaves &= ~RBM_FPBASE;
+
+    // Now the rest of the Tier0 callee saves.
+    //
+    for (regNumber reg = REG_INT_LAST; tier0IntCalleeSaves != RBM_NONE; reg = REG_PREV(reg))
+    {
+        regMaskTP regBit = genRegMask(reg);
+
+        if ((regBit & tier0IntCalleeSaves) != 0)
+        {
+            compiler->unwindPush(reg);
+        }
+        tier0IntCalleeSaves &= ~regBit;
+    }
+
+    // We must account for the post-callee-saves push SP movement
+    // done by the Tier0 frame and by the OSR transition.
+    //
+    // tier0FrameSize is the Tier0 FP-SP delta plus the fake call slot added by
+    // JIT_Patchpoint. We add one slot to account for the saved FP.
+    //
+    // We then need to subtract off the size the Tier0 callee saves as SP
+    // adjusts for those will have been modelled by the unwind pushes above.
+    //
+    int const tier0FrameSize = patchpointInfo->TotalFrameSize() + REGSIZE_BYTES;
+    int const tier0NetSize   = tier0FrameSize - tier0IntCalleeSaveUsedSize;
+    compiler->unwindAllocStack(tier0NetSize);
+}
+
+//------------------------------------------------------------------------
+// genOSRSaveRemainingCalleeSavedRegisters: save any callee save registers
+//   that Tier0 didn't save.
+//
+// Notes:
+//   This must be invoked after SP has been adjusted to allocate the local
+//   frame, because of how the UnwindSave records are interpreted.
+//
+//   We rely on the fact that other "local frame" allocation actions (like
+//    stack probing) will not trash callee saves registers.
+//
+void CodeGen::genOSRSaveRemainingCalleeSavedRegisters()
+{
+    // We should be generating the prolog of an OSR root frame.
+    //
+    assert(compiler->compGeneratingProlog);
+    assert(compiler->opts.IsOSR());
+    assert(compiler->funCurrentFunc()->funKind == FuncKind::FUNC_ROOT);
+
+    // x86/x64 doesn't support push of xmm/ymm regs, therefore consider only integer registers for pushing onto stack
+    // here. Space for float registers to be preserved is stack allocated and saved as part of prolog sequence and not
+    // here.
+    regMaskTP rsPushRegs = regSet.rsGetModifiedRegsMask() & RBM_INT_CALLEE_SAVED;
+
+#if ETW_EBP_FRAMED
+    if (!isFramePointerUsed() && regSet.rsRegsModified(RBM_FPBASE))
+    {
+        noway_assert(!"Used register RBM_FPBASE as a scratch register!");
+    }
+#endif
+
+    // Figure out which set of int callee saves still needs saving.
+    //
+    PatchpointInfo* const patchpointInfo              = compiler->info.compPatchpointInfo;
+    regMaskTP const       tier0CalleeSaves            = (regMaskTP)patchpointInfo->CalleeSaveRegisters();
+    regMaskTP             tier0IntCalleeSaves         = tier0CalleeSaves & RBM_INT_CALLEE_SAVED;
+    unsigned const        tier0IntCalleeSaveUsedSize  = genCountBits(tier0IntCalleeSaves) * REGSIZE_BYTES;
+    regMaskTP const       osrIntCalleeSaves           = rsPushRegs & RBM_INT_CALLEE_SAVED;
+    regMaskTP             osrAdditionalIntCalleeSaves = osrIntCalleeSaves & ~tier0IntCalleeSaves;
+
+    JITDUMP("---OSR--- int callee saves are ");
+    JITDUMPEXEC(dspRegMask(osrIntCalleeSaves));
+    JITDUMP("; tier0 already saved ");
+    JITDUMPEXEC(dspRegMask(tier0IntCalleeSaves));
+    JITDUMP("; so only saving ");
+    JITDUMPEXEC(dspRegMask(osrAdditionalIntCalleeSaves));
+    JITDUMP("\n");
+
+    // These remaining callee saves will be stored in the Tier0 callee save area
+    // below any saves already done by Tier0. Compute the offset.
+    //
+    // The OSR method doesn't actually use its callee save area.
+    //
+    int const osrFrameSize        = compiler->compLclFrameSize;
+    int const tier0FrameSize      = patchpointInfo->TotalFrameSize();
+    int const osrCalleeSaveSize   = compiler->compCalleeRegsPushed * REGSIZE_BYTES;
+    int const osrFramePointerSize = isFramePointerUsed() ? REGSIZE_BYTES : 0;
+    int offset = osrFrameSize + osrCalleeSaveSize + osrFramePointerSize + tier0FrameSize - tier0IntCalleeSaveUsedSize;
+
+    // The tier0 frame is always an RBP frame, so the OSR method should never need to save RBP.
+    //
+    assert((tier0CalleeSaves & RBM_FPBASE) == RBM_FPBASE);
+    assert((osrAdditionalIntCalleeSaves & RBM_FPBASE) == RBM_NONE);
+
+    // The OSR method must use MOVs to save additional callee saves.
+    //
+    for (regNumber reg = REG_INT_LAST; osrAdditionalIntCalleeSaves != RBM_NONE; reg = REG_PREV(reg))
+    {
+        regMaskTP regBit = genRegMask(reg);
+
+        if ((regBit & osrAdditionalIntCalleeSaves) != 0)
+        {
+            GetEmitter()->emitIns_AR_R(INS_mov, EA_8BYTE, reg, REG_SPBASE, offset);
+            compiler->unwindSaveReg(reg, offset);
+            offset -= REGSIZE_BYTES;
+        }
+        osrAdditionalIntCalleeSaves &= ~regBit;
+    }
+}
+
+#endif // TARGET_AMD64
 
 //-----------------------------------------------------------------------------------
 // instGen_MemoryBarrier: Emit a MemoryBarrier instruction

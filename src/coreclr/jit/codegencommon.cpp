@@ -5435,13 +5435,54 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
 {
     assert(compiler->compGeneratingEpilog);
 
+    const bool isFunclet                = compiler->funCurrentFunc()->funKind != FuncKind::FUNC_ROOT;
+    const bool doesSupersetOfNormalPops = compiler->opts.IsOSR() && !isFunclet;
+
+    regMaskTP rsPopRegs = regSet.rsGetModifiedRegsMask() & RBM_INT_CALLEE_SAVED;
+
+    // OSR methods must restore all registers saved by either the OSR or
+    // the Tier0 method. First restore any callee save not saved by
+    // Tier0, then the callee saves done by Tier0.
+    //
+    // OSR funclets do normal restores.
+    //
+    if (doesSupersetOfNormalPops)
+    {
+        regMaskTP tier0CalleeSaves =
+            ((regMaskTP)compiler->info.compPatchpointInfo->CalleeSaveRegisters()) & RBM_INT_CALLEE_SAVED;
+        regMaskTP additionalCalleeSaves = rsPopRegs & ~tier0CalleeSaves;
+
+        // Registers saved by the OSR prolog.
+        //
+        genPopCalleeSavedRegistersFromMask(additionalCalleeSaves);
+
+        // Registers saved by the Tier0 prolog.
+        // Tier0 frame pointer will be restored separately.
+        //
+        genPopCalleeSavedRegistersFromMask(tier0CalleeSaves & ~RBM_FPBASE);
+    }
+    else
+    {
+        // Registers saved by a normal prolog
+        //
+        const unsigned popCount = genPopCalleeSavedRegistersFromMask(rsPopRegs);
+        noway_assert(compiler->compCalleeRegsPushed == popCount);
+    }
+}
+
+//------------------------------------------------------------------------
+// genPopCalleeSavedRegistersFromMask: pop specified set of callee saves
+//   in the "standard" order
+//
+unsigned CodeGen::genPopCalleeSavedRegistersFromMask(regMaskTP rsPopRegs)
+{
     unsigned popCount = 0;
-    if (regSet.rsRegsModified(RBM_EBX))
+    if ((rsPopRegs & RBM_EBX) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_EBX, TYP_I_IMPL);
     }
-    if (regSet.rsRegsModified(RBM_FPBASE))
+    if ((rsPopRegs & RBM_FPBASE) != 0)
     {
         // EBP cannot be directly modified for EBP frame and double-aligned frames
         assert(!doubleAlignOrFramePointerUsed());
@@ -5452,12 +5493,12 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
 
 #ifndef UNIX_AMD64_ABI
     // For System V AMD64 calling convention ESI and EDI are volatile registers.
-    if (regSet.rsRegsModified(RBM_ESI))
+    if ((rsPopRegs & RBM_ESI) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_ESI, TYP_I_IMPL);
     }
-    if (regSet.rsRegsModified(RBM_EDI))
+    if ((rsPopRegs & RBM_EDI) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_EDI, TYP_I_IMPL);
@@ -5465,22 +5506,22 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
 #endif // !defined(UNIX_AMD64_ABI)
 
 #ifdef TARGET_AMD64
-    if (regSet.rsRegsModified(RBM_R12))
+    if ((rsPopRegs & RBM_R12) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_R12, TYP_I_IMPL);
     }
-    if (regSet.rsRegsModified(RBM_R13))
+    if ((rsPopRegs & RBM_R13) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_R13, TYP_I_IMPL);
     }
-    if (regSet.rsRegsModified(RBM_R14))
+    if ((rsPopRegs & RBM_R14) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_R14, TYP_I_IMPL);
     }
-    if (regSet.rsRegsModified(RBM_R15))
+    if ((rsPopRegs & RBM_R15) != 0)
     {
         popCount++;
         inst_RV(INS_pop, REG_R15, TYP_I_IMPL);
@@ -5492,46 +5533,7 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
     // space on stack in prolog sequence.  PopCount is essentially
     // tracking the count of integer registers pushed.
 
-    noway_assert(compiler->compCalleeRegsPushed == popCount);
-}
-
-#elif defined(TARGET_X86)
-
-void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
-{
-    assert(compiler->compGeneratingEpilog);
-
-    unsigned popCount = 0;
-
-    /*  NOTE:   The EBP-less frame code below depends on the fact that
-                all of the pops are generated right at the start and
-                each takes one byte of machine code.
-     */
-
-    if (regSet.rsRegsModified(RBM_FPBASE))
-    {
-        // EBP cannot be directly modified for EBP frame and double-aligned frames
-        noway_assert(!doubleAlignOrFramePointerUsed());
-
-        inst_RV(INS_pop, REG_EBP, TYP_I_IMPL);
-        popCount++;
-    }
-    if (regSet.rsRegsModified(RBM_EBX))
-    {
-        popCount++;
-        inst_RV(INS_pop, REG_EBX, TYP_I_IMPL);
-    }
-    if (regSet.rsRegsModified(RBM_ESI))
-    {
-        popCount++;
-        inst_RV(INS_pop, REG_ESI, TYP_I_IMPL);
-    }
-    if (regSet.rsRegsModified(RBM_EDI))
-    {
-        popCount++;
-        inst_RV(INS_pop, REG_EDI, TYP_I_IMPL);
-    }
-    noway_assert(compiler->compCalleeRegsPushed == popCount);
+    return popCount;
 }
 
 #endif // TARGET*
@@ -7035,23 +7037,6 @@ void CodeGen::genFnProlog()
         psiBegProlog();
     }
 
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
-    // For OSR there is a "phantom prolog" to account for the actions taken
-    // in the tier0 frame that impact FP and SP on entry to the OSR method.
-    if (compiler->opts.IsOSR())
-    {
-        PatchpointInfo* patchpointInfo = compiler->info.compPatchpointInfo;
-        const int       tier0FrameSize = patchpointInfo->TotalFrameSize();
-
-#if defined(TARGET_AMD64)
-        // FP is tier0 method's FP.
-        compiler->unwindPush(REG_FPBASE);
-#endif
-        // SP is tier0 method's SP.
-        compiler->unwindAllocStack(tier0FrameSize);
-    }
-#endif // defined(TARGET_AMD64) || defined(TARGET_ARM64)
-
 #ifdef DEBUG
 
     if (compiler->compJitHaltMethod())
@@ -7327,6 +7312,13 @@ void CodeGen::genFnProlog()
     }
 #endif // TARGET_ARM
 
+#ifdef TARGET_AMD64
+    const bool isRoot       = (compiler->funCurrentFunc()->funKind == FuncKind::FUNC_ROOT);
+    const bool isOSRx64Root = isRoot && compiler->opts.IsOSR();
+#else
+    const bool isOSRx64Root = false;
+#endif // TARGET_AMD64
+
     tempMask = initRegs & ~excludeMask & ~regSet.rsMaskResvd;
 
     if (tempMask != RBM_NONE)
@@ -7347,6 +7339,17 @@ void CodeGen::genFnProlog()
             tempMask = genFindLowestBit(tempMask);
             initReg  = genRegNumFromMask(tempMask);
         }
+    }
+
+    // For x64 OSR root frames, we can't use any as of yet unsaved
+    // callee save as initReg, as we defer saving these until later in
+    // the prolog, and we don't have normal arg regs.
+    //
+    // Just use RAX as it typically has the most compact encoding.
+    //
+    if (isOSRx64Root)
+    {
+        initReg = REG_SCRATCH; // REG_EAX
     }
 
     noway_assert(!compiler->compMethodRequiresPInvokeFrame() || (initReg != REG_PINVOKE_FRAME));
@@ -7383,11 +7386,49 @@ void CodeGen::genFnProlog()
     }
 #endif // TARGET_ARM
 
+    unsigned extraFrameSize = 0;
+
 #ifdef TARGET_XARCH
+
+#ifdef TARGET_AMD64
+    if (isOSRx64Root)
+    {
+        // Account for the Tier0 callee saves
+        //
+        genOSRRecordTier0CalleeSavedRegistersAndFrame();
+
+        // We don't actually push any callee saves on the OSR frame,
+        // but we still reserve space, so account for this when
+        // allocating the local frame.
+        //
+        extraFrameSize = compiler->compCalleeRegsPushed * REGSIZE_BYTES;
+    }
+#endif // !TARGET_ARM64
+
     if (doubleAlignOrFramePointerUsed())
     {
-        inst_RV(INS_push, REG_FPBASE, TYP_REF);
-        compiler->unwindPush(REG_FPBASE);
+        // OSR methods handle "saving" FP specially.
+        //
+        // For epilog and unwind, we restore the RBP saved by the
+        // Tier0 method. The save we do here is just to set up a
+        // proper RBP-based frame chain link.
+        //
+        if (isOSRx64Root && isFramePointerUsed())
+        {
+            GetEmitter()->emitIns_R_AR(INS_mov, EA_8BYTE, initReg, REG_FPBASE, 0);
+            inst_RV(INS_push, initReg, TYP_REF);
+            initRegZeroed = false;
+
+            // We account for the SP movement in unwind, but not for
+            // the "save" of RBP.
+            //
+            compiler->unwindAllocStack(REGSIZE_BYTES);
+        }
+        else
+        {
+            inst_RV(INS_push, REG_FPBASE, TYP_REF);
+            compiler->unwindPush(REG_FPBASE);
+        }
 #ifdef USING_SCOPE_INFO
         psiAdjustStackLevel(REGSIZE_BYTES);
 #endif               // USING_SCOPE_INFO
@@ -7410,7 +7451,10 @@ void CodeGen::genFnProlog()
 #ifdef TARGET_ARM64
     genPushCalleeSavedRegisters(initReg, &initRegZeroed);
 #else  // !TARGET_ARM64
-    genPushCalleeSavedRegisters();
+    if (!isOSRx64Root)
+    {
+        genPushCalleeSavedRegisters();
+    }
 #endif // !TARGET_ARM64
 
 #ifdef TARGET_ARM
@@ -7446,15 +7490,25 @@ void CodeGen::genFnProlog()
     regMaskTP maskStackAlloc = RBM_NONE;
 
 #ifdef TARGET_ARM
-    maskStackAlloc =
-        genStackAllocRegisterMask(compiler->compLclFrameSize, regSet.rsGetModifiedRegsMask() & RBM_FLT_CALLEE_SAVED);
+    maskStackAlloc = genStackAllocRegisterMask(compiler->compLclFrameSize + extraFrameSize,
+                                               regSet.rsGetModifiedRegsMask() & RBM_FLT_CALLEE_SAVED);
 #endif // TARGET_ARM
 
     if (maskStackAlloc == RBM_NONE)
     {
-        genAllocLclFrame(compiler->compLclFrameSize, initReg, &initRegZeroed, intRegState.rsCalleeRegArgMaskLiveIn);
+        genAllocLclFrame(compiler->compLclFrameSize + extraFrameSize, initReg, &initRegZeroed,
+                         intRegState.rsCalleeRegArgMaskLiveIn);
     }
 #endif // !TARGET_ARM64
+
+#ifdef TARGET_AMD64
+    // For x64 OSR we have to finish saving int callee saves.
+    //
+    if (isOSRx64Root)
+    {
+        genOSRSaveRemainingCalleeSavedRegisters();
+    }
+#endif // TARGET_AMD64
 
 //-------------------------------------------------------------------------
 
@@ -8269,14 +8323,47 @@ void CodeGen::genFnEpilog(BasicBlock* block)
         noway_assert(compiler->compLocallocUsed == false); // Only used with frame-pointer
 
         /* Get rid of our local variables */
+        unsigned int frameSize = compiler->compLclFrameSize;
 
-        if (compiler->compLclFrameSize)
+#ifdef TARGET_AMD64
+
+        // OSR must remove the entire OSR frame and the Tier0 frame down to the bottom
+        // of the used part of the Tier0 callee save area.
+        //
+        if (compiler->opts.IsOSR())
+        {
+            // The patchpoint TotalFrameSize is SP-FP delta (plus "call" slot added by JIT_Patchpoint)
+            // so does not account for the Tier0 push of FP, so we add in an extra stack slot to get the
+            // offset to the top of the Tier0 callee saves area.
+            //
+            PatchpointInfo* const patchpointInfo             = compiler->info.compPatchpointInfo;
+            unsigned const        tier0FrameSize             = patchpointInfo->TotalFrameSize() + REGSIZE_BYTES;
+            regMaskTP const       tier0CalleeSaves           = (regMaskTP)patchpointInfo->CalleeSaveRegisters();
+            regMaskTP             tier0IntCalleeSaves        = tier0CalleeSaves & RBM_INT_CALLEE_SAVED;
+            regMaskTP const       osrIntCalleeSaves          = regSet.rsGetModifiedRegsMask() & RBM_INT_CALLEE_SAVED;
+            regMaskTP             allIntCalleeSaves          = osrIntCalleeSaves | tier0IntCalleeSaves;
+            unsigned const        tier0IntCalleeSaveUsedSize = genCountBits(allIntCalleeSaves) * REGSIZE_BYTES;
+            unsigned const        osrCalleeSaveSize          = compiler->compCalleeRegsPushed * REGSIZE_BYTES;
+            unsigned const        osrFramePointerSize        = isFramePointerUsed() ? REGSIZE_BYTES : 0;
+            unsigned const        osrAdjust =
+                tier0FrameSize - tier0IntCalleeSaveUsedSize + osrCalleeSaveSize + osrFramePointerSize;
+
+            JITDUMP("OSR epilog adjust factors: tier0 frame %u, tier0 callee saves -%u, osr callee saves %u, osr "
+                    "framePointer %u\n",
+                    tier0FrameSize, tier0IntCalleeSaveUsedSize, osrCalleeSaveSize, osrFramePointerSize);
+            JITDUMP("    OSR frame size %u; net osr adjust %u, result %u\n", frameSize, osrAdjust,
+                    frameSize + osrAdjust);
+            frameSize += osrAdjust;
+        }
+#endif // TARGET_AMD64
+
+        if (frameSize > 0)
         {
 #ifdef TARGET_X86
             /* Add 'compiler->compLclFrameSize' to ESP */
             /* Use pop ECX to increment ESP by 4, unless compiler->compJmpOpUsed is true */
 
-            if ((compiler->compLclFrameSize == TARGET_POINTER_SIZE) && !compiler->compJmpOpUsed)
+            if ((frameSize == TARGET_POINTER_SIZE) && !compiler->compJmpOpUsed)
             {
                 inst_RV(INS_pop, REG_ECX, TYP_I_IMPL);
                 regSet.verifyRegUsed(REG_ECX);
@@ -8286,7 +8373,7 @@ void CodeGen::genFnEpilog(BasicBlock* block)
             {
                 /* Add 'compiler->compLclFrameSize' to ESP */
                 /* Generate "add esp, <stack-size>" */
-                inst_RV_IV(INS_add, REG_SPBASE, compiler->compLclFrameSize, EA_PTRSIZE);
+                inst_RV_IV(INS_add, REG_SPBASE, frameSize, EA_PTRSIZE);
             }
         }
 
@@ -8295,33 +8382,21 @@ void CodeGen::genFnEpilog(BasicBlock* block)
 #ifdef TARGET_AMD64
         // In the case where we have an RSP frame, and no frame pointer reported in the OS unwind info,
         // but we do have a pushed frame pointer and established frame chain, we do need to pop RBP.
-        if (doubleAlignOrFramePointerUsed())
+        //
+        // OSR methods must always pop RBP (pushed by Tier0 frame)
+        if (doubleAlignOrFramePointerUsed() || compiler->opts.IsOSR())
         {
             inst_RV(INS_pop, REG_EBP, TYP_I_IMPL);
         }
 #endif // TARGET_AMD64
-
-        // Extra OSR adjust to get to where RBP was saved by the tier0 frame to restore RBP.
-        //
-        // Note the other callee saves made in that frame are dead, the OSR method
-        // will save and restore what it needs.
-        if (compiler->opts.IsOSR())
-        {
-            PatchpointInfo* const patchpointInfo = compiler->info.compPatchpointInfo;
-            const int             tier0FrameSize = patchpointInfo->TotalFrameSize();
-
-            // Simply add since we know frame size is the SP-to-FP delta of the tier0 method plus
-            // the extra slot pushed by the runtime when we simulate calling the OSR method.
-            //
-            // If we ever support OSR from tier0 methods with localloc, this will need to change.
-            //
-            inst_RV_IV(INS_add, REG_SPBASE, tier0FrameSize, EA_PTRSIZE);
-            inst_RV(INS_pop, REG_EBP, TYP_I_IMPL);
-        }
     }
     else
     {
         noway_assert(doubleAlignOrFramePointerUsed());
+
+        // We don't support OSR for methods that must report an FP in unwind.
+        //
+        assert(!compiler->opts.IsOSR());
 
         /* Tear down the stack frame */
 
@@ -8426,23 +8501,6 @@ void CodeGen::genFnEpilog(BasicBlock* block)
         genPopCalleeSavedRegisters();
 
 #ifdef TARGET_AMD64
-        // Extra OSR adjust to get to where RBP was saved by the tier0 frame.
-        //
-        // Note the other callee saves made in that frame are dead, the current method
-        // will save and restore what it needs.
-        if (compiler->opts.IsOSR())
-        {
-            PatchpointInfo* const patchpointInfo = compiler->info.compPatchpointInfo;
-            const int             tier0FrameSize = patchpointInfo->TotalFrameSize();
-
-            // Use add since we know the SP-to-FP delta of the original method.
-            // We also need to skip over the slot where we pushed RBP.
-            //
-            // If we ever allow the original method to have localloc this will
-            // need to change.
-            inst_RV_IV(INS_add, REG_SPBASE, tier0FrameSize + TARGET_POINTER_SIZE, EA_PTRSIZE);
-        }
-
         assert(!needMovEspEbp); // "mov esp, ebp" is not allowed in AMD64 epilogs
 #else  // !TARGET_AMD64
         if (needMovEspEbp)
