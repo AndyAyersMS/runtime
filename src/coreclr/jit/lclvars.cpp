@@ -7922,6 +7922,15 @@ Compiler::fgWalkResult Compiler::lvaStressLclFldCB(GenTree** pTree, fgWalkData* 
             return WALK_SKIP_SUBTREES;
         }
 
+        // Ignore OSR locals; if in memory, they will live on the
+        // Tier0 frame and so can't have their storage adjusted.
+        //
+        if (pComp->lvaIsOSRLocal(lclNum))
+        {
+            varDsc->lvNoLclFldStress = true;
+            return WALK_SKIP_SUBTREES;
+        }
+
         // Fix for lcl_fld stress mode
         if (varDsc->lvKeepType)
         {
