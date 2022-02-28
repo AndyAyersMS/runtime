@@ -464,6 +464,8 @@ CONFIG_INTEGER(TC_OnStackReplacement, W("TC_OnStackReplacement"), 0)
 CONFIG_INTEGER(TC_OnStackReplacement_InitialCounter, W("TC_OnStackReplacement_InitialCounter"), 1000)
 // Enable partial compilation for Tier0 methods
 CONFIG_INTEGER(TC_PartialCompilation, W("TC_PartialCompilation"), 0)
+// Place patchpoints at backedge sources instead of backedge targets
+CONFIG_INTEGER(TC_PatchpointsAtSources, W("TC_PatchpointsAtSources"), 0)
 #if defined(DEBUG)
 // Randomly sprinkle patchpoints. Value is the likelyhood any given stack-empty point becomes a patchpoint.
 CONFIG_INTEGER(JitRandomOnStackReplacement, W("JitRandomOnStackReplacement"), 0)

@@ -11828,20 +11828,23 @@ void Compiler::impImportBlockCode(BasicBlock* block)
 
                 // Is the start of this block a suitable patchpoint?
                 //
-                if (((block->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0) && (verCurrentState.esStackDepth == 0))
+                if (verCurrentState.esStackDepth == 0)
                 {
-                    // We should have noted this earlier and bailed out of OSR.
-                    //
-                    assert(!block->hasHndIndex());
+                    const BasicBlockFlags flagToCheck = (JitConfig.TC_PatchpointsAtSources() > 0) ? BBF_BACKWARD_JUMP_SOURCE : BBF_BACKWARD_JUMP_TARGET;
 
-                    block->bbFlags |= BBF_PATCHPOINT;
-                    setMethodHasPatchpoint();
+                    if ((block->bbFlags & flagToCheck) != 0)
+                    {
+                        assert(!block->hasHndIndex());
+                        block->bbFlags |= BBF_PATCHPOINT;
+                        setMethodHasPatchpoint();
+                    }
                 }
             }
             else
             {
-                // Should not see backward branch targets w/o backwards branches
-                assert((block->bbFlags & BBF_BACKWARD_JUMP_TARGET) == 0);
+                // Should not see backward branch sources or targets w/o backwards branches
+                //
+                assert((block->bbFlags & (BBF_BACKWARD_JUMP_TARGET | BBF_BACKWARD_JUMP_SOURCE)) == 0);
             }
         }
 
