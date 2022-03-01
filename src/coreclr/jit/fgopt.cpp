@@ -3477,6 +3477,26 @@ bool Compiler::fgOptimizeUncondBranchToSimpleCond(BasicBlock* block, BasicBlock*
         return false;
     }
 
+    // At this point we know target is BBJ_COND.
+    //
+    // Bail out if one of target's successors is also a backedge
+    // target, otherwise we can mess up loop recognition by creating
+    // too many non-loop preds.
+    //
+    assert(target->bbJumpKind == BBJ_COND);
+
+    if ((target->bbNext->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
+    {
+        JITDUMP("Deferring: " FMT_BB " -(ft)-> " FMT_BB " and latter looks like loop top\n");
+        return false;
+    }
+
+    if ((target->bbJumpDest->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
+    {
+        JITDUMP("Deferring: " FMT_BB " -(jump)-> " FMT_BB " and latter looks like loop top\n");
+        return false;
+    }
+
     // See if this block assigns constant or other interesting tree to that same local.
     //
     if (!fgBlockEndFavorsTailDuplication(block, lclNum))
