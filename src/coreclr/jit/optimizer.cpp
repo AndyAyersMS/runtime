@@ -793,38 +793,46 @@ void Compiler::optPrintLoopTable()
 //
 bool Compiler::optPopulateInitInfo(unsigned loopInd, BasicBlock* initBlock, GenTree* init, unsigned iterVar)
 {
-    // Operator should be =
-    if (init->gtOper != GT_ASG)
+    // Look for alternatives
+    //
+    bool foundInit = false;
+
+    if (init->gtOper == GT_ASG)
     {
-        return false;
+        GenTree* const lhs = init->AsOp()->gtOp1;
+        GenTree* const rhs = init->AsOp()->gtOp2;
+
+        if (lhs->gtOper == GT_LCL_VAR && lhs->AsLclVarCommon()->GetLclNum() == iterVar)
+        {
+            // RHS can be constant or local var.
+            // TODO-CQ: CLONE: Add arr length for descending loops.
+            //
+            if (rhs->gtOper == GT_CNS_INT && rhs->TypeGet() == TYP_INT)
+            {
+                optLoopTable[loopInd].lpFlags |= LPFLG_CONST_INIT;
+                optLoopTable[loopInd].lpConstInit = (int)rhs->AsIntCon()->gtIconVal;
+                optLoopTable[loopInd].lpInitBlock = initBlock;
+                foundInit                         = true;
+            }
+            else if (rhs->gtOper == GT_LCL_VAR)
+            {
+                optLoopTable[loopInd].lpFlags |= LPFLG_VAR_INIT;
+                optLoopTable[loopInd].lpVarInit   = rhs->AsLclVarCommon()->GetLclNum();
+                optLoopTable[loopInd].lpInitBlock = initBlock;
+                foundInit                         = true;
+            }
+        }
     }
 
-    GenTree* lhs = init->AsOp()->gtOp1;
-    GenTree* rhs = init->AsOp()->gtOp2;
-    // LHS has to be local and should equal iterVar.
-    if (lhs->gtOper != GT_LCL_VAR || lhs->AsLclVarCommon()->GetLclNum() != iterVar)
-    {
-        return false;
-    }
-
-    // RHS can be constant or local var.
-    // TODO-CQ: CLONE: Add arr length for descending loops.
-    if (rhs->gtOper == GT_CNS_INT && rhs->TypeGet() == TYP_INT)
-    {
-        optLoopTable[loopInd].lpFlags |= LPFLG_CONST_INIT;
-        optLoopTable[loopInd].lpConstInit = (int)rhs->AsIntCon()->gtIconVal;
-        optLoopTable[loopInd].lpInitBlock = initBlock;
-    }
-    else if (rhs->gtOper == GT_LCL_VAR)
+    // No obvious initialization; go with "self init"
+    //
+    if (!foundInit)
     {
         optLoopTable[loopInd].lpFlags |= LPFLG_VAR_INIT;
-        optLoopTable[loopInd].lpVarInit   = rhs->AsLclVarCommon()->GetLclNum();
+        optLoopTable[loopInd].lpVarInit   = iterVar;
         optLoopTable[loopInd].lpInitBlock = initBlock;
     }
-    else
-    {
-        return false;
-    }
+
     return true;
 }
 
