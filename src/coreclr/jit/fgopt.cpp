@@ -3479,22 +3479,25 @@ bool Compiler::fgOptimizeUncondBranchToSimpleCond(BasicBlock* block, BasicBlock*
 
     // At this point we know target is BBJ_COND.
     //
-    // Bail out if one of target's successors is also a backedge
-    // target, otherwise we can mess up loop recognition by creating
-    // too many non-loop preds.
+    // Bail out if OSR, as we can have unusual flow into loops. If one
+    // of target's successors is also a backedge target, this optimization
+    // may mess up loop recognition by creating too many non-loop preds.
     //
-    assert(target->bbJumpKind == BBJ_COND);
-
-    if ((target->bbNext->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
+    if (false && opts.IsOSR())
     {
-        JITDUMP("Deferring: " FMT_BB " -(ft)-> " FMT_BB " and latter looks like loop top\n");
-        return false;
-    }
+        assert(target->bbJumpKind == BBJ_COND);
 
-    if ((target->bbJumpDest->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
-    {
-        JITDUMP("Deferring: " FMT_BB " -(jump)-> " FMT_BB " and latter looks like loop top\n");
-        return false;
+        if ((target->bbNext->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
+        {
+            JITDUMP("Deferring: " FMT_BB " --> " FMT_BB " and latter looks like loop top\n");
+            return false;
+        }
+
+        if ((target->bbJumpDest->bbFlags & BBF_BACKWARD_JUMP_TARGET) != 0)
+        {
+            JITDUMP("Deferring: " FMT_BB " --> " FMT_BB " and latter looks like loop top\n");
+            return false;
+        }
     }
 
     // See if this block assigns constant or other interesting tree to that same local.
