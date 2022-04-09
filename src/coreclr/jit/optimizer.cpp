@@ -4775,6 +4775,37 @@ PhaseStatus Compiler::optInvertLoops()
 }
 
 //-----------------------------------------------------------------------------
+// optOptimizeFlow: simplify flow graph
+//
+// Returns:
+//   suitable phase status
+//
+// Notes:
+//   tries to avoid reordering so it will not perturb flow structures
+//   that we recognize and represent lexically (mainly loops).
+//
+PhaseStatus Compiler::optOptimizeFlow()
+{
+    noway_assert(opts.OptimizationEnabled());
+    noway_assert(fgModified == false);
+
+    bool       madeChanges          = false;
+    const bool allowTailDuplication = true;
+
+    // If we are using profile weights we can change some
+    // switch jumps into conditional test and jump
+    //
+    if (fgIsUsingProfileWeights())
+    {
+        madeChanges = fgOptimizeSwitchJumps();
+    }
+
+    madeChanges |= fgUpdateFlowGraph(allowTailDuplication);
+
+    return madeChanges ? PhaseStatus::MODIFIED_EVERYTHING : PhaseStatus::MODIFIED_NOTHING;
+}
+
+//-----------------------------------------------------------------------------
 // optOptimizeLayout: reorder blocks to reduce cost of control flow
 //
 // Returns:
@@ -4783,14 +4814,11 @@ PhaseStatus Compiler::optInvertLoops()
 PhaseStatus Compiler::optOptimizeLayout()
 {
     noway_assert(opts.OptimizationEnabled());
-    noway_assert(fgModified == false);
 
     bool       madeChanges          = false;
-    const bool allowTailDuplication = true;
+    const bool allowTailDuplication = false;
 
-    madeChanges |= fgUpdateFlowGraph(allowTailDuplication);
     madeChanges |= fgReorderBlocks();
-    madeChanges |= fgUpdateFlowGraph();
 
     // fgReorderBlocks can cause IR changes even if it does not modify
     // the flow graph. It calls gtPrepareCost which can cause operand swapping.
