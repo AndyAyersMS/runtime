@@ -1876,14 +1876,15 @@ void Compiler::compInit(ArenaAllocator*       pAlloc,
         //
         // Initialize all the per-method statistics gathering data structures.
         //
+        m_metrics = new (this, CMK_Generic) Metrics(this);
 
         optLoopsCloned = 0;
 
 #if LOOP_HOIST_STATS
-        m_loopsConsidered             = 0;
+        //m_loopsConsidered             = 0;
         m_curLoopHasHoistedExpression = false;
-        m_loopsWithHoistedExpressions = 0;
-        m_totalHoistedExpressions     = 0;
+        //m_loopsWithHoistedExpressions = 0;
+        //m_totalHoistedExpressions     = 0;
 #endif // LOOP_HOIST_STATS
 #if MEASURE_NODE_SIZE
         genNodeSizeStatsPerFunc.Init();
@@ -5146,6 +5147,23 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     generatePatchpointInfo();
 
     RecordStateAtEndOfCompilation();
+
+    // Report metrics
+    bool hostWantsMetrics = true;
+    if (hostWantsMetrics)
+    {
+        if (m_metrics->TotalCount() != m_metrics->Count())
+        {
+            JITDUMP("*** Metric overflow: have room for %u, need %u\n", m_metrics->Size(), m_metrics->TotalCount());
+        }
+        JITDUMP("*** Reporting %u metrics\n", m_metrics->Count());
+
+        for (unsigned i = 0; i < m_metrics->Count(); i++)
+        {
+            Metric* const metric = m_metrics->GetMetric(i);
+            JITDUMP("%40s: %7.0f\n", metric->Name(), metric->Value());
+        }
+    }
 
 #ifdef FEATURE_TRACELOGGING
     compJitTelemetry.NotifyEndOfCompilation();
@@ -8757,27 +8775,30 @@ void Compiler::AddLoopHoistStats()
 {
     CritSecHolder statsLock(s_loopHoistStatsLock);
 
-    s_loopsConsidered += m_loopsConsidered;
-    s_loopsWithHoistedExpressions += m_loopsWithHoistedExpressions;
-    s_totalHoistedExpressions += m_totalHoistedExpressions;
+    s_loopsConsidered += m_metrics->FindOrCreateMetric("Hoisting-LoopsConsidered")->UintValue();
+    s_loopsWithHoistedExpressions += m_metrics->FindOrCreateMetric("Hoisting-LoopsWithHoistedExpressions")->UintValue();
+    s_totalHoistedExpressions += m_metrics->FindOrCreateMetric("Hosting-TotalHoistedExpressions")->UintValue();
 }
 
 void Compiler::PrintPerMethodLoopHoistStats()
 {
     double pctWithHoisted = 0.0;
-    if (m_loopsConsidered > 0)
+    unsigned int const loopsConsidered = m_metrics->FindOrCreateMetric("Hoisting-LoopsConsidered")->UintValue();
+    unsigned int const loopsWithHoistedExpressions = m_metrics->FindOrCreateMetric("Hoisting-LoopsWithHoistedExpressions")->UintValue();
+    unsigned int const totalHoistedExpressions = m_metrics->FindOrCreateMetric("Hoisting-TotalHoistedExpressions")->UintValue(); 
+    if (loopsConsidered > 0)
     {
-        pctWithHoisted = 100.0 * (double(m_loopsWithHoistedExpressions) / double(m_loopsConsidered));
+        pctWithHoisted = 100.0 * (double(loopsWithHoistedExpressions) / double(loopsConsidered));
     }
     double exprsPerLoopWithExpr = 0.0;
-    if (m_loopsWithHoistedExpressions > 0)
+    if (loopsWithHoistedExpressions > 0)
     {
-        exprsPerLoopWithExpr = double(m_totalHoistedExpressions) / double(m_loopsWithHoistedExpressions);
+        exprsPerLoopWithExpr = double(totalHoistedExpressions) / double(loopsWithHoistedExpressions);
     }
-    printf("Considered %d loops.  Of these, we hoisted expressions out of %d (%5.2f%%).\n", m_loopsConsidered,
-           m_loopsWithHoistedExpressions, pctWithHoisted);
+    printf("Considered %d loops.  Of these, we hoisted expressions out of %d (%5.2f%%).\n", loopsConsidered,
+           loopsWithHoistedExpressions, pctWithHoisted);
     printf("  A total of %d expressions were hoisted, an average of %5.2f per loop-with-hoisted-expr.\n",
-           m_totalHoistedExpressions, exprsPerLoopWithExpr);
+           totalHoistedExpressions, exprsPerLoopWithExpr);
 }
 #endif // LOOP_HOIST_STATS
 
@@ -10325,3 +10346,13 @@ void Compiler::EnregisterStats::Dump(FILE* fout) const
     PRINT_STATS(m_dispatchRetBuf, m_addrExposed);
 }
 #endif // TRACK_ENREG_STATS
+
+Metrics::Metrics(Compiler* comp, unsigned size): m_metrics(nullptr), m_overflowMetric(), m_size(size), m_count(0)
+{
+    m_overflowMetric.SetName("OVERFLOW");
+
+    if (size > 0)
+    {
+        m_metrics = new (comp, CMK_Generic) Metric[size];
+    }
+}

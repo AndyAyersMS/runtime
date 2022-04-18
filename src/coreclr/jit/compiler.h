@@ -44,6 +44,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #include "valuenum.h"
 #include "jittelemetry.h"
 #include "namedintrinsiclist.h"
+#include "metrics.h"
 #ifdef LATE_DISASM
 #include "disasm.h"
 #endif
@@ -84,6 +85,7 @@ struct RelopImplicationInfo; // defined in redundantbranchopts.cpp
 #ifdef DEBUG
 struct IndentStack;
 #endif
+
 
 class Lowering; // defined in lower.h
 
@@ -9922,15 +9924,18 @@ public:
     static bool s_dspMemStats; // Display per-phase memory statistics for every function
 #endif                         // MEASURE_MEM_ALLOC
 
-#if LOOP_HOIST_STATS
-    unsigned m_loopsConsidered;
+    Metrics* m_metrics;
+
+
+    //unsigned m_loopsConsidered;
     bool     m_curLoopHasHoistedExpression;
-    unsigned m_loopsWithHoistedExpressions;
-    unsigned m_totalHoistedExpressions;
+    //unsigned m_loopsWithHoistedExpressions;
+    //unsigned m_totalHoistedExpressions;
 
     void AddLoopHoistStats();
     void PrintPerMethodLoopHoistStats();
 
+#if LOOP_HOIST_STATS
     static CritSecObject s_loopHoistStatsLock; // This lock protects the data structures below.
     static unsigned      s_loopsConsidered;
     static unsigned      s_loopsWithHoistedExpressions;
@@ -11269,8 +11274,8 @@ extern unsigned  totalUnnatLoopOverflows; // # of methods that identified more u
 extern unsigned  iterLoopCount;           // counts the # of loops with an iterator (for like)
 extern unsigned  constIterLoopCount;      // counts the # of loops with a constant iterator (for like)
 extern bool      hasMethodLoops;          // flag to keep track if we already counted a method as having loops
-extern unsigned  loopsThisMethod;         // counts the number of loops in the current method
-extern bool      loopOverflowThisMethod;  // True if we exceeded the max # of loops in the method.
+//extern unsigned  loopsThisMethod;         // counts the number of loops in the current method
+//extern bool      loopOverflowThisMethod;  // True if we exceeded the max # of loops in the method.
 extern Histogram loopCountTable;          // Histogram of loop counts
 extern Histogram loopExitCountTable;      // Histogram of loop exit counts
 

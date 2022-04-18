@@ -28,3 +28,4 @@
 #include "bitvec.h"
 #include "inline.h"
 #include "objectalloc.h"
+#include "metrics.h"

@@ -498,6 +498,15 @@ public:
         uint32_t        sizeInBytes   /* IN: The size of the buffer. Note that this is effectively a
                                           version number for the CORJIT_FLAGS value. */
         ) = 0;
+
+    // returns whether the jit host is interested in jit metrics
+    virtual bool shouldReportMetrics() = 0;
+
+    // report a jit metric
+    virtual void reportMetric(
+        const char* name,
+        double value
+        ) = 0;
 };
 
 /**********************************************************************************/

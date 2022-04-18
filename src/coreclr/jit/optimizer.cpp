@@ -1286,6 +1286,8 @@ bool Compiler::optRecordLoop(
     }
 
     // Record this loop in the table, if there's room.
+    //
+    m_metrics->Increment("LoopCount");
 
     assert(optLoopCount <= BasicBlock::MAX_LOOP_NUM);
     if (optLoopCount == BasicBlock::MAX_LOOP_NUM)
@@ -2556,8 +2558,8 @@ void Compiler::optFindNaturalLoops()
 
 #if COUNT_LOOPS
     hasMethodLoops         = false;
-    loopsThisMethod        = 0;
-    loopOverflowThisMethod = false;
+    // loopsThisMethod        = 0;
+    // loopOverflowThisMethod = false;
 #endif
 
     LoopSearch search(this);
@@ -2591,7 +2593,8 @@ void Compiler::optFindNaturalLoops()
 
                 // Increment total number of loops found
                 totalLoopCount++;
-                loopsThisMethod++;
+
+                // loopsThisMethod++;
 
                 // Keep track of the number of exits
                 loopExitCountTable.record(static_cast<unsigned>(search.GetExitCount()));
@@ -2626,6 +2629,8 @@ NO_MORE_LOOPS:
 #endif // !COUNT_LOOPS
 
 #if COUNT_LOOPS
+    const unsigned loopsThisMethod = m_metrics->FindOrCreate("LoopCouht")->UintValue();
+
     loopCountTable.record(loopsThisMethod);
     if (maxLoopsPerMethod < loopsThisMethod)
     {
@@ -6434,10 +6439,10 @@ void Compiler::optPerformHoistExpr(GenTree* origExpr, BasicBlock* exprBb, unsign
 #if LOOP_HOIST_STATS
     if (!m_curLoopHasHoistedExpression)
     {
-        m_loopsWithHoistedExpressions++;
+        m_metrics->Increment("Hoisting-LoopsConsidered");
         m_curLoopHasHoistedExpression = true;
     }
-    m_totalHoistedExpressions++;
+    m_metrics->Increment("Hoisting-TotalHoistedExpressions");
 #endif // LOOP_HOIST_STATS
 }
 
@@ -6452,6 +6457,7 @@ PhaseStatus Compiler::optHoistLoopCode()
     // If we don't have any loops in the method then take an early out now.
     if (optLoopCount == 0)
     {
+        m_metrics->Increment("Hoisting-NoLoops");
         JITDUMP("\nNo loops; no hoisting\n");
         return PhaseStatus::MODIFIED_NOTHING;
     }
@@ -6571,7 +6577,7 @@ bool Compiler::optHoistLoopNest(unsigned lnum, LoopHoistContext* hoistCtxt)
 #if LOOP_HOIST_STATS
     // Record stats
     m_curLoopHasHoistedExpression = false;
-    m_loopsConsidered++;
+    m_metrics->Increment("Hoisting-LoopsConsidered");
 #endif // LOOP_HOIST_STATS
 
     BasicBlockList*  firstPreHeader     = nullptr;
