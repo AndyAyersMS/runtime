@@ -26,6 +26,7 @@ void Compiler::optInit()
     /* Initialize the # of tracked loops to 0 */
     optLoopCount    = 0;
     optLoopTable    = nullptr;
+    optLoopBitVecTraits = nullptr;
     optCurLoopEpoch = 0;
 
 #ifdef DEBUG
@@ -1305,6 +1306,7 @@ bool Compiler::optRecordLoop(
     {
         assert(loopInd == 0);
         optLoopTable = getAllocator(CMK_LoopOpt).allocate<LoopDsc>(BasicBlock::MAX_LOOP_NUM);
+        optLoopBitVecTraits = new (CMK_LoopOot)BitVecTraits(lvaCount, this);
 
         NewLoopEpoch();
     }
@@ -1355,7 +1357,7 @@ bool Compiler::optRecordLoop(
     optLoopTable[loopInd].lpChild   = BasicBlock::NOT_IN_LOOP;
     optLoopTable[loopInd].lpSibling = BasicBlock::NOT_IN_LOOP;
 
-    optLoopTable[loopInd].lpAsgVars = AllVarSetOps::UninitVal();
+    optLoopTable[loopInd].lpAsgVars = VarSetOps::UninitVal();
 
     optLoopTable[loopInd].lpFlags = LPFLG_EMPTY;
 
@@ -5045,6 +5047,7 @@ void Compiler::optResetLoopInfo()
     // We could zero it out (possibly only in DEBUG) to be paranoid, but there's no reason to
     // force it to be re-allocated.
     optLoopTable = nullptr;
+    optLoopBitVecTraits = nullptr;
 
     for (BasicBlock* const block : Blocks())
     {
@@ -5726,9 +5729,9 @@ Compiler::fgWalkResult Compiler::optIsVarAssgCB(GenTree** pTree, fgWalkData* dat
     {
         const unsigned lclNum = lcl->GetLclNum();
 
-        if (lclNum < lclMAX_ALLSET_TRACKED)
+        if (lclNum < data->compiler->lvaTrackedCount)
         {
-            AllVarSetOps::AddElemD(data->compiler, desc->ivaMaskVal, lclNum);
+            VarSetOps::AddElemD(data->compiler, desc->ivaMaskVal, lclNum);
         }
         else
         {
@@ -5796,7 +5799,7 @@ bool Compiler::optIsVarAssigned(BasicBlock* beg, BasicBlock* end, GenTree* skip,
 #endif
     desc.ivaVar      = var;
     desc.ivaMaskCall = CALLINT_NONE;
-    AllVarSetOps::AssignNoCopy(this, desc.ivaMaskVal, AllVarSetOps::MakeEmpty(this));
+    VarSetOps::AssignNoCopy(this, desc.ivaMaskVal, VarSetOps::MakeEmpty(this));
 
     for (;;)
     {
@@ -5849,9 +5852,9 @@ bool Compiler::optIsVarAssgLoop(unsigned lnum, unsigned var)
         return true;
     }
 
-    if (var < lclMAX_ALLSET_TRACKED)
+    if (var < lvaTrackedCount)
     {
-        ALLVARSET_TP vs(AllVarSetOps::MakeSingleton(this, var));
+        VARSET_TP vs(VarSetOps::MakeSingleton(this, var));
 
         // If local is a promoted field, also check for modifications to parent.
         //
@@ -5861,10 +5864,10 @@ bool Compiler::optIsVarAssgLoop(unsigned lnum, unsigned var)
             assert(!lvaGetDesc(parentVar)->IsAddressExposed());
             assert(lvaGetDesc(parentVar)->lvPromoted);
 
-            if (parentVar < lclMAX_ALLSET_TRACKED)
+            if (parentVar < lvaTrackedCount)
             {
                 JITDUMP("optIsVarAssgLoop: V%02u promoted, also checking V%02u\n", var, parentVar);
-                AllVarSetOps::AddElemD(this, vs, parentVar);
+                VarSetOps::AddElemD(this, vs, parentVar);
             }
             else
             {
@@ -5904,7 +5907,7 @@ bool Compiler::optIsVarAssgLoop(unsigned lnum, unsigned var)
 //     Uses a cache to avoid repeatedly scanning the loop blocks. However this
 //     cache never invalidates and so this method must be used with care.
 //
-bool Compiler::optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefKinds inds)
+bool Compiler::optIsSetAssgLoop(unsigned lnum, VARSET_VALARG_TP vars, varRefKinds inds)
 {
     noway_assert(lnum < optLoopCount);
     LoopDsc* loop = &optLoopTable[lnum];
@@ -5922,7 +5925,7 @@ bool Compiler::optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefK
 #ifdef DEBUG
         desc.ivaSelf = &desc;
 #endif
-        AllVarSetOps::AssignNoCopy(this, desc.ivaMaskVal, AllVarSetOps::MakeEmpty(this));
+        VarSetOps::AssignNoCopy(this, desc.ivaMaskVal, VarSetOps::MakeEmpty(this));
         desc.ivaMaskInd        = VR_NONE;
         desc.ivaMaskCall       = CALLINT_NONE;
         desc.ivaMaskIncomplete = false;
@@ -5942,7 +5945,7 @@ bool Compiler::optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefK
             }
         }
 
-        AllVarSetOps::Assign(this, loop->lpAsgVars, desc.ivaMaskVal);
+        VarSetOps::Assign(this, loop->lpAsgVars, desc.ivaMaskVal);
         loop->lpAsgInds = desc.ivaMaskInd;
         loop->lpAsgCall = desc.ivaMaskCall;
 
@@ -5953,7 +5956,7 @@ bool Compiler::optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefK
 
     // Now we can finally test the caller's mask against the loop's
     //
-    if (!AllVarSetOps::IsEmptyIntersection(this, loop->lpAsgVars, vars) || (loop->lpAsgInds & inds))
+    if (!VarSetOps::IsEmptyIntersection(this, loop->lpAsgVars, vars) || (loop->lpAsgInds & inds))
     {
         return true;
     }
@@ -6012,6 +6015,30 @@ bool Compiler::optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefK
 
         default:
             noway_assert(!"Unexpected lpAsgCall value");
+    }
+
+    return false;
+
+    // If caller is worried about possible indirect effects, check
+    // what we know about the calls in the loop.
+    //
+    if (inds != 0)
+    {
+        switch (loop->lpAsgCall)
+        {
+            case CALLINT_ALL:
+                return true;
+            case CALLINT_REF_INDIRS:
+                return (inds & VR_IND_REF) != 0;
+            case CALLINT_SCL_INDIRS:
+                return (inds & VR_IND_SCL) != 0;
+            case CALLINT_ALL_INDIRS:
+                return (inds & (VR_IND_REF | VR_IND_SCL)) != 0;
+            case CALLINT_NONE:
+                return false;
+            default:
+                noway_assert(!"Unexpected lpAsgCall value");
+        }
     }
 
     return false;

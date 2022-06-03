@@ -1713,7 +1713,7 @@ enum LoopFlags : unsigned short
     LPFLG_REMOVED     = 0x1000, // has been removed from the loop table (unrolled or optimized away)
     LPFLG_DONT_UNROLL = 0x2000, // do not unroll this loop
     LPFLG_ASGVARS_YES = 0x4000, // "lpAsgVars" has been computed
-    LPFLG_ASGVARS_INC = 0x8000, // "lpAsgVars" is incomplete -- vars beyond those representable in an AllVarSet
+    LPFLG_ASGVARS_INC = 0x8000, // "lpAsgVars" is incomplete -- vars beyond those representable in a VarSet
                                 // type are assigned to.
 };
 
@@ -6054,7 +6054,8 @@ public:
         BasicBlock* lpExit;   // if a single exit loop this is the EXIT (in most cases BOTTOM)
 
         callInterf   lpAsgCall;     // "callInterf" for calls in the loop
-        ALLVARSET_TP lpAsgVars;     // set of vars assigned within the loop (all vars, not just tracked)
+        BitVecTraits lpAsgVarsTraits; // traits for lpAsgVars
+        BitVec       lpAsgVars;     // set of vars assigned within the loop
         varRefKinds  lpAsgInds : 8; // set of inds modified within the loop
 
         LoopFlags lpFlags;
@@ -6257,6 +6258,7 @@ public:
     LoopDsc*      optLoopTable;        // loop descriptor table
     unsigned char optLoopCount;        // number of tracked loops
     unsigned char loopAlignCandidates; // number of loops identified for alignment
+    BitVecTraits* opLoopBitVecTraits;  // bit vector traits for loop analysis
 
     // Every time we rebuild the loop table, we increase the global "loop epoch". Any loop indices or
     // loop table pointers from the previous epoch are invalid.
@@ -6406,7 +6408,7 @@ protected:
 
     bool optIsVarAssgLoop(unsigned lnum, unsigned var);
 
-    bool optIsSetAssgLoop(unsigned lnum, ALLVARSET_VALARG_TP vars, varRefKinds inds = VR_NONE);
+    bool optIsSetAssgLoop(unsigned lnum, BitVec& vars, varRefKinds inds = VR_NONE);
 
     bool optNarrowTree(GenTree* tree, var_types srct, var_types dstt, ValueNumPair vnpNarrow, bool doit);
 
@@ -6651,7 +6653,7 @@ protected:
     struct isVarAssgDsc
     {
         GenTree*     ivaSkip;
-        ALLVARSET_TP ivaMaskVal; // Set of variables assigned to.  This is a set of all vars, not tracked vars.
+        VARSET_TP    ivaMaskVal; // Set of variables assigned to
 #ifdef DEBUG
         void* ivaSelf;
 #endif
