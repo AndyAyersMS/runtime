@@ -585,6 +585,123 @@ PhaseStatus Compiler::fgRemoveEmptyTry()
 }
 
 //------------------------------------------------------------------------
+// fgRemoveUnneededTry: Optimize try/catch where the try cannot throw
+//
+// Returns:
+//    PhaseStatus indicating what, if anything, was changed.
+//
+PhaseStatus Compiler::fgRemoveUnneededTry()
+{
+    JITDUMP("\n*************** In fgRemoveUnneededTry()\n");
+
+#if defined(FEATURE_EH_FUNCLETS)
+    // We need to do this transformation before funclets are created.
+    assert(!fgFuncletsCreated);
+#endif // FEATURE_EH_FUNCLETS
+
+    bool enableRemoveUnneededTry = true;
+
+#ifdef DEBUG
+    // Allow override to enable/disable.
+    enableRemoveUnneededTry = (JitConfig.JitEnableRemoveUnneededTry() == 1);
+#endif // DEBUG
+
+    if (!enableRemoveUnneededTry)
+    {
+        JITDUMP("Unneeded try removal disabled.\n");
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
+    if (compHndBBtabCount == 0)
+    {
+        JITDUMP("No EH in this method, nothing to remove.\n");
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
+    if (opts.MinOpts())
+    {
+        JITDUMP("Method compiled with minOpts, no removal.\n");
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
+    if (opts.compDbgCode)
+    {
+        JITDUMP("Method compiled with debug codegen, no removal.\n");
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("\n*************** Before fgRemoveUnneededTry()\n");
+        fgDispBasicBlocks();
+        fgDispHandlerTab();
+        printf("\n");
+    }
+#endif // DEBUG
+
+    // Look for try-catches where the try has no statements that have GTF_EXCEPT.
+    //
+    unsigned unneededCount = 0;
+    unsigned XTnum      = 0;
+    while (XTnum < compHndBBtabCount)
+    {
+        EHblkDsc* const HBtab = &compHndBBtab[XTnum];
+
+        // Check if this is a try/catch.
+        //
+        if (!HBtab->HasCatchHandler())
+        {
+            JITDUMP("EH#%u is not a try-catch; skipping.\n", XTnum);
+            XTnum++;
+            continue;
+        }
+
+        // Examine the try region
+        BasicBlock* const firstTryBlock     = HBtab->ebdTryBeg;
+        BasicBlock* const lastTryBlock      = HBtab->ebdTryLast;
+        bool canThrow = false;
+
+        for (BasicBlock* const block : BasicBlockRangeList(firstTryBlock, lastTryBlock))
+        {
+            for (Statement* const stmt : block->Statements())
+            {
+                GenTree* const rootNode = stmt->GetRootNode();
+                if ((rootNode->gtFlags & GTF_EXCEPT) != 0)
+                {
+                    JITDUMP("EH#%u: " FMT_BB " " FMT_STMT " may throw\n", XTnum, block->bbNum, stmt->GetID());
+                    canThrow = true;
+                    break;
+                }
+            }
+
+            if (canThrow)
+            {
+                break;
+            }
+        }
+
+        XTnum++;
+
+        if (canThrow)
+        {
+            continue;
+        }
+
+        printf("* EH#%u: " FMT_BB "..." FMT_BB " try is removable in #%u %s\n", XTnum - 1, firstTryBlock->bbNum, lastTryBlock->bbNum, info.compMethodSuperPMIIndex, info.compFullName);
+
+        unneededCount++;
+    }
+
+    if (unneededCount > 0)
+    {
+        printf("*** %u removable trys in #%u %s \n", unneededCount, info.compMethodSuperPMIIndex, info.compFullName);
+    }
+
+    return PhaseStatus::MODIFIED_NOTHING;
+}
+
+//------------------------------------------------------------------------
 // fgCloneFinally: Optimize normal exit path from a try/finally
 //
 // Returns:

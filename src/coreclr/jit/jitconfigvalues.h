@@ -496,6 +496,7 @@ CONFIG_INTEGER(JitEECallTimingInfo, W("JitEECallTimingInfo"), 0)
 #if defined(DEBUG)
 CONFIG_INTEGER(JitEnableFinallyCloning, W("JitEnableFinallyCloning"), 1)
 CONFIG_INTEGER(JitEnableRemoveEmptyTry, W("JitEnableRemoveEmptyTry"), 1)
+CONFIG_INTEGER(JitEnableRemoveUnneededTry, W("JitEnableRemoveUnnededTry"), 1)
 #endif // DEBUG
 
 // Overall master enable for Guarded Devirtualization.

@@ -4760,6 +4760,10 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     };
     DoPhase(this, PHASE_MORPH_GLOBAL, morphGlobalPhase);
 
+    // Remove unneeded try/catches
+    //
+    DoPhase(this, PHASE_UNNEEDED_TRY, &Compiler::fgRemoveUnneededTry);
+
     // GS security checks for unsafe buffers
     //
     auto gsPhase = [this]() {
