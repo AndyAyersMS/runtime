@@ -2629,7 +2629,7 @@ NO_MORE_LOOPS:
 #endif // !COUNT_LOOPS
 
 #if COUNT_LOOPS
-    const unsigned loopsThisMethod = m_metrics->FindOrCreate("LoopCouht")->UintValue();
+    const unsigned loopsThisMethod = m_metrics->FindOrCreate("LoopCount")->UintValue();
 
     loopCountTable.record(loopsThisMethod);
     if (maxLoopsPerMethod < loopsThisMethod)

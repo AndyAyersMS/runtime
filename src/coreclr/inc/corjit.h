@@ -499,13 +499,11 @@ public:
                                           version number for the CORJIT_FLAGS value. */
         ) = 0;
 
-    // returns whether the jit host is interested in jit metrics
-    virtual bool shouldReportMetrics() = 0;
-
-    // report a jit metric
-    virtual void reportMetric(
+    // Record a jit metric.
+    //
+    virtual void recordJitMetric(
         const char* name,
-        double value
+        int64_t value
         ) = 0;
 };
 

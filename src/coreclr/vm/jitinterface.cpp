@@ -10433,6 +10433,12 @@ uint32_t CEEInfo::getJitFlags(CORJIT_FLAGS* jitFlags, uint32_t sizeInBytes)
 }
 
 /*********************************************************************/
+void CEEInfo::reportJitMetric(const char* name, int64_t value)
+{
+    // Runtime ignores all metrics
+}
+
+/*********************************************************************/
 #if !defined(TARGET_UNIX)
 
 struct RunWithErrorTrapFilterParam

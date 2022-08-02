@@ -20,11 +20,11 @@ class Compiler;
 //
 // For metrics that are set once and/or read/written rarely:
 //
-//    compiler->m_metrics->Set("mymetric", v);
+//    compiler->m_metrics->Set("my_metric", v);
 //
 // For metrics that are set frequently:
 // 
-//    Metric* const m = compiler->m_metrics->FindOrCreate("mymetric");
+//    Metric* const m = compiler->m_metrics->FindOrCreate("my_metric");
 //    m->Increment();
 //
 // To Externalize
@@ -42,7 +42,7 @@ class Metric
 private:
 
     const char* m_name;
-    double      m_value;
+    int64_t     m_value;
 
     void SetName(const char* name)
     {
@@ -59,10 +59,6 @@ public:
     {
         return m_name;
     }
-    double Value() const
-    {
-        return m_value;
-    }
     int IntValue() const
     {
         return (int)m_value;
@@ -71,17 +67,17 @@ public:
     {
         return (unsigned int)m_value;
     }
-    void Set(double d)
+    void Set(int64_t v)
     {
-        m_value = d;
+        m_value = v;
     }
     void Reset()
     {
         m_value = 0.0;
     }
-    void Add(double d)
+    void Add(int64_t delta)
     {
-        m_value += d;
+        m_value += delta;
     }
 };
 
@@ -119,34 +115,24 @@ public:
         return &m_overflowMetric;
     }
 
-    Metric* GetMetric(unsigned i)
-    {
-        if (i < Count())
-        {
-            return &m_metrics[i];
-        }
-
-        return &m_overflowMetric;
-    }
-
-    void Set(const char* name, double value)
+    void Set(const char* name, int64_t value)
     {
         FindOrCreateMetric(name)->Add(value);
     }
 
-    void Add(const char* name, double value)
+    void Add(const char* name, int64_t value)
     {
          FindOrCreateMetric(name)->Add(value);
     }
 
     void Increment(const char* name)
     {
-        Add(name, 1.0);
+        Add(name, 1);
     }
 
     void Decrement(const char* name)
     {
-        Add(name, -1.0);
+        Add(name, -1);
     }
 
     unsigned Count() const
@@ -164,7 +150,5 @@ public:
         return m_count;
     }
 };
-
-
 
 #endif // _METRIC_H_

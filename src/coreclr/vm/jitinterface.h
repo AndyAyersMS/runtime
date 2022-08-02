@@ -672,6 +672,8 @@ public:
 
     uint32_t getExpectedTargetArchitecture() override final;
 
+    void recordJitMetric(const char* name, int64_t value) override final;
+
     void ResetForJitRetry()
     {
         CONTRACTL {
