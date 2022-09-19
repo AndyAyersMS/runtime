@@ -1213,7 +1213,15 @@ public:
 #endif // DEBUG
 #endif // 0
 
-        BitVecOps::IntersectionD(m_comp->cseLivenessTraits, block->bbCseIn, predBlock->bbCseOut);
+        // If predecessor's "extra bit" is set, the predecessor has not yet been visited, 
+        // so ignore its out state.
+        //
+        unsigned const extraBit = (m_comp->optCSECandidateCount * 2);
+
+        if (!BitVecOps::IsMember(m_comp->cseLivenessTraits, predBlock->bbCseOut, extraBit))
+        {
+            BitVecOps::IntersectionD(m_comp->cseLivenessTraits, block->bbCseIn, predBlock->bbCseOut);
+        }
 
 #if 0
 #ifdef DEBUG
