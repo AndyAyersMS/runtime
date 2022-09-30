@@ -721,6 +721,8 @@ struct JumpThreadInfo
         , m_numTruePreds(0)
         , m_numFalsePreds(0)
         , m_ambiguousVN(ValueNumStore::NoVN)
+        , m_blockCodeSize(0)
+        , m_blockHasSideEffect(false)
     {
     }
 
@@ -750,22 +752,31 @@ struct JumpThreadInfo
     int m_numFalsePreds;
     // Refined VN for ambiguous cases
     ValueNum m_ambiguousVN;
+    // Amount of code in block (in costSz units)
+    unsigned m_blockCodeSize;
+    // Does block have any side effects?
+    bool m_blockHasSideEffect;
 };
 
 //------------------------------------------------------------------------
 // optJumpThreadCheck: see if block is suitable for jump threading.
 //
 // Arguments:
-//   block - block in question
+//   jti - jump thread info for block in question
 //   domBlock - dom block used in inferencing (if any)
 //
-bool Compiler::optJumpThreadCheck(BasicBlock* const block, BasicBlock* const domBlock)
+// Returns:
+//   True if jump threading is viable.
+//
+bool Compiler::optJumpThreadCheck(JumpThreadInfo& jti, BasicBlock* const domBlock)
 {
     if (fgCurBBEpochSize != (fgBBNumMax + 1))
     {
         JITDUMP("Looks like we've added a new block (e.g. during optLoopHoist) since last renumber, so no threading\n");
         return false;
     }
+
+    BasicBlock* const block = jti.m_block;
 
     // If the block is the first block of try-region, then skip jump threading
     if (bbIsTryBeg(block))
@@ -807,19 +818,16 @@ bool Compiler::optJumpThreadCheck(BasicBlock* const block, BasicBlock* const dom
         }
     }
 
-    // Since flow is going to bypass block, make sure there
-    // is nothing in block that can cause a side effect.
+    // Since flow is going to bypass block, keep track of possible
+    // side effecting code in the block; we may need to duplicate
+    // this code.
     //
     // Note we neglect PHI assignments. This reflects a general lack of
     // SSA update abilities in the jit. We really should update any uses
     // of PHIs defined here with the corresponding PHI input operand.
     //
-    // TODO: if block has side effects, for those predecessors that are
-    // favorable (ones that don't reach block via a critical edge), consider
-    // duplicating block's IR into the predecessor. This is the jump threading
-    // analog of the optimization we encourage via fgOptimizeUncondBranchToSimpleCond.
-    //
-    Statement* const lastStmt = block->lastStmt();
+    const bool       allowSideEffects = true;
+    Statement* const lastStmt         = block->lastStmt();
 
     for (Statement* const stmt : block->NonPhiStatements())
     {
@@ -850,7 +858,15 @@ bool Compiler::optJumpThreadCheck(BasicBlock* const block, BasicBlock* const dom
                 }
             }
 
-            JITDUMP(FMT_BB " has side effects; no threading\n", block->bbNum);
+            if (allowSideEffects)
+            {
+                JITDUMP(FMT_BB " has side effects\n", block->bbNum);
+                jti.m_blockHasSideEffect = true;
+                jti.m_blockCodeSize += stmt->GetCostSz();
+                continue;
+            }
+
+            JITDUMP(FMT_BB " has side effects; no jump threading\n", block->bbNum);
             return false;
         }
     }
@@ -940,7 +956,8 @@ bool Compiler::optJumpThreadDom(BasicBlock* const block, BasicBlock* const domBl
     JITDUMP("Both successors of %sdom " FMT_BB " reach " FMT_BB " -- attempting jump threading\n", isIDom ? "i" : "",
             domBlock->bbNum, block->bbNum);
 
-    const bool check = optJumpThreadCheck(block, domBlock);
+    JumpThreadInfo jti(this, block);
+    const bool     check = optJumpThreadCheck(jti, domBlock);
     if (!check)
     {
         return false;
@@ -1006,7 +1023,6 @@ bool Compiler::optJumpThreadDom(BasicBlock* const block, BasicBlock* const domBl
     //
     BasicBlock* const domTrueSuccessor  = domIsSameRelop ? domBlock->bbJumpDest : domBlock->bbNext;
     BasicBlock* const domFalseSuccessor = domIsSameRelop ? domBlock->bbNext : domBlock->bbJumpDest;
-    JumpThreadInfo    jti(this, block);
 
     for (BasicBlock* const predBlock : block->PredBlocks())
     {
@@ -1103,7 +1119,8 @@ bool Compiler::optJumpThreadPhi(BasicBlock* block, GenTree* tree, ValueNum treeN
 {
     // First see if block is eligible for threading.
     //
-    const bool check = optJumpThreadCheck(block, /* domBlock*/ nullptr);
+    JumpThreadInfo jti(this, block);
+    const bool     check = optJumpThreadCheck(jti, /* domBlock*/ nullptr);
     if (!check)
     {
         return false;
@@ -1196,7 +1213,6 @@ bool Compiler::optJumpThreadPhi(BasicBlock* block, GenTree* tree, ValueNum treeN
     // At least one relop input depends on a local phi. Walk pred by pred and
     // see if the relop value is correlated with the pred.
     //
-    JumpThreadInfo jti(this, block);
     for (BasicBlock* const predBlock : block->PredBlocks())
     {
         jti.m_numPreds++;
@@ -1445,11 +1461,205 @@ bool Compiler::optJumpThreadCore(JumpThreadInfo& jti)
 
     assert(!(truePredsWillReuseBlock && falsePredsWillReuseBlock));
 
+    // If block has side effects, decide if we are willing and able to pay the cost
+    // of duplicating the code in various preds in order to jump thread.
+    //
+    if (jti.m_blockHasSideEffect)
+    {
+        // We'll need one copy for each pred that will bypass block.
+        //
+        unsigned const numberOfDuplicates =
+            (truePredsWillReuseBlock ? 0 : jti.m_numTruePreds) + (falsePredsWillReuseBlock ? 0 : jti.m_numFalsePreds);
+        unsigned const dupCostSz = numberOfDuplicates * jti.m_blockCodeSize;
+
+        printf("JTI -- " FMT_BB " has side effect (%u dups @ cost %u = %u total cost) in %u %s (0x%08x)\n",
+               jti.m_block->bbNum, numberOfDuplicates, jti.m_blockCodeSize, dupCostSz, info.compMethodSuperPMIIndex,
+               info.compFullName, info.compMethodHash());
+
+        // Be conservative for now
+        //
+        const unsigned maxDupCostSz = 5;
+        if (dupCostSz > maxDupCostSz)
+        {
+            JITDUMP(FMT_BB " has side effects and dup cost %u exceeds %u\n", jti.m_block->bbNum, dupCostSz,
+                    maxDupCostSz);
+            return false;
+        }
+
+        // Even if we're willing to duplicate code, if any pred that needs a dup is not BBJ_ALWAYS,
+        // we can't safely duplicate code into that pred, as it may not always have transferred control
+        // to jti.m_block.
+        //
+        // If we pre-split all the critical edges we won't have this problem. To reduce the
+        // total number of preds we could also factor this edge split into a preheader of sorts,
+        // but we wouldn't necessarily know up front which preds should share a preheader.
+        //
+        bool canSafelyDup = true;
+
+        for (BasicBlock* const predBlock : jti.m_block->PredBlocks())
+        {
+            // If this was an ambiguous pred, skip.
+            //
+            if (BlockSetOps::IsMember(this, jti.m_ambiguousPreds, predBlock->bbNum))
+            {
+                continue;
+            }
+
+            const bool isTruePred = BlockSetOps::IsMember(this, jti.m_truePreds, predBlock->bbNum);
+            const bool needsDup =
+                (isTruePred && !truePredsWillReuseBlock) || (!isTruePred && !falsePredsWillReuseBlock);
+
+            if (needsDup && (predBlock->bbJumpKind != BBJ_ALWAYS))
+            {
+                // Fall through pred should never need duplicated code.
+                //
+                assert(predBlock != jti.m_fallThroughPred);
+                assert(predBlock->bbJumpKind != BBJ_NONE);
+                JITDUMP("%s pred " FMT_BB " needs duplicated code but is not BBJ_ALWAYS\n",
+                        isTruePred ? "True" : "False", predBlock->bbNum);
+                canSafelyDup = false;
+            }
+        }
+
+        if (!canSafelyDup)
+        {
+            JITDUMP("unable to safely duplicate code\n");
+            return false;
+        }
+
+        // Even if we're willing to pay the duplication costs and can safely relocate code, we may not be able to
+        // properly repair SSA.
+        //
+        // There are two aspects to this -- inputs and outputs.
+        //
+        // On the input side, if the code we plan to dup consumes local PHI defs, we can likely rewire to
+        // use the appropriate pred's PHI input (if we can find it).
+        //
+        // If those local PHIs are used downstream we already wave our hands and say not to worry. We won't destroy
+        // the local PHI IR (though the IR may no longer appear up in any block's statement list) so any downstrem
+        // phase that walks the SSA graph will be able to pretend we never altered flow and hopefully won't
+        // make any bad decisions.
+        //
+        // On the output side, if this block creates any new non-PHI SSA defs, and those defs live past the block,
+        // we have a problem. We are going to duplicate these defs, which means introducing new SSA defs for the locals
+        // in some preds. Once we do this we should incrementally rewire all the uses to the appropriate def, and
+        // introduce
+        // phis as needed downstream (rewiring more uses as needed). We're not able to do this.
+        //
+        // We can perhaps handle the case where the local def is consumed locally; then no phis need to be created
+        // and no remote uses need updating. But we have no idea where the uses are. We have a ref count and a last
+        // use indicator.
+        //
+        // Walk the non-PHI statements, looking for SSA uses and defs.
+        //
+        // If we find an SSA use that comes from a local PHI, add an entry to the substitution map for each pred needing
+        // a dup, to determine the proper SSA number when we dup that use into that pred.
+        //
+        // If we find an SSA def, try and prove that def does not live past block. If so, the def and the local uses
+        // will also need remapping....
+
+        class OptJumpThreadDuplicationPrepVisitor final : public GenTreeVisitor<OptJumpThreadDuplicationPrepVisitor>
+        {
+        private:
+            BasicBlock* const m_block;
+            bool              m_localDef;
+
+        public:
+            enum
+            {
+                DoPreOrder    = true,
+                DoLclVarsOnly = true,
+            };
+
+            OptJumpThreadDuplicationPrepVisitor(Compiler* compiler, BasicBlock* block)
+                : GenTreeVisitor<OptJumpThreadDuplicationPrepVisitor>(compiler), m_block(block), m_localDef(false)
+            {
+            }
+
+            Compiler::fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
+            {
+                // Is this an SSA local?
+                //
+                GenTreeLclVarCommon* const lclNode = (*use)->AsLclVarCommon();
+
+                if (!lclNode->HasSsaName())
+                {
+                    // No. We can duplicate it without any added complications.
+                    //
+                    return fgWalkResult::WALK_CONTINUE;
+                }
+
+                LclVarDsc* const lclVarDsc = m_compiler->lvaGetDesc(lclNode);
+                bool const       isDef     = (user != nullptr) && user->OperIs(GT_ASG) && (user->gtGetOp1() == lclNode);
+
+                if (isDef)
+                {
+                    m_localDef = true;
+
+                    // We have a local def, and would really like to find the last use.
+                    // (note this local/ssa num and clear flags for it below)
+                    //
+                    // Note the def may also be a use.
+                    //
+                    if ((lclNode->gtFlags & GTF_VAR_USEASG) == 0)
+                    {
+                        // Pure def
+                        //
+                        JITDUMP("Ssa def of V%02u:%u in [%06u]\n", lclNode->GetLclNum(), m_compiler->dspTreeID(lclNode),
+                                lclNode->GetSsaNum());
+                        return fgWalkResult::WALK_CONTINUE;
+                    }
+                    else
+                    {
+                        // Use then def
+                        //
+                        JITDUMP("Ssa (use-)def of V%02u:%u in [%06u]\n", lclNode->GetLclNum(),
+                                m_compiler->dspTreeID(lclNode), m_compiler->GetSsaNumForLocalVarDef(lclNode));
+                    }
+                }
+
+                // SSA use. Is this from a local PHI?
+                //
+                LclSsaVarDsc* const ssaDesc = lclVarDsc->GetPerSsaData(lclNode->GetSsaNum());
+
+                if (ssaDesc->GetBlock() == m_block)
+                {
+                    GenTreeOp* const ssaDefTree = ssaDesc->GetAssignment();
+
+                    if (ssaDefTree->gtOp2->OperGet() == GT_PHI)
+                    {
+                        // add "mapping" from lcl/ssa num to each dup pred's lcl/ssa num
+                        JITDUMP("Local ssa use of phi V%02u in [%06u]\n", lclNode->GetLclNum(),
+                                m_compiler->dspTreeID(lclNode));
+                    }
+                    else
+                    {
+                        // local use from non-phi, might be last use!
+                        JITDUMP("Local ssa use of def V%02u in [%06u] %s\n", lclNode->GetLclNum(),
+                                m_compiler->dspTreeID(lclNode), lclNode->HasLastUse() ? " ** last use **" : "");
+                    }
+                }
+                return fgWalkResult::WALK_CONTINUE;
+            }
+        };
+
+        OptJumpThreadDuplicationPrepVisitor dv(this, jti.m_block);
+        for (Statement* const stmt : jti.m_block->NonPhiStatements())
+        {
+            dv.WalkTree(stmt->GetRootNodePointer(), nullptr);
+        }
+
+        // If there is no local def then cloning is "easy"
+
+        return false;
+    }
+
     // We should be good to go
     //
     JITDUMP("Optimizing via jump threading\n");
 
     // Fix block, if we're reusing it.
+    // (todo: preserve side effects)
     //
     if (truePredsWillReuseBlock)
     {
