@@ -443,7 +443,10 @@ CEEInfo::ConvToJitSig(
 
         // Skip number of type arguments
         if (sigRet->callConv & IMAGE_CEE_CS_CALLCONV_GENERIC)
+        {
           IfFailThrow(sig.GetData(NULL));
+          _ASSERTE(sigRet->sigInst.methInstCount + sigRet->sigInst.classInstCount != 0);
+        }
 
         uint32_t numArgs;
         IfFailThrow(sig.GetData(&numArgs));
@@ -7408,6 +7411,7 @@ void
 getMethodInfoHelper(
     MethodDesc *           ftn,
     CORINFO_METHOD_HANDLE  ftnHnd,
+    CORINFO_CONTEXT_HANDLE exactContext,
     COR_ILMETHOD_DECODER * header,
     CORINFO_METHOD_INFO *  methInfo)
 {
@@ -7519,7 +7523,19 @@ getMethodInfoHelper(
     DWORD           cbSig = 0;
     ftn->GetSig(&pSig, &cbSig);
 
-    SigTypeContext context(ftn);
+    SigTypeContext context;
+    
+    // call ~~ CEEInfo::GetTypeContext ~~ 
+    //
+    if ((exactContext == NULL) || (exactContext == METHOD_BEING_COMPILED_CONTEXT()) || (((size_t) exactContext & CORINFO_CONTEXTFLAGS_MASK) == CORINFO_CONTEXTFLAGS_METHOD))
+    {
+        SigTypeContext::InitTypeContext(ftn, &context);
+    }
+    else 
+    {
+        TypeHandle th = TypeHandle((CORINFO_CLASS_HANDLE) ((size_t)exactContext & ~CORINFO_CONTEXTFLAGS_MASK));
+        SigTypeContext::InitTypeContext(th, &context);
+    }
 
     /* Fetch the method signature */
     // Type parameters in the signature should be instantiated according to the
@@ -7559,7 +7575,8 @@ getMethodInfoHelper(
 bool
 CEEInfo::getMethodInfo(
     CORINFO_METHOD_HANDLE ftnHnd,
-    CORINFO_METHOD_INFO * methInfo)
+    CORINFO_METHOD_INFO * methInfo,
+    CORINFO_CONTEXT_HANDLE context)
 {
     CONTRACTL {
         THROWS;
@@ -7584,13 +7601,13 @@ CEEInfo::getMethodInfo(
 
         if (ftn->IsDynamicMethod())
         {
-            getMethodInfoHelper(ftn, ftnHnd, NULL, methInfo);
+            getMethodInfoHelper(ftn, ftnHnd, context, NULL, methInfo);
         }
         else
         {
             COR_ILMETHOD_DECODER header(ftn->GetILHeader(TRUE), ftn->GetMDImport(), NULL);
 
-            getMethodInfoHelper(ftn, ftnHnd, &header, methInfo);
+            getMethodInfoHelper(ftn, ftnHnd, context, &header, methInfo);
         }
 
         LOG((LF_JIT, LL_INFO100000, "Getting method info (possible inline) %s::%s%s\n",
@@ -12783,7 +12800,7 @@ PCODE UnsafeJitFunction(PrepareCodeConfig* config,
     CORINFO_METHOD_HANDLE ftnHnd = (CORINFO_METHOD_HANDLE)ftn;
     CORINFO_METHOD_INFO methodInfo;
 
-    getMethodInfoHelper(ftn, ftnHnd, ILHeader, &methodInfo);
+    getMethodInfoHelper(ftn, ftnHnd, NULL, ILHeader, &methodInfo);
 
     // If it's generic then we can only enter through an instantiated md
     _ASSERTE(!ftn->IsGenericMethodDefinition());

@@ -9,6 +9,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
+#pragma warning disable CA1859
+
 namespace Thunkerator
 {
     // Parse type replacement section for normal types

@@ -1171,7 +1171,7 @@ namespace Internal.JitInterface
             Get_CORINFO_SIG_INFO(method, sig: sig, scope: null);
         }
 
-        private bool getMethodInfo(CORINFO_METHOD_STRUCT_* ftn, CORINFO_METHOD_INFO* info)
+        private bool getMethodInfo(CORINFO_METHOD_STRUCT_* ftn, CORINFO_METHOD_INFO* info, CORINFO_CONTEXT_STRUCT* context)
         {
             MethodDesc method = HandleToObject(ftn);
 #if READYTORUN
@@ -1182,6 +1182,8 @@ namespace Internal.JitInterface
                 return false;
 #endif
             MethodIL methodIL = _compilation.GetMethodIL(method);
+
+            // todo: pass in context....
             return Get_CORINFO_METHOD_INFO(method, methodIL, info);
         }
 
