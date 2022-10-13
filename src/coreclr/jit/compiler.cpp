@@ -4779,11 +4779,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
                 DoPhase(this, PHASE_VN_COPY_PROP, &Compiler::optVnCopyProp);
             }
 
-            if (doBranchOpt)
-            {
-                DoPhase(this, PHASE_OPTIMIZE_BRANCHES, &Compiler::optRedundantBranches);
-            }
-
             if (doCse)
             {
                 // Remove common sub-expressions
@@ -4803,6 +4798,13 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
                 // Bounds check elimination via range analysis
                 //
                 DoPhase(this, PHASE_OPTIMIZE_INDEX_CHECKS, &Compiler::rangeCheckPhase);
+            }
+
+            if (doBranchOpt)
+            {
+                // Redundant branch optimizations.
+                //
+                DoPhase(this, PHASE_OPTIMIZE_BRANCHES, &Compiler::optRedundantBranches);
             }
 
             if (fgModified)

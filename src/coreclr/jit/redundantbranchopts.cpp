@@ -454,6 +454,7 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
     BasicBlock*    prevBlock   = block;
     BasicBlock*    domBlock    = block->bbIDom;
     int            relopValue  = -1;
+    ValueNum       treeNormVN  = ValueNumStore::NoVN;
     ValueNum       treeExcVN   = ValueNumStore::NoVN;
     ValueNum       domCmpExcVN = ValueNumStore::NoVN;
     unsigned       matchCount  = 0;
@@ -466,8 +467,13 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
 
     // Unpack the tree's VN
     //
-    ValueNum treeNormVN;
-    vnStore->VNUnpackExc(tree->GetVN(VNK_Liberal), &treeNormVN, &treeExcVN);
+    ValueNum treeVN = tree->GetVN(VNK_Liberal);
+
+    if (treeVN == ValueNumStore::NoVN)
+    {
+        return false;
+    }
+    vnStore->VNUnpackExc(treeVN, &treeNormVN, &treeExcVN);
 
     // If the treeVN is a constant, we optimize directly.
     //
@@ -521,124 +527,133 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
                 // manifest explicitly as relops.
                 //
                 RelopImplicationInfo rii;
-                rii.treeNormVN = treeNormVN;
-                vnStore->VNUnpackExc(domCmpTree->GetVN(VNK_Liberal), &rii.domCmpNormVN, &domCmpExcVN);
+                rii.treeNormVN    = treeNormVN;
+                ValueNum domCmpVN = domCmpTree->GetVN(VNK_Liberal);
 
-                // See if knowing the value of domCmpNormVN implies knowing the value of treeNormVN.
+                // Upstream opt phases might have trashed the VN, if so, skip this dominator.
                 //
-                optRelopImpliesRelop(&rii);
-
-                if (rii.canInfer)
+                if (domCmpVN != ValueNumStore::NoVN)
                 {
-                    // If we have a long skinny dominator tree we may scale poorly,
-                    // and in particular reachability (below) is costly. Give up if
-                    // we've matched a few times and failed to optimize.
-                    //
-                    if (++matchCount > matchLimit)
-                    {
-                        JITDUMP("Bailing out; %d matches found w/o optimizing\n", matchCount);
-                        break;
-                    }
+                    vnStore->VNUnpackExc(domCmpTree->GetVN(VNK_Liberal), &rii.domCmpNormVN, &domCmpExcVN);
 
-                    // Was this an inference from an unrelated relop (GE => GT, say)?
+                    // See if knowing the value of domCmpNormVN implies knowing the value of treeNormVN.
                     //
-                    const bool domIsInferredRelop = (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Inferred);
+                    optRelopImpliesRelop(&rii);
 
-                    // The compare in "tree" is redundant.
-                    // Is there a unique path from the dominating compare?
-                    //
-                    if (domIsInferredRelop)
+                    if (rii.canInfer)
                     {
-                        // This inference should be one-sided
+                        // If we have a long skinny dominator tree we may scale poorly,
+                        // and in particular reachability (below) is costly. Give up if
+                        // we've matched a few times and failed to optimize.
                         //
-                        assert(rii.canInferFromTrue ^ rii.canInferFromFalse);
-                        JITDUMP("\nDominator " FMT_BB " of " FMT_BB " has same VN operands but different relop\n",
-                                domBlock->bbNum, block->bbNum);
-                    }
-                    else
-                    {
-                        JITDUMP("\nDominator " FMT_BB " of " FMT_BB " has relop with %s liberal VN\n", domBlock->bbNum,
-                                block->bbNum, ValueNumStore::VNRelationString(rii.vnRelation));
-                    }
-                    DISPTREE(domCmpTree);
-                    JITDUMP(" Redundant compare; current relop:\n");
-                    DISPTREE(tree);
-
-                    const bool domIsSameRelop = (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Same) ||
-                                                (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Swap);
-
-                    BasicBlock* const trueSuccessor  = domBlock->bbJumpDest;
-                    BasicBlock* const falseSuccessor = domBlock->bbNext;
-
-                    // If we can trace the flow from the dominating relop, we can infer its value.
-                    //
-                    const bool trueReaches  = optReachable(trueSuccessor, block, domBlock);
-                    const bool falseReaches = optReachable(falseSuccessor, block, domBlock);
-
-                    if (trueReaches && falseReaches && rii.canInferFromTrue && rii.canInferFromFalse)
-                    {
-                        // JIT-TP: it didn't produce diffs so let's skip it
-                        if (trySpeculativeDom)
+                        if (++matchCount > matchLimit)
                         {
+                            JITDUMP("Bailing out; %d matches found w/o optimizing\n", matchCount);
                             break;
                         }
 
-                        // Both dominating compare outcomes reach the current block so we can't infer the
-                        // value of the relop.
+                        // Was this an inference from an unrelated relop (GE => GT, say)?
                         //
-                        // However we may be able to update the flow from block's predecessors so they
-                        // bypass block and instead transfer control to jump's successors (aka jump threading).
-                        //
-                        const bool wasThreaded = optJumpThreadDom(block, domBlock, domIsSameRelop);
+                        const bool domIsInferredRelop =
+                            (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Inferred);
 
-                        if (wasThreaded)
+                        // The compare in "tree" is redundant.
+                        // Is there a unique path from the dominating compare?
+                        //
+                        if (domIsInferredRelop)
                         {
-                            return true;
+                            // This inference should be one-sided
+                            //
+                            assert(rii.canInferFromTrue ^ rii.canInferFromFalse);
+                            JITDUMP("\nDominator " FMT_BB " of " FMT_BB " has same VN operands but different relop\n",
+                                    domBlock->bbNum, block->bbNum);
                         }
-                    }
-                    else if (trueReaches && !falseReaches && rii.canInferFromTrue)
-                    {
-                        // Taken jump in dominator reaches, fall through doesn't; relop must be true/false.
+                        else
+                        {
+                            JITDUMP("\nDominator " FMT_BB " of " FMT_BB " has relop with %s liberal VN\n",
+                                    domBlock->bbNum, block->bbNum, ValueNumStore::VNRelationString(rii.vnRelation));
+                        }
+                        DISPTREE(domCmpTree);
+                        JITDUMP(" Redundant compare; current relop:\n");
+                        DISPTREE(tree);
+
+                        const bool domIsSameRelop = (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Same) ||
+                                                    (rii.vnRelation == ValueNumStore::VN_RELATION_KIND::VRK_Swap);
+
+                        BasicBlock* const trueSuccessor  = domBlock->bbJumpDest;
+                        BasicBlock* const falseSuccessor = domBlock->bbNext;
+
+                        // If we can trace the flow from the dominating relop, we can infer its value.
                         //
-                        const bool relopIsTrue = rii.reverseSense ^ (domIsSameRelop | domIsInferredRelop);
-                        JITDUMP("Jump successor " FMT_BB " of " FMT_BB " reaches, relop [%06u] must be %s\n",
-                                domBlock->bbJumpDest->bbNum, domBlock->bbNum, dspTreeID(tree),
-                                relopIsTrue ? "true" : "false");
-                        relopValue = relopIsTrue ? 1 : 0;
-                        break;
-                    }
-                    else if (falseReaches && !trueReaches && rii.canInferFromFalse)
-                    {
-                        // Fall through from dominator reaches, taken jump doesn't; relop must be false/true.
-                        //
-                        const bool relopIsFalse = rii.reverseSense ^ (domIsSameRelop | domIsInferredRelop);
-                        JITDUMP("Fall through successor " FMT_BB " of " FMT_BB " reaches, relop [%06u] must be %s\n",
-                                domBlock->bbNext->bbNum, domBlock->bbNum, dspTreeID(tree),
-                                relopIsFalse ? "false" : "true");
-                        relopValue = relopIsFalse ? 0 : 1;
-                        break;
-                    }
-                    else if (!falseReaches && !trueReaches)
-                    {
-                        // No apparent path from the dominating BB.
-                        //
-                        // We should rarely see this given that optReachable is returning
-                        // up to date results, but as we optimize we create unreachable blocks,
-                        // and that can lead to cases where we can't find paths. That means we may be
-                        // optimizing code that is now unreachable, but attempts to fix or avoid
-                        // doing that lead to more complications, and it isn't that common.
-                        // So we just tolerate it.
-                        //
-                        // No point in looking further up the tree.
-                        //
-                        JITDUMP("inference failed -- no apparent path, will stop looking\n");
-                        break;
-                    }
-                    else
-                    {
-                        // Keep looking up the dom tree
-                        //
-                        JITDUMP("inference failed -- will keep looking higher\n");
+                        const bool trueReaches  = optReachable(trueSuccessor, block, domBlock);
+                        const bool falseReaches = optReachable(falseSuccessor, block, domBlock);
+
+                        if (trueReaches && falseReaches && rii.canInferFromTrue && rii.canInferFromFalse)
+                        {
+                            // JIT-TP: it didn't produce diffs so let's skip it
+                            if (trySpeculativeDom)
+                            {
+                                break;
+                            }
+
+                            // Both dominating compare outcomes reach the current block so we can't infer the
+                            // value of the relop.
+                            //
+                            // However we may be able to update the flow from block's predecessors so they
+                            // bypass block and instead transfer control to jump's successors (aka jump threading).
+                            //
+                            const bool wasThreaded = optJumpThreadDom(block, domBlock, domIsSameRelop);
+
+                            if (wasThreaded)
+                            {
+                                return true;
+                            }
+                        }
+                        else if (trueReaches && !falseReaches && rii.canInferFromTrue)
+                        {
+                            // Taken jump in dominator reaches, fall through doesn't; relop must be true/false.
+                            //
+                            const bool relopIsTrue = rii.reverseSense ^ (domIsSameRelop | domIsInferredRelop);
+                            JITDUMP("Jump successor " FMT_BB " of " FMT_BB " reaches, relop [%06u] must be %s\n",
+                                    domBlock->bbJumpDest->bbNum, domBlock->bbNum, dspTreeID(tree),
+                                    relopIsTrue ? "true" : "false");
+                            relopValue = relopIsTrue ? 1 : 0;
+                            break;
+                        }
+                        else if (falseReaches && !trueReaches && rii.canInferFromFalse)
+                        {
+                            // Fall through from dominator reaches, taken jump doesn't; relop must be false/true.
+                            //
+                            const bool relopIsFalse = rii.reverseSense ^ (domIsSameRelop | domIsInferredRelop);
+                            JITDUMP("Fall through successor " FMT_BB " of " FMT_BB
+                                    " reaches, relop [%06u] must be %s\n",
+                                    domBlock->bbNext->bbNum, domBlock->bbNum, dspTreeID(tree),
+                                    relopIsFalse ? "false" : "true");
+                            relopValue = relopIsFalse ? 0 : 1;
+                            break;
+                        }
+                        else if (!falseReaches && !trueReaches)
+                        {
+                            // No apparent path from the dominating BB.
+                            //
+                            // We should rarely see this given that optReachable is returning
+                            // up to date results, but as we optimize we create unreachable blocks,
+                            // and that can lead to cases where we can't find paths. That means we may be
+                            // optimizing code that is now unreachable, but attempts to fix or avoid
+                            // doing that lead to more complications, and it isn't that common.
+                            // So we just tolerate it.
+                            //
+                            // No point in looking further up the tree.
+                            //
+                            JITDUMP("inference failed -- no apparent path, will stop looking\n");
+                            break;
+                        }
+                        else
+                        {
+                            // Keep looking up the dom tree
+                            //
+                            JITDUMP("inference failed -- will keep looking higher\n");
+                        }
                     }
                 }
             }
@@ -657,12 +672,7 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
         // We were unable to determine the relop value via dominance checks.
         // See if we can jump thread via phi disambiguation.
         //
-        // optJumpThreadPhi disabled as it is exposing problems with stale SSA.
-        // See issue #76636 and related.
-        //
-        // return optJumpThreadPhi(block, tree, treeNormVN);
-
-        return false;
+        return optJumpThreadPhi(block, tree, treeNormVN);
     }
 
     // Be conservative if there is an exception effect and we're in an EH region
