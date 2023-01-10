@@ -1403,6 +1403,12 @@ void EfficientEdgeCountInstrumentor::Instrument(BasicBlock* block, Schema& schem
                         break;
                     }
                 }
+
+                if (!found)
+                {
+                    JITDUMP("Could not find " FMT_BB " -> " FMT_BB " edge to instrument\n",
+                        block->bbNum, probe->target->bbNum);
+                }
                 assert(found);
 #endif
                 instrumentedBlock = m_comp->fgSplitEdge(block, probe->target);
@@ -1858,53 +1864,10 @@ PhaseStatus Compiler::fgPrepareToInstrumentMethod()
     //
     // * disabled by option
     // * we are prejitting
-    // * we are jitting tier0 methods with patchpoints
-    // * we are jitting an OSR method
     //
-    // OSR is incompatible with edge profiling. Only portions of the Tier0
-    // method will be executed, and the bail-outs at patchpoints won't be obvious
-    // exit points from the method. So for OSR we always do block profiling.
-    //
-    // Note this incompatibility only exists for methods that actually have
-    // patchpoints. Currently we will only place patchponts in methods with
-    // backwards jumps.
-    //
-    // And because we want the Tier1 method to see the full set of profile data,
-    // when OSR is enabled, both Tier0 and any OSR methods need to contribute to
-    // the same profile data set. Since Tier0 has laid down a dense block-based
-    // schema, the OSR methods must use this schema as well.
-    //
-    // Note that OSR methods may also inline. We currently won't instrument
-    // any inlinee contributions (which would also need to carefully "share"
-    // the profile data segment with any Tier0 version and/or any other equivalent
-    // inlnee), so we'll lose a bit of their profile data. We can support this
-    // eventually if it turns out to matter.
-    //
-    // Similar issues arise with partially jitted methods; they must also use
-    // block based profiles.
-    //
-    // Under OSR stress we may add patchpoints even without backedges. So we also
-    // need to change the PGO instrumentation approach if OSR stress is enabled.
-    //
-    CLANG_FORMAT_COMMENT_ANCHOR;
-
-#if defined(DEBUG)
-    const bool mayHaveStressPatchpoints =
-        (JitConfig.JitOffsetOnStackReplacement() >= 0) || (JitConfig.JitRandomOnStackReplacement() > 0);
-#else
-    const bool mayHaveStressPatchpoints = false;
-#endif
-
-    const bool mayHavePatchpoints =
-        ((JitConfig.TC_OnStackReplacement() > 0) && (compHasBackwardJump || mayHaveStressPatchpoints)) ||
-        (JitConfig.TC_PartialCompilation() > 0);
-    const bool prejit               = opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT);
-    const bool tier0WithPatchpoints = opts.jitFlags->IsSet(JitFlags::JIT_FLAG_TIER0) && mayHavePatchpoints;
-    const bool isOptimized          = opts.IsInstrumentedOptimized();
-    const bool useEdgeProfiles = (JitConfig.JitEdgeProfiling() > 0) && !prejit && !tier0WithPatchpoints && !isOptimized;
-
-    // TODO-TP: Don't give up on edge profiling for optimized code, currently it has issues
-    // such as unexpected trees near tail calls
+    const bool edgesEnabled    = (JitConfig.JitEdgeProfiling() > 0);
+    const bool prejit          = opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT);
+    const bool useEdgeProfiles = edgesEnabled && !prejit;
 
     if (useEdgeProfiles)
     {
@@ -1912,11 +1875,7 @@ PhaseStatus Compiler::fgPrepareToInstrumentMethod()
     }
     else
     {
-        JITDUMP("Using block profiling, because %s\n",
-                (JitConfig.JitEdgeProfiling() == 0)
-                    ? "edge profiles disabled"
-                    : prejit ? "prejitting" : isOptimized ? "tier1 instrumented" : "tier0 with patchpoints");
-
+        JITDUMP("Using block profiling, because %s\n", edgesEnabled ? "edge profiling disabled" : "prejitting");
         fgCountInstrumentor = new (this, CMK_Pgo) BlockCountInstrumentor(this);
     }
 
@@ -1933,7 +1892,6 @@ PhaseStatus Compiler::fgPrepareToInstrumentMethod()
     else
     {
         JITDUMP("Not doing class/method profiling, because %s\n", prejit ? "prejit" : "class/method profiles disabled");
-
         fgHistogramInstrumentor = new (this, CMK_Pgo) NonInstrumentor(this);
     }
 

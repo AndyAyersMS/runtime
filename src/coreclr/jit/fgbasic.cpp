@@ -3619,6 +3619,13 @@ void Compiler::fgFixEntryFlowForOSR()
     fgFirstBB->bbJumpDest = osrEntry;
     fgAddRefPred(osrEntry, fgFirstBB);
 
+    // Give the OSR entry block an artificial profile count
+    //
+    if (fgHaveProfileWeights())
+    {
+        fgFirstBB->setBBProfileWeight(1.0f);
+    }
+
     JITDUMP("OSR: redirecting flow at entry from entry " FMT_BB " to OSR entry " FMT_BB " for the importer\n",
             fgFirstBB->bbNum, osrEntry->bbNum);
 }
