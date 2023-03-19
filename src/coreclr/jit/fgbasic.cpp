@@ -6570,6 +6570,8 @@ BasicBlock* Compiler::fgNewBBinRegion(BBjumpKinds jumpKind,
     assert(tryIndex <= compHndBBtabCount);
     assert(hndIndex <= compHndBBtabCount);
 
+    JITDUMP("fgnewbbin region t:%u h:%u\n", tryIndex, hndIndex);
+
     /* afterBlk is the block which will precede the newBB */
     BasicBlock* afterBlk;
 

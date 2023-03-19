@@ -4859,9 +4859,9 @@ void Compiler::impImportLeave(BasicBlock* block)
     }
 #endif // DEBUG
 
-    unsigned    blkAddr     = block->bbCodeOffs;
-    BasicBlock* leaveTarget = block->bbJumpDest;
-    unsigned    jmpAddr     = leaveTarget->bbCodeOffs;
+    unsigned const    blkAddr     = block->bbCodeOffs;
+    BasicBlock* const leaveTarget = block->bbJumpDest;
+    unsigned const    jmpAddr     = leaveTarget->bbCodeOffs;
 
     // LEAVE clears the stack, spill side effects, and set stack to 0
 
@@ -4890,22 +4890,53 @@ void Compiler::impImportLeave(BasicBlock* block)
     };
     StepType stepType = ST_None;
 
-    unsigned  XTnum;
-    EHblkDsc* HBtab;
+    // Walk up through the nesting scopes...
+    //
+    // Note eh regions have has two common encodings:
+    //
+    //  region indexes
+    // 0 ==> no region
+    // N ==> table entry N-1
+    //
+    //  table indexes
+    // NO_ENCLOSING_INDEX ==> no region
+    // N ==> table entry N
+    //
+    // XTnum will use the former here.
+    //
+    //
+    // Note: this is currently walking too far, we can have leave from within a try to
+    // a sibling try so just walking up the ancestsor tree is not right.
+    //
+    // We need to stop walking once we've reached the common EH ancestor of block
+    // and the leave target. The trick is to figure out what this is without
+    // having to walk the EH entries since we're trying to amortize the cost of
+    // that below.
+    //
+    // If the only possible target of a leave is a sibling then we can stop when
+    // we reach the leave region or its "true" parent.
+    //
+    bool     leavingTry         = false;
+    unsigned currentRegionIndex = ehGetMostNestedRegionIndex(block, &leavingTry);
+    bool     targetingTry       = false;
+    unsigned targetRegionIndex  = ehGetMostNestedRegionIndex(leaveTarget, &targetingTry);
 
-    for (XTnum = 0, HBtab = compHndBBtab; XTnum < compHndBBtabCount; XTnum++, HBtab++)
+    while (currentRegionIndex != targetRegionIndex)
     {
-        // Grab the handler offsets
+        // Map from region num to table index
+        //
+        assert(currentRegionIndex > 0);
+        unsigned const  XTnum = currentRegionIndex - 1;
+        EHblkDsc* const HBtab = ehGetDsc(XTnum);
 
-        IL_OFFSET tryBeg = HBtab->ebdTryBegOffs();
-        IL_OFFSET tryEnd = HBtab->ebdTryEndOffs();
-        IL_OFFSET hndBeg = HBtab->ebdHndBegOffs();
-        IL_OFFSET hndEnd = HBtab->ebdHndEndOffs();
+        // Have we reached the common EH ancestor of block and leaveTarget?
+        // (filter?)
+        if (HBtab->InTryRegionBBRange(leaveTarget) || HBtab->InHndRegionBBRange(leaveTarget))
+        {
+            break;
+        }
 
-        /* Is this a catch-handler we are CEE_LEAVEing out of?
-         */
-
-        if (jitIsBetween(blkAddr, hndBeg, hndEnd) && !jitIsBetween(jmpAddr, hndBeg, hndEnd))
+        if (!leavingTry)
         {
             // Can't CEE_LEAVE out of a finally/fault handler
             if (HBtab->HasFinallyOrFaultHandler())
@@ -4974,8 +5005,7 @@ void Compiler::impImportLeave(BasicBlock* block)
 #endif
             }
         }
-        else if (HBtab->HasFinallyHandler() && jitIsBetween(blkAddr, tryBeg, tryEnd) &&
-                 !jitIsBetween(jmpAddr, tryBeg, tryEnd))
+        else if (HBtab->HasFinallyHandler())
         {
             /* We are jumping out of a finally-protected try */
 
@@ -5146,8 +5176,7 @@ void Compiler::impImportLeave(BasicBlock* block)
             callBlock->bbJumpDest = HBtab->ebdHndBeg; // This callBlock will call the "finally" handler.
             fgAddRefPred(HBtab->ebdHndBeg, callBlock);
         }
-        else if (HBtab->HasCatchHandler() && jitIsBetween(blkAddr, tryBeg, tryEnd) &&
-                 !jitIsBetween(jmpAddr, tryBeg, tryEnd))
+        else if (HBtab->HasCatchHandler())
         {
             // We are jumping out of a catch-protected try.
             //
@@ -5249,6 +5278,42 @@ void Compiler::impImportLeave(BasicBlock* block)
                 stepType = ST_Try;
             }
         }
+
+        // Find table index of enclosing region
+        //
+        bool     enclosingRegionIsTry = false;
+        unsigned enclosingRegionXTnum = HBtab->ebdGetEnclosingRegionIndex(&enclosingRegionIsTry);
+        if (enclosingRegionIsTry && (enclosingRegionXTnum != EHblkDsc::NO_ENCLOSING_INDEX))
+        {
+            // Advance past any mutual-protect try regions
+            //
+            EHblkDsc* enclosingHBtab = ehGetDsc(enclosingRegionXTnum);
+
+            while (EHblkDsc::ebdIsSameTry(HBtab, enclosingHBtab))
+            {
+                enclosingRegionXTnum = enclosingHBtab->ebdGetEnclosingRegionIndex(&enclosingRegionIsTry);
+
+                if (enclosingRegionXTnum == EHblkDsc::NO_ENCLOSING_INDEX)
+                {
+                    break;
+                }
+
+                enclosingHBtab = ehGetDsc(enclosingRegionXTnum);
+            }
+
+            leavingTry = enclosingRegionIsTry;
+        }
+
+        // If there are no more enclosing EH regions, we're done.
+        //
+        if (enclosingRegionXTnum == EHblkDsc::NO_ENCLOSING_INDEX)
+        {
+            break;
+        }
+
+        // Map from table index to region index and keep processing.
+        //
+        currentRegionIndex = enclosingRegionXTnum + 1;
     }
 
     if (step == nullptr)
