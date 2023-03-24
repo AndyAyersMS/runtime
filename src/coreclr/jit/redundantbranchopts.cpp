@@ -2724,6 +2724,9 @@ bool Compiler::optReturnRelop(BasicBlock* const block)
         return false;
     }
 
+    BasicBlock* someTruePred  = nullptr;
+    BasicBlock* someFalsePred = nullptr;
+
     // At least one relop input depends on a local phi. Walk pred by pred and
     // see if the relop value is correlated with the pred.
     //
@@ -2789,12 +2792,10 @@ bool Compiler::optReturnRelop(BasicBlock* const block)
         // We have a refined set of args for the relop VN for this
         // pred. See if that simplifies the relop.
         //
-        const ValueNum substVN =
-            vnStore->VNForFunc(retTree->TypeGet(), retFN.m_func, newRelopArgs[0], newRelopArgs[1]);
+        const ValueNum substVN = vnStore->VNForFunc(retTree->TypeGet(), retFN.m_func, newRelopArgs[0], newRelopArgs[1]);
 
         JITDUMP("... substituting (" FMT_VN "," FMT_VN ") for (" FMT_VN "," FMT_VN ") in " FMT_VN " gives " FMT_VN "\n",
-                newRelopArgs[0], newRelopArgs[1], retFN.m_args[0], retFN.m_args[1], retVN,
-                substVN);
+                newRelopArgs[0], newRelopArgs[1], retFN.m_args[0], retFN.m_args[1], retVN, substVN);
 
         // If this VN is constant, we're all set!
         //
@@ -2809,21 +2810,18 @@ bool Compiler::optReturnRelop(BasicBlock* const block)
 
             if (relopIsTrue)
             {
-                //if (!BasicBlock::sameEHRegion(predBlock, jti.m_trueTarget))
-                //{
-                //    JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
-                //    jti.m_numAmbiguousPreds++;
-                //    BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
-                //    continue;
-                //}
-
                 jti.m_numTruePreds++;
                 BlockSetOps::AddElemD(this, jti.m_truePreds, predBlock->bbNum);
                 JITDUMP(FMT_BB " is a true pred\n", predBlock->bbNum);
+
+                if (someTruePred == nullptr)
+                {
+                    someTruePred = predBlock;
+                }
             }
             else
             {
-                //if (!BasicBlock::sameEHRegion(predBlock, jti.m_falseTarget))
+                // if (!BasicBlock::sameEHRegion(predBlock, jti.m_falseTarget))
                 //{
                 //    JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
                 //    BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
@@ -2833,6 +2831,11 @@ bool Compiler::optReturnRelop(BasicBlock* const block)
 
                 jti.m_numFalsePreds++;
                 JITDUMP(FMT_BB " is a false pred\n", predBlock->bbNum);
+
+                if (someFalsePred == nullptr)
+                {
+                    someFalsePred = predBlock;
+                }
             }
         }
         else
@@ -2856,23 +2859,121 @@ bool Compiler::optReturnRelop(BasicBlock* const block)
 
             continue;
         }
+    }
 
-        // Note if the true or false pred is the fall through pred.
-        //
-        if (predBlock->bbNext == block)
+    // If there are ambiguous preds, then the path we take to this
+    // return block may not determine the value we return.
+    //
+    if (jti.m_numAmbiguousPreds != 0)
+    {
+        JITDUMP(FMT_BB " has ambiguous preds, sorry\n");
+        return false;
+    }
+
+    // Look for a block that dominates all our predecessors.
+    // If this block postdominates that block, then it's possible knowing
+    // the path from that block also determines the return value.
+
+    BasicBlock* domBlock = block->bbIDom;
+
+    for (BasicBlock* predBlock : block->PredBlocks())
+    {
+        while (!fgDominate(domBlock, predBlock))
         {
-            JITDUMP(FMT_BB " is the fall-through pred\n", predBlock->bbNum);
-            assert(jti.m_fallThroughPred == nullptr);
-            jti.m_fallThroughPred = predBlock;
+            domBlock = domBlock->bbIDom;
         }
     }
 
-    // If there were no ambiguous preds, then the path we take to this
-    // return block determines the value we return.
-    //
-    // Look for a block that dominates all our predcessors.
-    // If this block postdominates that block, then it's possible knowing
-    // the path from that block also determines the return value...
+    JITDUMP("Dominator of " FMT_BB " and all its preds is " FMT_BB "\n", block->bbNum, domBlock->bbNum);
+
+    // If there is just a single true or false pred, walk back
+    // from block to pred to domBlock, building up a VN expressing
+    // the condition by which control reaches...
+
+    // To keep it simple for now, if we hit a control flow join
+    // we give up.
+
+    BasicBlock* succBlock = block;
+    BasicBlock* pathBlock = nullptr;
+
+    if (jti.m_numTruePreds == 1)
+    {
+        JITDUMP("will follow true path");
+        pathBlock = someTruePred;
+    }
+    else if (jti.m_numFalsePreds == 1)
+    {
+        JITDUMP("will follow true path");
+        pathBlock = someFalsePred;
+    }
+
+    if (pathBlock == nullptr)
+    {
+        JITDUMP(FMT_BB " multiple true and multiple false preds, sorry\n");
+        return false;
+    }
+
+    ValueNum pathVN = vnStore->VNAllBitsForType(TYP_INT);
+    JITDUMP("Walking %s path back from " FMT_BB " via " FMT_BB " to " FMT_BB "\n",
+            (pathBlock == someTruePred) ? "true" : "false", block->bbNum, pathBlock->bbNum, domBlock->bbNum);
+
+    for (; pathBlock != nullptr; pathBlock = pathBlock->GetUniquePred(this))
+    {
+        // account for any exit condition from pathBlock.
+        //
+        switch (pathBlock->bbJumpKind)
+        {
+            case BBJ_COND:
+            {
+                Statement* const pathLastStmt = pathBlock->lastStmt();
+                assert(pathLastStmt != nullptr);
+                GenTree* const pathLastTree = pathLastStmt->GetRootNode();
+                assert(pathLastTree->OperIs(GT_JTRUE));
+                GenTree* const pathRelopTree = pathLastTree->AsOp()->gtOp1;
+                assert(pathRelopTree->OperIsCompare());
+                ValueNum pathRelopVN = vnStore->VNNormalValue(pathRelopTree->GetVN(VNK_Liberal));
+
+                if (pathBlock->bbNext == succBlock)
+                {
+                    pathRelopVN = vnStore->VNForFunc(TYP_INT, VNFunc(GT_NOT), pathRelopVN);
+                }
+
+                pathVN = vnStore->VNForFunc(TYP_INT, VNFunc(GT_AND), pathVN, pathRelopVN);
+            }
+            break;
+
+            case BBJ_NONE:
+            case BBJ_ALWAYS:
+                // no change
+                break;
+
+            default:
+                JITDUMP("Walking failed at " FMT_BB ": BBJ_KIND\n");
+                return false;
+        }
+
+        JITDUMP("At " FMT_BB " path VN is " FMT_VN "\n", pathBlock->bbNum, pathVN);
+        JITDUMPEXEC(vnStore->vnDump(this, pathVN));
+
+        if (pathBlock == domBlock)
+        {
+            break;
+        }
+    }
+
+    if (pathBlock != domBlock)
+    {
+        JITDUMP("Walking failed at " FMT_BB ": multiple preds\n", pathBlock->bbNum);
+    }
+
+    JITDUMP("reached the dominating block\n");
+
+    // Now look at the accmumlated path VN. If it is an expression that is invariant
+    // between domBlock and block, we will simply change the relop in block...
+
+    // Invariants include:
+    // constants
+    // ssa locals (need to check for phis in block!)
 
     return false;
 }
