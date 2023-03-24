@@ -7141,6 +7141,7 @@ public:
     //
     PhaseStatus optRedundantBranches();
     bool optRedundantRelop(BasicBlock* const block);
+    bool optReturnRelop(BasicBlock* const block);
     bool optRedundantBranch(BasicBlock* const block);
     bool optHasIgnorableSideEffects(BasicBlock* const block);
     bool optSubsumeRelop(BasicBlock* const block, BasicBlock* const domBlock, bool trueReaches);

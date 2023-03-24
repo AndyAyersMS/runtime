@@ -42,7 +42,7 @@ PhaseStatus Compiler::optRedundantBranches()
                 return;
             }
 
-            // We currently can optimize some BBJ_CONDs.
+            // We currently can optimize some BBJ_CONDs and BBJ_RETURNs.
             //
             if (block->bbJumpKind == BBJ_COND)
             {
@@ -90,6 +90,10 @@ PhaseStatus Compiler::optRedundantBranches()
                 }
 
                 madeChanges |= madeChangesThisBlock;
+            }
+            else if (block->bbJumpKind == BBJ_RETURN)
+            {
+                madeChanges |= m_compiler->optReturnRelop(block);
             }
         }
     };
@@ -2583,6 +2587,294 @@ bool Compiler::optRedundantRelop(BasicBlock* const block)
     DISPTREE(jumpTree);
 
     return true;
+}
+
+//------------------------------------------------------------------------
+// optReturnRelop: if we are returning the result of a relop, see
+//   if we can optimize its computation.
+//
+// Arguments:
+//    block - BBJ_RETURN block
+//
+bool Compiler::optReturnRelop(BasicBlock* const block)
+{
+    Statement* const stmt = block->lastStmt();
+
+    if (stmt == nullptr)
+    {
+        return false;
+    }
+
+    GenTree* const lastTree = stmt->GetRootNode();
+
+    if (!lastTree->OperIs(GT_RETURN))
+    {
+        return false;
+    }
+
+    GenTree* const retTree = lastTree->AsOp()->gtOp1;
+
+    if ((retTree == nullptr) || !retTree->OperIsCompare())
+    {
+        return false;
+    }
+
+    // If retTree has side effects, bail.
+    //
+    if ((retTree->gtFlags & GTF_SIDE_EFFECT) != 0)
+    {
+        return false;
+    }
+
+    // If relop's value is known, bail.
+    //
+    const ValueNum retVN = vnStore->VNNormalValue(retTree->GetVN(VNK_Liberal));
+
+    if (vnStore->IsVNConstant(retVN))
+    {
+        JITDUMP(" -- no, return value is constant\n");
+        return false;
+    }
+
+    // Save off the retTree's liberal exceptional VN.
+    //
+    const ValueNum retExcVN = vnStore->VNExceptionSet(retTree->GetVN(VNK_Liberal));
+
+    JITDUMP("\noptReturnRelop in " FMT_BB "; return value is\n", block->bbNum);
+    DISPTREE(retTree);
+    JITDUMPEXEC(vnStore->vnDump(this, retVN));
+
+    // We are looking for relops that are simple functions of constants and local phi inputs.
+    //
+    // Todo: factor out common bits with ... optJumpThreadPhi
+    //
+    VNFuncApp retFN;
+    if (!vnStore->GetVNFunc(retVN, &retFN) || !vnStore->IsVNFuncAppRelop(retFN))
+    {
+        JITDUMP("return VN is not a relop\n");
+        return false;
+    }
+
+    // Find occurrences of phi def VNs in the relop VN.
+    // We currently just do one level of func destructuring.
+    //
+    unsigned funcArgToPhiLocalMap[]   = {BAD_VAR_NUM, BAD_VAR_NUM};
+    GenTree* funcArgToPhiDefNodeMap[] = {nullptr, nullptr};
+    bool     foundPhiDef              = false;
+
+    for (int i = 0; i < 2; i++)
+    {
+        const ValueNum phiDefVN = retFN.m_args[i];
+        VNFuncApp      phiDefFuncApp;
+        if (!vnStore->GetVNFunc(phiDefVN, &phiDefFuncApp) || (phiDefFuncApp.m_func != VNF_PhiDef))
+        {
+            // This input is not a phi def. If it's a func app it might depend on
+            // transitively on a phi def; consider a general search utility.
+            //
+            continue;
+        }
+
+        // The PhiDef args tell us which local and which SSA def of that local.
+        //
+        assert(phiDefFuncApp.m_arity == 3);
+        const unsigned lclNum    = unsigned(phiDefFuncApp.m_args[0]);
+        const unsigned ssaDefNum = unsigned(phiDefFuncApp.m_args[1]);
+        const ValueNum phiVN     = ValueNum(phiDefFuncApp.m_args[2]);
+        JITDUMP("... [interestingVN] in " FMT_BB " relop %s operand VN is PhiDef for V%02u:%u " FMT_VN "\n",
+                block->bbNum, i == 0 ? "first" : "second", lclNum, ssaDefNum, phiVN);
+
+        // Find the PHI for lclNum local in the current block.
+        //
+        GenTree* phiNode = nullptr;
+        for (Statement* const stmt : block->Statements())
+        {
+            // If the tree is not an SSA def, break out of the loop: we're done.
+            if (!stmt->IsPhiDefnStmt())
+            {
+                break;
+            }
+
+            GenTree* const phiDefNode = stmt->GetRootNode();
+            assert(phiDefNode->IsPhiDefn());
+            GenTreeLclVarCommon* const phiDefLclNode = phiDefNode->AsOp()->gtOp1->AsLclVarCommon();
+            if (phiDefLclNode->GetLclNum() == lclNum)
+            {
+                if (phiDefLclNode->GetSsaNum() == ssaDefNum)
+                {
+                    funcArgToPhiLocalMap[i]   = lclNum;
+                    funcArgToPhiDefNodeMap[i] = phiDefNode;
+                    foundPhiDef               = true;
+                    JITDUMP("Found local PHI [%06u] for V%02u\n", dspTreeID(phiDefNode), lclNum);
+                }
+                else
+                {
+                    // Relop input is phi def from some other block.
+                    //
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!foundPhiDef)
+    {
+        // No usable PhiDef VNs in the relop's VN.
+        //
+        JITDUMP("No usable PhiDef VNs\n");
+        return false;
+    }
+
+    // At least one relop input depends on a local phi. Walk pred by pred and
+    // see if the relop value is correlated with the pred.
+    //
+    JumpThreadInfo jti(this, block);
+    for (BasicBlock* const predBlock : block->PredBlocks())
+    {
+        jti.m_numPreds++;
+
+        // Find VNs for the relevant phi inputs from this block.
+        //
+        ValueNum newRelopArgs[] = {retFN.m_args[0], retFN.m_args[1]};
+        bool     updatedArg     = false;
+
+        for (int i = 0; i < 2; i++)
+        {
+            if (funcArgToPhiLocalMap[i] == BAD_VAR_NUM)
+            {
+                // this relop VN arg not phi dependent
+                continue;
+            }
+
+            GenTree* const    phiNode = funcArgToPhiDefNodeMap[i];
+            GenTreePhi* const phi     = phiNode->gtGetOp2()->AsPhi();
+            for (GenTreePhi::Use& use : phi->Uses())
+            {
+                GenTreePhiArg* const phiArgNode = use.GetNode()->AsPhiArg();
+                assert(phiArgNode->GetLclNum() == funcArgToPhiLocalMap[i]);
+
+                if (phiArgNode->gtPredBB == predBlock)
+                {
+                    ValueNum phiArgVN = phiArgNode->GetVN(VNK_Liberal);
+
+                    // We sometimes see cases where phi args do not have VNs.
+                    // (I recall seeing this before... track down why)
+                    //
+                    if (phiArgVN != ValueNumStore::NoVN)
+                    {
+                        newRelopArgs[i] = phiArgVN;
+                        updatedArg      = true;
+
+                        // paranoia: keep walking uses to make sure no other
+                        // comes from this pred
+                        break;
+                    }
+                }
+            }
+        }
+
+        // We may not find predBlock in the phi args, as we only have one phi
+        // arg per ssa num, not one per pred.
+        //
+        // See SsaBuilder::AddPhiArgsToSuccessors.
+        //
+        if (!updatedArg)
+        {
+            JITDUMP("Could not map phi inputs from pred " FMT_BB "\n", predBlock->bbNum);
+            JITDUMP(FMT_BB " is an ambiguous pred\n", predBlock->bbNum);
+            BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
+            jti.m_numAmbiguousPreds++;
+            continue;
+        }
+
+        // We have a refined set of args for the relop VN for this
+        // pred. See if that simplifies the relop.
+        //
+        const ValueNum substVN =
+            vnStore->VNForFunc(retTree->TypeGet(), retFN.m_func, newRelopArgs[0], newRelopArgs[1]);
+
+        JITDUMP("... substituting (" FMT_VN "," FMT_VN ") for (" FMT_VN "," FMT_VN ") in " FMT_VN " gives " FMT_VN "\n",
+                newRelopArgs[0], newRelopArgs[1], retFN.m_args[0], retFN.m_args[1], retVN,
+                substVN);
+
+        // If this VN is constant, we're all set!
+        //
+        // Note there are other cases we could possibly handle here, say if the substituted
+        // VN not constant but is related to some dominating relop VN.
+        //
+        if (vnStore->IsVNConstant(substVN))
+        {
+            const bool relopIsTrue = (substVN == vnStore->VNZeroForType(TYP_INT)) ? 0 : 1;
+            JITDUMP("... substituted VN implies relop is %d when coming from pred " FMT_BB "\n", relopIsTrue,
+                    predBlock->bbNum);
+
+            if (relopIsTrue)
+            {
+                //if (!BasicBlock::sameEHRegion(predBlock, jti.m_trueTarget))
+                //{
+                //    JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
+                //    jti.m_numAmbiguousPreds++;
+                //    BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
+                //    continue;
+                //}
+
+                jti.m_numTruePreds++;
+                BlockSetOps::AddElemD(this, jti.m_truePreds, predBlock->bbNum);
+                JITDUMP(FMT_BB " is a true pred\n", predBlock->bbNum);
+            }
+            else
+            {
+                //if (!BasicBlock::sameEHRegion(predBlock, jti.m_falseTarget))
+                //{
+                //    JITDUMP(FMT_BB " is an eh constrained pred\n", predBlock->bbNum);
+                //    BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
+                //    jti.m_numAmbiguousPreds++;
+                //    continue;
+                //}
+
+                jti.m_numFalsePreds++;
+                JITDUMP(FMT_BB " is a false pred\n", predBlock->bbNum);
+            }
+        }
+        else
+        {
+            JITDUMP(FMT_BB " is an ambiguous pred\n", predBlock->bbNum);
+            BlockSetOps::AddElemD(this, jti.m_ambiguousPreds, predBlock->bbNum);
+            jti.m_numAmbiguousPreds++;
+
+            // If this was the first ambiguous pred, remember the substVN
+            // and the block that providced it, case we can use later to
+            // sharpen the predicate's liberal normal VN.
+            //
+            if ((jti.m_numAmbiguousPreds == 1) && (substVN != retVN))
+            {
+                assert(jti.m_ambiguousVN == ValueNumStore::NoVN);
+                assert(jti.m_ambiguousVNBlock == nullptr);
+
+                jti.m_ambiguousVN      = substVN;
+                jti.m_ambiguousVNBlock = predBlock;
+            }
+
+            continue;
+        }
+
+        // Note if the true or false pred is the fall through pred.
+        //
+        if (predBlock->bbNext == block)
+        {
+            JITDUMP(FMT_BB " is the fall-through pred\n", predBlock->bbNum);
+            assert(jti.m_fallThroughPred == nullptr);
+            jti.m_fallThroughPred = predBlock;
+        }
+    }
+
+    // If there were no ambiguous preds, then the path we take to this
+    // return block determines the value we return.
+    //
+    // Look for a block that dominates all our predcessors.
+    // If this block postdominates that block, then it's possible knowing
+    // the path from that block also determines the return value...
+
+    return false;
 }
 
 //------------------------------------------------------------------------
