@@ -4890,7 +4890,8 @@ void Compiler::impImportLeave(BasicBlock* block)
     };
     StepType stepType = ST_None;
 
-    // Walk up through the nesting scopes...
+    // Walk up through the EH regions until we reach the common EH 
+    // ancestor of block and leaveTarget.
     //
     // Note eh regions have has two common encodings:
     //
@@ -4904,39 +4905,32 @@ void Compiler::impImportLeave(BasicBlock* block)
     //
     // XTnum will use the former here.
     //
-    //
-    // Note: this is currently walking too far, we can have leave from within a try to
-    // a sibling try so just walking up the ancestsor tree is not right.
-    //
-    // We need to stop walking once we've reached the common EH ancestor of block
-    // and the leave target. The trick is to figure out what this is without
-    // having to walk the EH entries since we're trying to amortize the cost of
-    // that below.
-    //
-    // If the only possible target of a leave is a sibling then we can stop when
-    // we reach the leave region or its "true" parent.
-    //
-    bool     leavingTry         = false;
-    unsigned currentRegionIndex = ehGetMostNestedRegionIndex(block, &leavingTry);
-    bool     targetingTry       = false;
-    unsigned targetRegionIndex  = ehGetMostNestedRegionIndex(leaveTarget, &targetingTry);
+    bool     currentRegionIsTry         = false;
+    unsigned currentRegionIndex = ehGetMostNestedRegionIndex(block, &currentRegionIsTry);
+    bool     targetRegionIsTry       = false;
+    unsigned targetRegionIndex  = ehGetMostNestedRegionIndex(leaveTarget, &targetRegionIsTry);
 
-    while (currentRegionIndex != targetRegionIndex)
+    JITDUMP("--> block region %u(%s), target region %u(%s)\n", currentRegionIndex, currentRegionIsTry ? "try" : "hnd",
+        targetRegionIndex, targetRegionIsTry ? "try" : "hnd");
+
+    while (!currentRegionIsTry || (currentRegionIndex != targetRegionIndex))
     {
+        if (!currentRegionIsTry && (targetRegionIndex != 0) && (currentRegionIndex > targetRegionIndex))
+        {
+            // We have reached the common ancestor
+            JITDUMP("reached common ancestor EH#%02u\n", currentRegionIndex - 1);
+            break;
+        }
+
         // Map from region num to table index
         //
         assert(currentRegionIndex > 0);
         unsigned const  XTnum = currentRegionIndex - 1;
         EHblkDsc* const HBtab = ehGetDsc(XTnum);
 
-        // Have we reached the common EH ancestor of block and leaveTarget?
-        // (filter?)
-        if (HBtab->InTryRegionBBRange(leaveTarget) || HBtab->InHndRegionBBRange(leaveTarget))
-        {
-            break;
-        }
+        JITDUMP("processing EH#%02u\n", XTnum);
 
-        if (!leavingTry)
+        if (!currentRegionIsTry)
         {
             // Can't CEE_LEAVE out of a finally/fault handler
             if (HBtab->HasFinallyOrFaultHandler())
@@ -5300,8 +5294,6 @@ void Compiler::impImportLeave(BasicBlock* block)
 
                 enclosingHBtab = ehGetDsc(enclosingRegionXTnum);
             }
-
-            leavingTry = enclosingRegionIsTry;
         }
 
         // If there are no more enclosing EH regions, we're done.
@@ -5314,6 +5306,7 @@ void Compiler::impImportLeave(BasicBlock* block)
         // Map from table index to region index and keep processing.
         //
         currentRegionIndex = enclosingRegionXTnum + 1;
+        currentRegionIsTry = enclosingRegionIsTry;
     }
 
     if (step == nullptr)
