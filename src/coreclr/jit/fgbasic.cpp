@@ -4008,18 +4008,11 @@ void Compiler::fgFixEntryFlowForOSR()
     FlowEdge* const edge  = fgAddRefPred(fgOSREntryBB, fgFirstBB);
     edge->setLikelihood(1.0);
 
-    // We don't know the right weight for this block, since
-    // execution of the method was interrupted within the
-    // loop containing fgOSREntryBB.
+    // Since we are now importing the entire flow graph
+    // we can set the OSR entry point weight to the weight
+    // of the original method entry.
     //
-    // A plausible guess might be to sum the non-backedge
-    // weights of fgOSREntryBB and use those, but we don't
-    // have edge weights available yet. Note that might be
-    // an underestimate.
-    //
-    // For now we just guess that the loop will execute 100x.
-    //
-    fgFirstBB->inheritWeightPercentage(fgOSREntryBB, 1);
+    fgFirstBB->inheritWeight(fgOSREntryBB);
 
     JITDUMP("OSR: redirecting flow at method entry from " FMT_BB " to OSR entry " FMT_BB " for the importer\n",
             fgFirstBB->bbNum, fgOSREntryBB->bbNum);
