@@ -88,7 +88,7 @@ bool Compiler::fgHaveSufficientProfileWeights()
             if (fgFirstBB != nullptr)
             {
                 const weight_t sufficientSamples = 1000;
-                return fgFirstBB->bbWeight > sufficientSamples;
+                return fgUnscaledEntryWeight > sufficientSamples;
             }
 
             return true;
@@ -136,14 +136,40 @@ bool Compiler::fgHaveTrustedProfileWeights()
 //
 void Compiler::fgApplyProfileScale()
 {
-    // Only applicable to inlinees
-    //
-    if (!compIsForInlining())
-    {
-        return;
-    }
-
     JITDUMP("Computing inlinee profile scale:\n");
+
+    // Determine what value fgFirstBB's weight should be, after scaling.
+    //
+    weight_t callSiteWeight = BB_UNITY_WEIGHT;
+
+    if (compIsForInlining())
+    {
+        // Call site has profile weight?
+        //
+        const BasicBlock* callSiteBlock = impInlineInfo->iciBlock;
+        if (!callSiteBlock->hasProfileWeight())
+        {
+            // No? We will carry on nonetheless.
+            //
+            JITDUMP("   ... call site not profiled, will use non-pgo weight to scale\n");
+        }
+
+        callSiteWeight = callSiteBlock->bbWeight;
+
+        // Call site block has zero weight?
+        //
+        // Todo: perhaps retain some semblance of callee profile data,
+        // possibly scaled down severely.
+        //
+        // You might wonder why we bother to inline at cold sites.
+        // Recall ALWAYS and FORCE inlines bypass all profitability checks.
+        // And, there can be hot-path benefits to a cold-path inline.
+        //
+        if (callSiteWeight == BB_ZERO_WEIGHT)
+        {
+            JITDUMP("   ... zero call site count; scale will be 0.0\n");
+        }
+    }
 
     // Callee has profile data?
     //
@@ -159,43 +185,26 @@ void Compiler::fgApplyProfileScale()
     //
     // For most callees it will be the same as the entry block count.
     //
-    // Note when/if we early do normalization this may need to change.
+    // We should consider always adding a scratch block during flowgraph formation
+    // in cases where there are branches to IL offset zero. It will not change the
+    // efficient spanning tree probe placement, but we'll naturally solve for the
+    // right value.
     //
     weight_t calleeWeight = fgFirstBB->bbWeight;
+
+    // Save off the unscaled value of this weight.
+    //
+    fgUnscaledEntryWeight = calleeWeight;
 
     // Callee entry weight is nonzero?
     // If so, just choose the smallest plausible weight.
     //
     if (calleeWeight == BB_ZERO_WEIGHT)
     {
+        // TODO: use BB_RARE_WIGHT here.
+        //
         calleeWeight = fgHaveProfileWeights() ? 1.0 : BB_UNITY_WEIGHT;
         JITDUMP("   ... callee entry has weight zero, will use weight of " FMT_WT " to scale\n", calleeWeight);
-    }
-
-    // Call site has profile weight?
-    //
-    const BasicBlock* callSiteBlock = impInlineInfo->iciBlock;
-    if (!callSiteBlock->hasProfileWeight())
-    {
-        // No? We will carry on nonetheless.
-        //
-        JITDUMP("   ... call site not profiled, will use non-pgo weight to scale\n");
-    }
-
-    const weight_t callSiteWeight = callSiteBlock->bbWeight;
-
-    // Call site has zero count?
-    //
-    // Todo: perhaps retain some semblance of callee profile data,
-    // possibly scaled down severely.
-    //
-    // You might wonder why we bother to inline at cold sites.
-    // Recall ALWAYS and FORCE inlines bypass all profitability checks.
-    // And, there can be hot-path benefits to a cold-path inline.
-    //
-    if (callSiteWeight == BB_ZERO_WEIGHT)
-    {
-        JITDUMP("   ... zero call site count; scale will be 0.0\n");
     }
 
     // If profile data reflects a complete single run we can expect

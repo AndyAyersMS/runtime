@@ -74,7 +74,6 @@ private:
     {
     }
 
-    static constexpr weight_t exceptionScale = 0.001;
     static constexpr weight_t blendFactor    = 0.99;
     static constexpr weight_t epsilon        = 0.001;
 

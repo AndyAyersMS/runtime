@@ -134,6 +134,10 @@ void Phase::PostPhase(PhaseStatus status)
         }
     }
 
+    // Always verify that fgFirstBB has exactly BB_UNITY_WEIGHT.
+    //
+    assert(comp->fgFirstBB->bbWeight == BB_UNITY_WEIGHT);
+
     if (doPostPhase && doPostPhaseChecks)
     {
         if ((comp->activePhaseChecks & PhaseChecks::CHECK_UNIQUE) == PhaseChecks::CHECK_UNIQUE)

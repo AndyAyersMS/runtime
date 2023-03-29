@@ -186,6 +186,7 @@ void Compiler::fgInit()
     fgCountInstrumentor          = nullptr;
     fgHistogramInstrumentor      = nullptr;
     fgPredListSortVector         = nullptr;
+    fgUnscaledEntryWeight        = BB_ZERO_WEIGHT;
 }
 
 /*****************************************************************************

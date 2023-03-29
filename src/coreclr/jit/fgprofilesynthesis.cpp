@@ -1328,7 +1328,7 @@ void ProfileSynthesis::AssignInputWeights(ProfileSynthesisOption option)
 
     // Determine input weight for EH regions.
     //
-    const weight_t ehWeight = entryWeight * exceptionScale;
+    const weight_t ehWeight = BB_RARE_WEIGHT;
 
     for (BasicBlock* block : m_comp->Blocks())
     {

@@ -49,6 +49,23 @@ typedef BitVec_ValRet_T ASSERT_VALRET_TP;
 // And this format for profile weights
 #define FMT_WT "%.7g"
 
+// how much a normal execute once block weighs
+static constexpr unsigned BB_UNITY_WEIGHT_UNSIGNED = 100;
+static constexpr weight_t BB_UNITY_WEIGHT = BB_UNITY_WEIGHT_UNSIGNED;
+
+// synthetic profile scale factor for loops
+static constexpr weight_t BB_LOOP_WEIGHT_SCALE = 8.0;
+
+// a block with weight below this is considered "rarely run"
+static constexpr weight_t BB_RARE_WEIGHT_SCALE = 0.001;
+static constexpr weight_t BB_RARE_WEIGHT = BB_UNITY_WEIGHT * BB_RARE_WEIGHT_SCALE;
+
+// true zero weight
+static constexpr weight_t BB_ZERO_WEIGHT = 0.0;
+
+// maximum finite weight
+static constexpr weight_t BB_MAX_WEIGHT = FLT_MAX;
+
 /*****************************************************************************
  *
  *  Each basic block ends with a jump which is described as a value
