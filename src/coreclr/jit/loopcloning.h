@@ -365,6 +365,24 @@ struct LcMethodAddrTestOptInfo : public LcOptInfo
     }
 };
 
+// Optimization info for an invariant but potentially faulting load
+// (eg method table fetch for a local object ref that might be null)
+//
+struct LcInvariantLoadOptInfo : public LcOptInfo
+{
+    // statement where the opportunity occurs
+    Statement* stmt;
+    // indir for the load
+    GenTreeIndir* indir;
+    // local for the address being loaded
+    unsigned lclNum;
+
+    LcInvariantLoadOptInfo(Statement* stmt, GenTreeIndir* indir, unsigned lclNum)
+        : LcOptInfo(LcInvariantLoad), stmt(stmt), indir(indir), lclNum(lclNum)
+    {
+    }
+};
+
 /**
  *
  * Symbolic representation of a.length, or a[i][j].length or a[i,j].length and so on.

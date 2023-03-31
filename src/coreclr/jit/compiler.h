@@ -7621,16 +7621,19 @@ public:
         const unsigned    loopNum;
         const bool        cloneForArrayBounds;
         const bool        cloneForGDVTests;
+        const bool        cloneForInvariantLoads;
         LoopCloneVisitorInfo(LoopCloneContext* context,
                              unsigned          loopNum,
                              Statement*        stmt,
                              bool              cloneForArrayBounds,
-                             bool              cloneForGDVTests)
+                             bool              cloneForGDVTests,
+                             bool              cloneForInvariantLoads)
             : context(context)
             , stmt(nullptr)
             , loopNum(loopNum)
             , cloneForArrayBounds(cloneForArrayBounds)
             , cloneForGDVTests(cloneForGDVTests)
+            , cloneForInvariantLoads(cloneForInvariantLoads)
         {
         }
     };

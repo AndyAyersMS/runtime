@@ -1136,6 +1136,20 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
                 break;
             }
 
+            case LcOptInfo::LcInvariantLoad:
+            {
+                LcInvariantLoadOptInfo* const ivlInfo = optInfo->AsLcInvariantLoadOptInfo();
+                LC_Ident                      deref   = LC_Ident::CreateIndirOfLocal(ivlInfo->lclNum, 0);
+                context->EnsureObjDerefs(loopNum)->Push(deref);
+
+                // Cloning is expecting to have *some* condition, not happy if there is none.
+                //
+                LC_Condition cond(GT_NE, LC_Expr(LC_Ident::CreateVar(ivlInfo->lclNum)),
+                                  LC_Expr(LC_Ident::CreateNull()));
+                context->EnsureConditions(loopNum)->Push(cond);
+                break;
+            }
+
             default:
                 JITDUMP("Unknown opt\n");
                 return false;
@@ -1161,8 +1175,18 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
         return false;
     }
 
+    // If we have a mixed set of conditions (invariant load and array) 
+    // we might not be able to satisfy them all. Instead of bailing 
+    // we could just drop the array conditions and clone for the others.
+    // (same for the check just above)
+    //
     const bool isIncreasingLoop = loop->lpIsIncreasingLoop();
-    assert(isIncreasingLoop || loop->lpIsDecreasingLoop());
+    const bool isDecreasingLoop = loop->lpIsDecreasingLoop();
+
+    if (!isIncreasingLoop && !isDecreasingLoop)
+    {
+        return false;
+    }
 
     // We already know that this is either increasing or decreasing loop and the
     // stride is (> 0) or (< 0). Here, just take the abs() value and check if it
@@ -1334,6 +1358,8 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
             }
             break;
             case LcOptInfo::LcTypeTest:
+            case LcOptInfo::LcInvariantLoad:
+            case LcOptInfo::LcMethodAddrTest:
                 // handled above
                 break;
 
@@ -1719,6 +1745,26 @@ void Compiler::optPerformStaticOptimizations(unsigned loopNum, LoopCloneContext*
                 break;
             }
 
+            case LcOptInfo::LcInvariantLoad:
+            {
+                LcInvariantLoadOptInfo* const ivlInfo = optInfo->AsLcInvariantLoadOptInfo();
+                Statement* const              stmt    = ivlInfo->stmt;
+                GenTreeIndir* const           indir   = ivlInfo->indir;
+
+                JITDUMP("Updating flags on invariant IND inside hot loop. Before:\n");
+                DISPSTMT(stmt);
+
+                indir->gtFlags |= GTF_ORDER_SIDEEFF | GTF_IND_NONFAULTING;
+                indir->gtFlags &= ~GTF_EXCEPT;
+                assert(fgNodeThreading == NodeThreading::None);
+                gtUpdateStmtSideEffects(stmt);
+
+                JITDUMP("After:\n");
+                DISPSTMT(stmt);
+
+                break;
+            }
+
             default:
                 break;
         }
@@ -1742,7 +1788,7 @@ void Compiler::optPerformStaticOptimizations(unsigned loopNum, LoopCloneContext*
 bool Compiler::optIsLoopClonable(unsigned loopInd)
 {
     const LoopDsc& loop            = optLoopTable[loopInd];
-    const bool     requireIterable = !doesMethodHaveGuardedDevirtualization();
+    const bool     requireIterable = false;
 
     if (requireIterable && !(loop.lpFlags & LPFLG_ITER))
     {
@@ -2964,6 +3010,46 @@ Compiler::fgWalkResult Compiler::optCanOptimizeByLoopCloning(GenTree* tree, Loop
             }
         }
     }
+    if (info->cloneForInvariantLoads && tree->OperIs(GT_IND))
+    {
+        GenTreeIndir* const indir     = tree->AsIndir();
+        GenTree* const      indirAddr = indir->Addr();
+
+        if ((indir->gtFlags & GTF_EXCEPT) == 0)
+        {
+            // Not faulting
+            //
+            return WALK_CONTINUE;
+        }
+
+        if ((indir->gtFlags & GTF_IND_INVARIANT) != GTF_IND_INVARIANT)
+        {
+            // Not manifestly invariant
+            //
+            return WALK_CONTINUE;
+        }
+
+        if (!indirAddr->OperIs(GT_LCL_VAR))
+        {
+            return WALK_CONTINUE;
+        }
+
+        GenTreeLclVarCommon* const indirAddrLcl = indirAddr->AsLclVarCommon();
+        const unsigned             lclNum       = indirAddrLcl->GetLclNum();
+
+        if (!optIsStackLocalInvariant(info->loopNum, lclNum))
+        {
+            return WALK_CONTINUE;
+        }
+
+        // Looks like we found an invariant faulting load
+        //
+        JITDUMP("Loop " FMT_LP " has invariant faulting load [%06u] on V%02u\n", info->loopNum, dspTreeID(tree),
+                lclNum);
+
+        info->context->EnsureLoopOptInfo(info->loopNum)
+            ->Push(new (this, CMK_LoopOpt) LcInvariantLoadOptInfo(info->stmt, indir, lclNum));
+    }
 
     return WALK_CONTINUE;
 }
@@ -3098,25 +3184,29 @@ bool Compiler::optIdentifyLoopOptInfo(unsigned loopNum, LoopCloneContext* contex
     const LoopDsc& loop = optLoopTable[loopNum];
     const bool     canCloneForArrayBounds =
         ((optMethodFlags & OMF_HAS_ARRAYREF) != 0) && ((loop.lpFlags & LPFLG_ITER) != 0);
-    const bool canCloneForTypeTests = ((optMethodFlags & OMF_HAS_GUARDEDDEVIRT) != 0);
+    const bool canCloneForTypeTests      = ((optMethodFlags & OMF_HAS_GUARDEDDEVIRT) != 0);
+    const bool canCloneForInvariantLoads = /* opts.IsOSR() */ true;
 
-    if (!canCloneForArrayBounds && !canCloneForTypeTests)
+    if (!canCloneForArrayBounds && !canCloneForTypeTests && !canCloneForInvariantLoads)
     {
-        JITDUMP("Not checking loop " FMT_LP " -- no array bounds or type tests in this method\n", loopNum);
+        JITDUMP("Not checking loop " FMT_LP " -- no interesting constructs in this method\n", loopNum);
         return false;
     }
 
-    bool shouldCloneForArrayBounds = canCloneForArrayBounds;
-    bool shouldCloneForGdvTests    = canCloneForTypeTests;
+    bool shouldCloneForArrayBounds    = canCloneForArrayBounds;
+    bool shouldCloneForGdvTests       = canCloneForTypeTests;
+    bool shouldCloneForInvariantLoads = canCloneForInvariantLoads;
 
 #ifdef DEBUG
     shouldCloneForGdvTests &= JitConfig.JitCloneLoopsWithGdvTests() != 0;
 #endif
 
-    JITDUMP("Checking loop " FMT_LP " for optimization candidates%s%s\n", loopNum,
-            shouldCloneForArrayBounds ? " (array bounds)" : "", shouldCloneForGdvTests ? " (GDV tests)" : "");
+    JITDUMP("Checking loop " FMT_LP " for optimization candidates%s%s%s\n", loopNum,
+            shouldCloneForArrayBounds ? " (array bounds)" : "", shouldCloneForGdvTests ? " (GDV tests)" : "",
+            shouldCloneForInvariantLoads ? " (invariant loads)" : "");
 
-    LoopCloneVisitorInfo info(context, loopNum, nullptr, shouldCloneForArrayBounds, shouldCloneForGdvTests);
+    LoopCloneVisitorInfo info(context, loopNum, nullptr, shouldCloneForArrayBounds, shouldCloneForGdvTests,
+                              shouldCloneForInvariantLoads);
     for (BasicBlock* const block : loop.LoopBlocks())
     {
         compCurBB = block;
