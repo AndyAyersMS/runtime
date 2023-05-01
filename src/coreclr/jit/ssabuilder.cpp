@@ -1592,7 +1592,7 @@ void SsaBuilder::SetupBBRoot()
     // Allocate a bbroot, if necessary.
     // We need a unique block to be the root of the dominator tree.
     // This can be violated if the first block is in a try, or if it is the first block of
-    // a loop (which would necessarily be an infinite loop) -- i.e., it has a predecessor.
+    // a loop, that is, it has a predecessor.
 
     // If neither condition holds, no reason to make a new block.
     if (!m_pCompiler->fgFirstBB->hasTryIndex() && m_pCompiler->fgFirstBB->bbPreds == nullptr)
@@ -1612,10 +1612,6 @@ void SsaBuilder::SetupBBRoot()
         VarSetOps::Assign(m_pCompiler, bbRoot->bbLiveIn, oldFirst->bbLiveIn);
         VarSetOps::Assign(m_pCompiler, bbRoot->bbLiveOut, oldFirst->bbLiveIn);
     }
-
-    // Copy the bbWeight.  (This is technically wrong, if the first block is a loop head, but
-    // it shouldn't matter...)
-    bbRoot->inheritWeight(oldFirst);
 
     // There's an artificial incoming reference count for the first BB.  We're about to make it no longer
     // the first BB, so decrement that.

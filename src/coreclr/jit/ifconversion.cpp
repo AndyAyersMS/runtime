@@ -656,12 +656,13 @@ bool OptIfConversionDsc::optIfConvert()
 
     if (!m_comp->compStressCompile(Compiler::STRESS_IF_CONVERSION_INNER_LOOPS, 25))
     {
+        weight_t const normalizedWeight = m_startBlock->getBBWeight(m_comp);
         // Don't optimise the block if it is inside a loop
         // When inside a loop, branches are quicker than selects.
         // Detect via the block weight as that will be high when inside a loop.
-        if (m_startBlock->getBBWeight(m_comp) > BB_UNITY_WEIGHT)
+        if (normalizedWeight > BB_UNITY_WEIGHT)
         {
-            JITDUMP("Skipping if-conversion inside loop (via weight)\n");
+            JITDUMP("Skipping if-conversion inside loop (via normalized weight " FMT_WT ")\n", normalizedWeight);
             return false;
         }
 

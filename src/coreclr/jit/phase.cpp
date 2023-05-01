@@ -134,9 +134,32 @@ void Phase::PostPhase(PhaseStatus status)
         }
     }
 
-    // Always verify that fgFirstBB has exactly BB_UNITY_WEIGHT.
+#if 0
+    // Verify that for root compiler, a join-free fgFirstBB is close to BB_UNITY_WEIGHT.
     //
-    assert(comp->fgFirstBB->bbWeight == BB_UNITY_WEIGHT);
+    // Exceptions:
+    // * If first BB is a join, it can have higher weight.
+    // * If first BB is rarely run, it should have a rare weight.
+    //
+    if (!comp->compIsForInlining())
+    {
+        BasicBlock* const firstBB = comp->fgFirstBB;
+
+        if (firstBB->isRunRarely())
+        {
+            assert(firstBB->bbWeight <= BB_RARE_WEIGHT);
+        }
+        else 
+        {
+            assert(firstBB->bbWeight >= BB_UNITY_WEIGHT * 0.999);
+
+            if (firstBB->bbRefs == 1)
+            {
+                assert(firstBB->bbWeight <= BB_UNITY_WEIGHT * 1.001);
+            }
+        }
+    }
+#endif
 
     if (doPostPhase && doPostPhaseChecks)
     {

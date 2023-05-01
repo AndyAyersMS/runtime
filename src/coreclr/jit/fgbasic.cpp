@@ -4012,7 +4012,7 @@ void Compiler::fgFixEntryFlowForOSR()
     // we can set the OSR entry point weight to the weight
     // of the original method entry.
     //
-    fgFirstBB->inheritWeight(fgOSREntryBB);
+    fgFirstBB->inheritWeight(fgEntryBB);
 
     JITDUMP("OSR: redirecting flow at method entry from " FMT_BB " to OSR entry " FMT_BB " for the importer\n",
             fgFirstBB->bbNum, fgOSREntryBB->bbNum);

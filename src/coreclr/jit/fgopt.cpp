@@ -2014,14 +2014,12 @@ bool Compiler::fgCanCompactBlocks(BasicBlock* block, BasicBlock* bNext)
 //-------------------------------------------------------------
 // fgCompactBlocks: Compact two blocks into one.
 //
-// Assumes that all necessary checks have been performed, i.e. fgCanCompactBlocks returns true.
-//
-// Uses for this function - whenever we change links, insert blocks, ...
-// It will keep the flowgraph data in synch - bbNum, bbRefs, bbPreds
-//
 // Arguments:
 //    block - move all code into this block.
 //    bNext - bbNext of `block`. This block will be removed.
+//
+// Notes:
+//   Assumes that all necessary checks have been performed, i.e. fgCanCompactBlocks returns true.
 //
 void Compiler::fgCompactBlocks(BasicBlock* block, BasicBlock* bNext)
 {
@@ -2051,7 +2049,11 @@ void Compiler::fgCompactBlocks(BasicBlock* block, BasicBlock* bNext)
     JITDUMP("\nCompacting " FMT_BB " into " FMT_BB ":\n", bNext->bbNum, block->bbNum);
     fgRemoveRefPred(bNext, block);
 
-    if (bNext->countOfInEdges() > 0)
+    // If bNext is a join, retarget all the incident edges.
+    //
+    const bool bNextIsJoin = bNext->countOfInEdges() > 0;
+
+    if (bNextIsJoin)
     {
         JITDUMP("Second block has %u other incoming edges\n", bNext->countOfInEdges());
         assert(block->isEmpty());
@@ -2228,7 +2230,10 @@ void Compiler::fgCompactBlocks(BasicBlock* block, BasicBlock* bNext)
         }
     }
 
-    // If bNext is BBJ_THROW, block will become run rarely.
+    // Profile updates
+    //
+    // * If bNext is BBJ_THROW, block will become run rarely.
+    // * If bNext was not a join, block will keep its current weight.
     //
     // Otherwise, if either block or bNext has a profile weight
     // or if both block and bNext have non-zero weights
@@ -2238,7 +2243,7 @@ void Compiler::fgCompactBlocks(BasicBlock* block, BasicBlock* bNext)
     {
         block->bbSetRunRarely();
     }
-    else
+    else if (bNextIsJoin)
     {
         const bool hasProfileWeight = block->hasProfileWeight() || bNext->hasProfileWeight();
         const bool hasNonZeroWeight = (block->bbWeight > BB_ZERO_WEIGHT) || (bNext->bbWeight > BB_ZERO_WEIGHT);
