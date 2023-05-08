@@ -45,38 +45,34 @@ void DumpMap(int index, MethodContext* mc)
     printf(" %s", methodName);
 
     // Show class and method generic params, if there are any
-    CORINFO_SIG_INFO sig;
-    mc->repGetMethodSig(cmi.ftn, &sig, nullptr);
-
-    const unsigned classInst = sig.sigInst.classInstCount;
-    if (classInst > 0)
+    //
+    if (mc->canGetMethodSig(cmi.ftn, nullptr))
     {
-        for (unsigned i = 0; i < classInst; i++)
-        {
-            CORINFO_CLASS_HANDLE ci = sig.sigInst.classInst[i];
-            mc->repPrintClassName(ci, className, sizeof(className));
+        CORINFO_SIG_INFO sig;
+        mc->repGetMethodSig(cmi.ftn, &sig, nullptr);
 
-            printf("%s%s%s%s",
-                i == 0 ? "[" : "",
-                i > 0 ? ", " : "",
-                className,
-                i == classInst - 1 ? "]" : "");
+        const unsigned classInst = sig.sigInst.classInstCount;
+        if (classInst > 0)
+        {
+            for (unsigned i = 0; i < classInst; i++)
+            {
+                CORINFO_CLASS_HANDLE ci = sig.sigInst.classInst[i];
+                mc->repPrintClassName(ci, className, sizeof(className));
+
+                printf("%s%s%s%s", i == 0 ? "[" : "", i > 0 ? ", " : "", className, i == classInst - 1 ? "]" : "");
+            }
         }
-    }
 
-    const unsigned methodInst = sig.sigInst.methInstCount;
-    if (methodInst > 0)
-    {
-        for (unsigned i = 0; i < methodInst; i++)
+        const unsigned methodInst = sig.sigInst.methInstCount;
+        if (methodInst > 0)
         {
-            CORINFO_CLASS_HANDLE ci = sig.sigInst.methInst[i];
-            mc->repPrintClassName(ci, className, sizeof(className));
+            for (unsigned i = 0; i < methodInst; i++)
+            {
+                CORINFO_CLASS_HANDLE ci = sig.sigInst.methInst[i];
+                mc->repPrintClassName(ci, className, sizeof(className));
 
-            printf("%s%s%s%s",
-                i == 0 ? "[" : "",
-                i > 0 ? ", " : "",
-                className,
-                i == methodInst - 1 ? "]" : "");
+                printf("%s%s%s%s", i == 0 ? "[" : "", i > 0 ? ", " : "", className, i == methodInst - 1 ? "]" : "");
+            }
         }
     }
 

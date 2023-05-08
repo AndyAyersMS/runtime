@@ -2927,6 +2927,48 @@ void MethodContext::repGetMethodSig(CORINFO_METHOD_HANDLE ftn, CORINFO_SIG_INFO*
     *sig = SpmiRecordsHelper::Restore_CORINFO_SIG_INFO(value, GetMethodSig, SigInstHandleMap);
 }
 
+bool MethodContext::canGetMethodSig(CORINFO_METHOD_HANDLE ftn, CORINFO_CLASS_HANDLE memberParent)
+{
+    if (GetMethodSig == nullptr)
+    {
+        return false;
+    }
+
+    DLDL key;
+    ZeroMemory(&key, sizeof(key)); // Zero key including any struct padding
+    key.A = CastHandle(ftn);
+    key.B = CastHandle(memberParent);
+
+    const int index = GetMethodSig->GetIndex(key);
+    return index != -1;
+}
+
+bool MethodContext::canGetArrayRank(CORINFO_CLASS_HANDLE cls)
+{
+    if (GetArrayRank == nullptr)
+    {
+        return false;
+    }
+
+    DWORDLONG key   = CastHandle(cls);
+
+    const int index = GetArrayRank->GetIndex(key);
+    return index != -1;
+}
+
+bool MethodContext::canPrintClassName(CORINFO_CLASS_HANDLE cls)
+{
+    if (PrintClassName == nullptr)
+    {
+        return false;
+    }
+
+    DWORDLONG key = CastHandle(cls);
+
+    const int index = PrintClassName->GetIndex(key);
+    return index != -1;
+}
+
 void MethodContext::recGetArgClass(CORINFO_SIG_INFO*       sig,
                                    CORINFO_ARG_LIST_HANDLE args,
                                    CORINFO_CLASS_HANDLE    result,

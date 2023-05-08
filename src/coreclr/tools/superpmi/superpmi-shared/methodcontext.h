@@ -114,6 +114,9 @@ public:
     int dumpMethodHashToBuffer(char* buff, int len, bool ignoreMethodName = false, CORINFO_METHOD_INFO* optInfo = nullptr, unsigned optFlags = 0);
 
     bool hasPgoData(bool& hasEdgeProfile, bool& hasClassProfile, bool& hasMethodProfile, bool& hasLikelyClass, bool& hasLikelyMethod, ICorJitInfo::PgoSource& pgoSource);
+    bool canGetMethodSig(CORINFO_METHOD_HANDLE ftn, CORINFO_CLASS_HANDLE memberParent);
+    bool canGetArrayRank(CORINFO_CLASS_HANDLE cls);
+    bool canPrintClassName(CORINFO_CLASS_HANDLE cls);
 
     void recGlobalContext(const MethodContext& other);
 
