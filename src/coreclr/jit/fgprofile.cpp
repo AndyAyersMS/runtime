@@ -562,6 +562,18 @@ void BlockCountInstrumentor::BuildSchemaElements(BasicBlock* block, Schema& sche
     {
         numCountersPerProbe = 2;
     }
+    else if (JitConfig.JitCounterPadding() > 0)
+    {
+        static bool first = true;
+
+        if (first)
+        {
+            printf("JIT -- using %d padding per counter, %d bit counters\n", JitConfig.JitCounterPadding(),
+                m_comp->opts.compCollect64BitCounts ? 64 : 32);
+            first = false;
+        }
+        numCountersPerProbe = (unsigned) JitConfig.JitCounterPadding();
+    }
 
     // Remember the schema index for this block.
     //
@@ -1742,6 +1754,19 @@ void EfficientEdgeCountInstrumentor::BuildSchemaElements(BasicBlock* block, Sche
     if ((JitConfig.JitScalableProfiling() > 0) && (JitConfig.JitInterlockedProfiling() > 0))
     {
         numCountersPerProbe = 2;
+    }
+    else if (JitConfig.JitCounterPadding() > 0)
+    {
+        static bool first = true;
+
+        if (first)
+        {
+            printf("JIT -- using %d padding per counter, %d bit counters\n", JitConfig.JitCounterPadding(),
+                m_comp->opts.compCollect64BitCounts ? 64 : 32);
+            first = false;
+        }
+
+        numCountersPerProbe = (unsigned) JitConfig.JitCounterPadding();
     }
 
     // Walk the bbSparseProbeList, emitting one schema element per...
