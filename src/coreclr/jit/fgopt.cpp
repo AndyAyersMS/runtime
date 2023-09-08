@@ -6190,12 +6190,10 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication, bool isPhase)
                     // Pragmatic constraints:
                     //
                     // * don't consider lexical predecessors, or we may confuse loop recognition
-                    // * don't consider blocks of different rarities
                     //
                     BasicBlock* const bNextJumpDest    = bNext->bbJumpDest;
                     const bool        isJumpToJoinFree = !isJumpAroundEmpty && (bDest->bbRefs == 1) &&
-                                                  (bNextJumpDest->bbRefs > 1) && (bDest->bbNum > block->bbNum) &&
-                                                  (block->isRunRarely() == bDest->isRunRarely());
+                        (bNextJumpDest->bbRefs > 1) && (bDest->bbNum > block->bbNum);
 
                     bool optimizeJump = isJumpAroundEmpty || isJumpToJoinFree;
 
