@@ -6193,7 +6193,8 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication, bool isPhase)
                     //
                     BasicBlock* const bNextJumpDest    = bNext->bbJumpDest;
                     const bool        isJumpToJoinFree = !isJumpAroundEmpty && (bDest->bbRefs == 1) &&
-                        (bNextJumpDest->bbRefs > 1) && (bDest->bbNum > block->bbNum);
+                                                  (bNextJumpDest->bbRefs > 1) && (bDest->bbNum > block->bbNum) &&
+                                                  (block->isRunRarely() == bDest->isRunRarely());
 
                     bool optimizeJump = isJumpAroundEmpty || isJumpToJoinFree;
 
@@ -6228,55 +6229,41 @@ bool Compiler::fgUpdateFlowGraph(bool doTailDuplication, bool isPhase)
 
                     if (optimizeJump && isJumpToJoinFree)
                     {
-                        // In the join free case, we also need to move bDest right after bNext
-                        // to create same flow as in the isJumpAroundEmpty case.
+                        // we have
+                        //  block(cond)          -> bDest
+                        //  bNext(always, empty) -> bNextJumpDest
                         //
-                        if (!fgEhAllowsMoveBlock(bNext, bDest) || bDest->isBBCallAlwaysPair())
-                        {
-                            optimizeJump = false;
-                        }
-                        else
-                        {
-                            // We don't expect bDest to already be right after bNext.
-                            //
-                            assert(bDest != bNext->bbNext);
+                        // turn this into
+                        //  block(cond)           -> bFixup
+                        //  bNext(always, empty)  -> bNextJumpDest
+                        //  bFixup(always, empty) -> bDest
+                        //
+                        // and (subsequently)
+                        //  block(cond')           -> bNextJumpDest
+                        //  bFixup(always, empty)  -> bDest
+                        //
+                        // We don't expect bDest to already be right after bNext.
+                        //
+                        assert(bDest != bNext->bbNext);
 
-                            JITDUMP("\nMoving " FMT_BB " after " FMT_BB " to enable reversal\n", bDest->bbNum,
-                                    bNext->bbNum);
+                        BasicBlock* const bFixup = fgNewBBafter(BBJ_ALWAYS, bNext, true);
+                        bFixup->inheritWeight(bDest);
+                        bFixup->bbJumpDest = bDest;
+                        fgAddRefPred(bDest, bFixup);
 
-                            // If bDest can fall through we'll need to create a jump
-                            // block after it too. Remember where to jump to.
-                            //
-                            BasicBlock* const bDestNext = bDest->bbNext;
+                        // Now modify block to branch to bFixup.
+                        //
+                        fgRemoveRefPred(bDest, block);
+                        block->bbJumpDest = bFixup;
+                        fgAddRefPred(bFixup, block);
 
-                            // Move bDest
-                            //
-                            if (ehIsBlockEHLast(bDest))
-                            {
-                                ehUpdateLastBlocks(bDest, bDest->bbPrev);
-                            }
+                        JITDUMP("\nAdding " FMT_BB " to create branch around empty " FMT_BB " from " FMT_BB "\n",
+                            bFixup->bbNum, bDest->bbNum, block->bbNum);
 
-                            fgUnlinkBlock(bDest);
-                            fgInsertBBafter(bNext, bDest);
-
-                            if (ehIsBlockEHLast(bNext))
-                            {
-                                ehUpdateLastBlocks(bNext, bDest);
-                            }
-
-                            // Add fall through fixup block, if needed.
-                            //
-                            if (bDest->KindIs(BBJ_NONE, BBJ_COND))
-                            {
-                                BasicBlock* const bFixup = fgNewBBafter(BBJ_ALWAYS, bDest, true);
-                                bFixup->inheritWeight(bDestNext);
-                                bFixup->bbJumpDest = bDestNext;
-
-                                fgRemoveRefPred(bDestNext, bDest);
-                                fgAddRefPred(bFixup, bDest);
-                                fgAddRefPred(bDestNext, bFixup);
-                            }
-                        }
+                        // bFixup is the new bDest, and we have created the same
+                        // flow as in "branch around empty"
+                        //
+                        bDest = bFixup;
                     }
 
                     if (optimizeJump)
