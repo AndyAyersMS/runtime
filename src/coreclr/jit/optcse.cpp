@@ -272,24 +272,37 @@ bool Compiler::optCSE_canSwap(GenTree* op1, GenTree* op2)
 /* static */
 bool Compiler::optCSEcostCmpEx::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
 {
-    GenTree* exp1 = dsc1->csdTree;
-    GenTree* exp2 = dsc2->csdTree;
+    GenTree* const exp1 = dsc1->csdTree;
+    GenTree* const exp2 = dsc2->csdTree;
 
-    auto expCost1 = exp1->GetCostEx();
-    auto expCost2 = exp2->GetCostEx();
+    weight_t const expCost1 = (weight_t) exp1->GetCostEx();
+    weight_t const expCost2 = (weight_t) exp2->GetCostEx();
+    weight_t const totalCost1 = expCost1 * dsc1->csdUseWtCnt;
+    weight_t const totalCost2 = expCost2 * dsc2->csdUseWtCnt;
 
+    // Prefer CSE with higher total cost
+    //
+    if (totalCost2 != totalCost1)
+    {
+        return totalCost2 < totalCost1;
+    }
+
+    // Else prefer CSE with higher per-appearance cost
+    //
     if (expCost2 != expCost1)
     {
         return expCost2 < expCost1;
     }
-
-    // Sort the higher Use Counts toward the top
+    
+    // Else prefer CSE with more costly appearances
+    //
     if (dsc2->csdUseWtCnt != dsc1->csdUseWtCnt)
     {
         return dsc2->csdUseWtCnt < dsc1->csdUseWtCnt;
     }
 
-    // With the same use count, Sort the lower Def Counts toward the top
+    // Else prefer CSE with fewer defs
+    //
     if (dsc1->csdDefWtCnt != dsc2->csdDefWtCnt)
     {
         return dsc1->csdDefWtCnt < dsc2->csdDefWtCnt;
