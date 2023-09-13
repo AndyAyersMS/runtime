@@ -3299,7 +3299,7 @@ public:
                 continue;
             }
 
-            bool doCSE = PromotionCheck(&candidate);
+            bool doCSE = true; // PromotionCheck(&candidate);
 
 #ifdef DEBUG
             if (m_pCompiler->verbose)
