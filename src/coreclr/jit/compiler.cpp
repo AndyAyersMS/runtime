@@ -5212,19 +5212,22 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
         }
 
 #ifdef DEBUG
-        const char* fullName = info.compFullName;
+        const char* fullName  = info.compFullName;
+        double      perfScore = info.compPerfScore;
 #else
         const char* fullName =
             eeGetMethodFullName(info.compMethodHnd, /* includeReturnType */ false, /* includeThisSpecifier */ false);
+        double perfScore = -1;
 #endif
 
         char debugPart[128] = {0};
         INDEBUG(sprintf_s(debugPart, 128, ", hash=0x%08x%s", info.compMethodHash(), compGetStressMessage()));
 
         const bool hasProf = fgHaveProfileData();
-        printf("%4d: JIT compiled %s [%s%s%s%s, IL size=%u, code size=%u%s]\n", methodsCompiled, fullName,
-               compGetTieringName(), osrBuffer, hasProf ? " with " : "", hasProf ? compGetPgoSourceName() : "",
-               info.compILCodeSize, *methodCodeSize, debugPart);
+        printf("%4d: JIT compiled %s [%s%s%s%s, IL size=%u, code size=%u%s, perfScore=%f, numCse=%u]\n",
+               methodsCompiled, fullName, compGetTieringName(), osrBuffer, hasProf ? " with " : "",
+               hasProf ? compGetPgoSourceName() : "", info.compILCodeSize, *methodCodeSize, debugPart, perfScore,
+               optCSEcount);
     }
 
     compFunctionTraceEnd(*methodCodePtr, *methodCodeSize, false);

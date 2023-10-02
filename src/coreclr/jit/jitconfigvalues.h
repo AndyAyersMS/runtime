@@ -376,6 +376,9 @@ CONFIG_INTEGER(JitConstCSE, W("JitConstCSE"), 0)
 #define CONST_CSE_ENABLE_ALL 3
 #define CONST_CSE_ENABLE_ALL_NO_SHARING 4
 
+CONFIG_INTEGER(JitCSEHash, W("JitCSEHash"), 0)
+CONFIG_INTEGER(JitCSEMask, W("JitCSEMask"), 0)
+
 ///
 /// JIT
 ///

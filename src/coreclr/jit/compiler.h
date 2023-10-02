@@ -6905,6 +6905,7 @@ protected:
 
     CSEdsc* optCSEfindDsc(unsigned index);
     bool optUnmarkCSE(GenTree* tree);
+    void checkMakeCse(GenTree* tree);
 
     // user defined callback data for the tree walk function optCSE_MaskHelper()
     struct optCSE_MaskData
@@ -6980,6 +6981,7 @@ protected:
     bool     optValnumCSE_phase;   // True when we are executing the optOptimizeValnumCSEs() phase
     unsigned optCSECandidateCount; // Count of CSE's candidates
     unsigned optCSEstart;          // The first local variable number that is a CSE
+    unsigned optCSEattempt;        // The total count of CSE's introduced.
     unsigned optCSEcount;          // The total count of CSE's introduced.
     weight_t optCSEweight;         // The weight of the current block when we are doing PerformCSE
 

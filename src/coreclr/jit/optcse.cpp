@@ -2746,30 +2746,55 @@ public:
 #ifdef DEBUG
         // Setup the message arg for lvaGrabTemp()
         //
-        const char* grabTempMessage = "CSE - unknown";
+        char        message[128]    = {0};
+        const char* grabTempMessage = " unknown";
 
         if (successfulCandidate->IsAggressive())
         {
-            grabTempMessage = "CSE - aggressive";
+            grabTempMessage = " aggressive";
         }
         else if (successfulCandidate->IsModerate())
         {
-            grabTempMessage = "CSE - moderate";
+            grabTempMessage = " moderate";
         }
         else if (successfulCandidate->IsConservative())
         {
-            grabTempMessage = "CSE - conservative";
+            grabTempMessage = " conservative";
         }
         else if (successfulCandidate->IsStressCSE())
         {
-            grabTempMessage = "CSE - stress mode";
+            grabTempMessage = " stress";
         }
+
+        Compiler::treeStmtLst* lst        = candidate->CseDsc()->csdTreeList;
+        const char*            isHoist    = "";
+        const char*            isMultiDef = "";
+        bool                   seenDef    = false;
+
+        // If any def tree is marked GTF_MAKE_CSE then we'll mark this CSE as a hoist.
+        while (lst != nullptr)
+        {
+            if (IS_CSE_DEF(lst->tslTree->gtCSEnum) && (lst->tslTree->gtFlags & GTF_MAKE_CSE))
+            {
+                isHoist = " hoist";
+                if (seenDef)
+                {
+                    isMultiDef = " multi-def";
+                }
+                seenDef = true;
+            }
+            lst = lst->tslNext;
+        }
+
+        sprintf_s(message, sizeof(message), FMT_CSE "%s%s%s", grabTempMessage, successfulCandidate->CseIndex(), isHoist,
+                  isMultiDef);
+
 #endif // DEBUG
 
         /* Introduce a new temp for the CSE */
 
         // we will create a  long lifetime temp for the new CSE LclVar
-        unsigned  cseLclVarNum = m_pCompiler->lvaGrabTemp(false DEBUGARG(grabTempMessage));
+        unsigned  cseLclVarNum = m_pCompiler->lvaGrabTemp(false DEBUGARG(message));
         var_types cseLclVarTyp = genActualType(successfulCandidate->Expr()->TypeGet());
 
         LclVarDsc* lclDsc = m_pCompiler->lvaGetDesc(cseLclVarNum);
@@ -3218,6 +3243,8 @@ public:
             cse->CopyReg(exp);  // The cse inheirits any reg num property from the original exp node
             exp->ClearRegNum(); // The exp node (for a CSE def) no longer has a register requirement
 
+            exp->gtFlags &= ~GTF_MAKE_CSE;
+
             // Walk the statement 'stmt' and find the pointer
             // in the tree is pointing to 'exp'
             //
@@ -3318,6 +3345,21 @@ public:
             bool doCSE = PromotionCheck(&candidate);
 
 #ifdef DEBUG
+
+            if (doCSE)
+            {
+                const int attempt = m_pCompiler->optCSEattempt++;
+
+                if (m_pCompiler->info.compMethodHash() == (unsigned)JitConfig.JitCSEHash())
+                {
+                    doCSE = ((1ULL << attempt) & ((unsigned long long)JitConfig.JitCSEMask())) != 0;
+
+                    printf("CSE " FMT_CSE " attempt %u %s by hash 0x%x mask 0x%0x: %s\n", candidate.CseIndex(), attempt,
+                           doCSE ? "allowed" : "disabled", JitConfig.JitCSEHash(), JitConfig.JitCSEMask(),
+                           m_pCompiler->info.compFullName);
+                }
+            }
+
             if (m_pCompiler->verbose)
             {
                 if (doCSE)
@@ -3408,7 +3450,44 @@ PhaseStatus Compiler::optOptimizeValnumCSEs()
 
     optValnumCSE_phase = false;
 
+#ifdef DEBUG
+
+    for (BasicBlock* const block : Blocks())
+    {
+        for (Statement* const stmt : block->Statements())
+        {
+            checkMakeCse(stmt->GetRootNode());
+        }
+    }
+
+#endif
+
     return madeChanges ? PhaseStatus::MODIFIED_EVERYTHING : PhaseStatus::MODIFIED_NOTHING;
+}
+
+void Compiler::checkMakeCse(GenTree* tree)
+{
+    if ((tree->gtFlags & GTF_MAKE_CSE))
+    {
+        if (!tree->OperIsConst())
+        {
+            if (!tree->OperIsLeaf() && vnStore->IsVNConstant(vnStore->VNConservativeNormalValue(tree->gtVNPair)))
+            {
+            }
+            else if (tree->gtFlags & GTF_SIDE_EFFECT)
+            {
+            }
+            else
+            {
+                JITDUMP("Missed MAKE_CSE at [%06u] in %u\n", dspTreeID(tree), info.compMethodSuperPMIIndex);
+            }
+        }
+    }
+
+    tree->VisitOperands([this](GenTree* operand) -> GenTree::VisitResult {
+        checkMakeCse(operand);
+        return GenTree::VisitResult::Continue;
+    });
 }
 
 /*****************************************************************************

@@ -2004,9 +2004,9 @@ void CodeGen::genEmitMachineCode()
     if (compiler->opts.disAsm || verbose)
     {
         printf("\n; Total bytes of code %d, prolog size %d, PerfScore %.2f, instruction count %d, allocated bytes for "
-               "code %d",
+               "code %d, num cse %d",
                codeSize, prologSize, compiler->info.compPerfScore, instrCount,
-               GetEmitter()->emitTotalHotCodeSize + GetEmitter()->emitTotalColdCodeSize);
+               GetEmitter()->emitTotalHotCodeSize + GetEmitter()->emitTotalColdCodeSize, compiler->optCSEcount);
 
 #if TRACK_LSRA_STATS
         if (JitConfig.DisplayLsraStats() == 3)
