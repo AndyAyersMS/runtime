@@ -4141,7 +4141,7 @@ void emitter::emitDispIG(insGroup* ig, bool displayFunc, bool displayInstruction
 
         if (emitComp->compCodeGenDone)
         {
-            printf("%sPerfScore %.2f", separator, ig->igPerfScore);
+            printf("%sPerfScore=%.2f", separator, ig->WeightedPerfScore());
             separator = ", ";
         }
 
@@ -4382,11 +4382,9 @@ size_t emitter::emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp)
     is = emitOutputInstr(ig, id, dp);
 
 #if defined(DEBUG) || defined(LATE_DISASM)
-    float insExeCost = insEvaluateExecutionCost(id);
-    // All compPerfScore calculations must be performed using doubles
-    double insPerfScore = (double)(ig->igWeight / (double)BB_UNITY_WEIGHT) * insExeCost;
-    emitComp->info.compPerfScore += insPerfScore;
-    ig->igPerfScore += insPerfScore;
+    const double insExeCost = (double)insEvaluateExecutionCost(id);
+    ig->igPerfScore += insExeCost;
+    emitComp->info.compPerfScore += ig->Weight() * insExeCost;
 #endif // defined(DEBUG) || defined(LATE_DISASM)
 
 // printf("[S=%02u]\n", emitCurStackLvl);
@@ -7413,8 +7411,8 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 #ifdef DEBUG
         if (emitComp->opts.disAsm || emitComp->verbose)
         {
-            printf("\t\t\t\t\t\t;; size=%d bbWeight=%s PerfScore %.2f", (cp - bp), refCntWtd2str(ig->igWeight),
-                   ig->igPerfScore);
+            printf("\t\t\t\t\t\t;; size=%d BlockScore=%.2f bbWeight=%s PerfScore=%.2f", (cp - bp), ig->igPerfScore,
+                   refCntWtd2str(ig->igWeight), ig->WeightedPerfScore());
         }
         *instrCount += ig->igInsCnt;
 #else  // DEBUG

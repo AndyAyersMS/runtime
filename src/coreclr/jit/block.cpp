@@ -1676,8 +1676,10 @@ weight_t BasicBlock::getCalledCount(Compiler* comp)
 //    compiler - Compiler instance
 //
 // Notes:
-//    with profie data: number of expected executions of this block, given
-//    one call to the method
+//    Normalized by dividing by call count, and multiplying by BB_UNITY_WEIGHT.
+//
+//    Thus if a block's normalized weight is > BB_UNITY_WEIGHT, it on average is is executed
+//    more than once for each call to the method.
 //
 weight_t BasicBlock::getBBWeight(Compiler* comp)
 {

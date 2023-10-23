@@ -267,7 +267,18 @@ struct insGroup
 #endif
 #if defined(DEBUG) || defined(LATE_DISASM)
     weight_t igWeight;    // the block weight used for this insGroup
-    double   igPerfScore; // The PerfScore for this insGroup
+    double   igPerfScore; // The unweighted PerfScore for this insGroup
+
+    double Weight() const
+    {
+        return (double)(igWeight / (double)BB_UNITY_WEIGHT);
+    }
+
+    double WeightedPerfScore() const
+    {
+        return Weight() * igPerfScore;
+    }
+
 #endif
 
 #ifdef DEBUG
