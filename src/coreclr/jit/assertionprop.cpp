@@ -1586,13 +1586,58 @@ AssertionIndex Compiler::optAddAssertion(AssertionDsc* newAssertion)
         return NO_ASSERTION_INDEX;
     }
 
-    // Check if exists already, so we can skip adding new one. Search backwards.
-    for (AssertionIndex index = optAssertionCount; index >= 1; index--)
-    {
-        AssertionDsc* curAssertion = optGetAssertion(index);
-        if (curAssertion->Equals(newAssertion, !optLocalAssertionProp))
+    // Search to see if the table already holds an assertion about
+    // lclNum that matches newAssertion. If so, return its index.
+    //
+    auto findMatchingLocalAssertion = [&](unsigned lclNum, AssertionDsc* newAssertion) -> AssertionIndex {
+        assert(optLocalAssertionProp);
+        BitVecOps::Iter iter(apTraits, GetAssertionDep(lclNum));
+        unsigned        index = 0;
+        while (iter.NextElem(&index))
         {
-            return index;
+            AssertionIndex const aIndex = GetAssertionIndex(index);
+            AssertionDsc* const curAssertion = optGetAssertion(aIndex);
+            if (curAssertion->Equals(newAssertion, !optLocalAssertionProp))
+            {
+                return aIndex;
+            }
+        }
+
+        return NO_ASSERTION_INDEX;
+    };
+
+    if (optLocalAssertionProp && (optAssertionCount > 16))
+    {
+        // For local assertion prop, all assertions involve locals, and the
+        // dep vectors map from local to assertion. So we just need to 
+        // search those.
+        //
+        assert(newAssertion->op1.kind == O1K_LCLVAR);
+        AssertionIndex matchingIndex = findMatchingLocalAssertion(newAssertion->op1.lcl.lclNum, newAssertion);
+        if (matchingIndex != NO_ASSERTION_INDEX)
+        {
+            return matchingIndex;
+        }
+
+        if (newAssertion->op2.kind == O2K_LCLVAR_COPY)
+        {
+            matchingIndex = findMatchingLocalAssertion(newAssertion->op2.lcl.lclNum, newAssertion);
+            if (matchingIndex != NO_ASSERTION_INDEX)
+            {
+                return matchingIndex;
+            }
+        }
+    }
+    else
+    {
+        // Check if exists already, so we can skip adding new one. Search backwards.
+        for (AssertionIndex index = optAssertionCount; index >= 1; index--)
+        {
+            AssertionDsc* curAssertion = optGetAssertion(index);
+            if (curAssertion->Equals(newAssertion, !optLocalAssertionProp))
+            {
+                return index;
+            }
         }
     }
 
