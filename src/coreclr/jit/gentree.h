@@ -710,6 +710,26 @@ struct GenTree
         return gtType;
     }
 
+private:
+
+    unsigned char _gtCostEx; // estimate of expression execution cost
+    unsigned char _gtCostSz; // estimate of expression code size cost
+
+public:
+
+    GenTreeFlags gtFlags;
+
+private:
+
+    // This stores the register assigned to the node. If a register is not assigned, _gtRegNum is set to REG_NA.
+    regNumberSmall _gtRegNum;
+
+    // Count of operands. Used *only* by GenTreeMultiOp, exists solely due to padding constraints.
+    friend struct GenTreeMultiOp;
+    uint8_t m_operandCount;
+
+public:
+
     ClassLayout* GetLayout(Compiler* compiler) const;
 
 #ifdef DEBUG
@@ -724,12 +744,12 @@ struct GenTree
 #define GET_CSE_INDEX(x) (((x) > 0) ? x : -(x))
 #define TO_CSE_DEF(x) (-(x))
 
-    signed char gtCSEnum; // 0 or the CSE index (negated if def)
-                          // valid only for CSE expressions
+    AssertionInfo gtAssertionInfo;
 
     unsigned char gtLIRFlags; // Used for nodes that are in LIR. See LIR::Flags in lir.h for the various flags.
 
-    AssertionInfo gtAssertionInfo;
+    signed short gtCSEnum; // 0 or the CSE index (negated if def)
+                           // valid only for CSE expressions
 
     bool GeneratesAssertion() const
     {
@@ -815,9 +835,6 @@ public:
     }
 
 private:
-    unsigned char _gtCostEx; // estimate of expression execution cost
-    unsigned char _gtCostSz; // estimate of expression code size cost
-
     //
     // Register or register pair number of the node.
     //
@@ -843,12 +860,6 @@ private:
 #endif // DEBUG
 
 private:
-    // This stores the register assigned to the node. If a register is not assigned, _gtRegNum is set to REG_NA.
-    regNumberSmall _gtRegNum;
-
-    // Count of operands. Used *only* by GenTreeMultiOp, exists solely due to padding constraints.
-    friend struct GenTreeMultiOp;
-    uint8_t m_operandCount;
 
 public:
     // The register number is stored in a small format (8 bits), but the getters return and the setters take
@@ -955,8 +966,6 @@ public:
 
     regMaskTP gtGetRegMask() const;
     regMaskTP gtGetContainedRegMask();
-
-    GenTreeFlags gtFlags;
 
 #if defined(DEBUG)
     GenTreeDebugFlags gtDebugFlags;
