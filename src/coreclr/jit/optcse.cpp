@@ -1707,23 +1707,6 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
         return false;
     }
 
-    unsigned cost;
-    if (codeOptKind == Compiler::SMALL_CODE)
-    {
-        cost = tree->GetCostSz();
-    }
-    else
-    {
-        cost = tree->GetCostEx();
-    }
-
-    //  Don't bother if the potential savings are very low
-    //
-    if (cost < Compiler::MIN_CSE_COST)
-    {
-        return false;
-    }
-
     genTreeOps oper = tree->OperGet();
 
 #if !CSE_CONSTS
@@ -1913,7 +1896,18 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
             return false; // Currently the only special nodes that we hit
                           // that we know that we don't want to CSE
 
+        case GT_NULLCHECK:
+        case GT_LCL_ADDR:
+        case GT_RETFILT:
+        case GT_INIT_VAL:
+        case GT_BOX:
+        case GT_ARR_ADDR:
+        case GT_CATCH_ARG:
+        case GT_CKFINITE:
+            return false;
+
         default:
+            assert(!"CSE: unmodeled tree");
             return false;
     }
 
@@ -2019,6 +2013,26 @@ CSE_Heuristic::CSE_Heuristic(Compiler* pCompiler) : CSE_HeuristicCommon(pCompile
 //
 bool CSE_Heuristic::ConsiderTree(GenTree* tree, bool isReturn)
 {
+    // The classic heuristic never considers
+    // trees that are "too cheap"
+    //
+    unsigned cost;
+    if (codeOptKind == Compiler::SMALL_CODE)
+    {
+        cost = tree->GetCostSz();
+    }
+    else
+    {
+        cost = tree->GetCostEx();
+    }
+
+    //  Don't bother if the potential savings are very low
+    //
+    if (cost < Compiler::MIN_CSE_COST)
+    {
+        return false;
+    }
+
     return CanConsiderTree(tree, isReturn);
 }
 
