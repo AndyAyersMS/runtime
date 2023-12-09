@@ -1665,10 +1665,6 @@ CSE_HeuristicCommon::CSE_HeuristicCommon(Compiler* pCompiler) : m_pCompiler(pCom
 // Returns:
 //    true if this tree can be a CSE candidate
 //
-// Notes:
-//   This currently does both legality and profitability checks.
-//   Eventually it should just do legality checks.
-//
 bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 {
     // Don't allow CSE of constants if it is disabled
