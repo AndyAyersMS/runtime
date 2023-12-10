@@ -489,34 +489,6 @@ void Compiler::fgPerBlockLocalVarLiveness()
             }
         }
 
-        // Mark the FrameListRoot as used, if applicable.
-
-        if (block->KindIs(BBJ_RETURN) && compMethodRequiresPInvokeFrame())
-        {
-            assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
-            if (!opts.ShouldUsePInvokeHelpers())
-            {
-                // 32-bit targets always pop the frame in the epilog.
-                // For 64-bit targets, we only do this in the epilog for IL stubs;
-                // for non-IL stubs the frame is popped after every PInvoke call.
-                CLANG_FORMAT_COMMENT_ANCHOR;
-#ifdef TARGET_64BIT
-                if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_IL_STUB))
-#endif
-                {
-                    LclVarDsc* varDsc = lvaGetDesc(info.compLvFrameListRoot);
-
-                    if (varDsc->lvTracked)
-                    {
-                        if (!VarSetOps::IsMember(this, fgCurDefSet, varDsc->lvVarIndex))
-                        {
-                            VarSetOps::AddElemD(this, fgCurUseSet, varDsc->lvVarIndex);
-                        }
-                    }
-                }
-            }
-        }
-
 #ifdef DEBUG
         if (verbose)
         {
@@ -2381,6 +2353,27 @@ void Compiler::fgInterBlockLocalVarLiveness()
                 VarSetOps::UnionD(this, finallyVars, block->bbLiveOut);
             }
         }
+
+#ifdef TARGET_64BIT
+        // Mark the FrameListRoot as used, if applicable.
+        // 32-bit targets always pop the frame in the epilog.
+        // For 64-bit targets, we only do this in the epilog for IL stubs;
+        // for non-IL stubs the frame is popped after every PInvoke call.
+        //
+        if (block->KindIs(BBJ_RETURN) && compMethodRequiresPInvokeFrame())
+        {
+            assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
+            if (!opts.ShouldUsePInvokeHelpers())
+            {
+                if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_IL_STUB))
+                {
+                    LclVarDsc* varDsc = lvaGetDesc(info.compLvFrameListRoot);
+                    VarSetOps::AddElemD(this, block->bbLiveOut, varDsc->lvVarIndex);
+                }
+            }
+        }
+#endif
+
     }
 
     if (!fgIsDoingEarlyLiveness)
@@ -2705,7 +2698,7 @@ PhaseStatus Compiler::fgEarlyLiveness()
 
         fgStmtRemoved = false;
         fgInterBlockLocalVarLiveness();
-    } while (fgStmtRemoved && fgLocalVarLivenessChanged);
+    } while (fgStmtRemoved || fgLocalVarLivenessChanged);
 
     fgIsDoingEarlyLiveness = false;
     fgDidEarlyLiveness     = true;
