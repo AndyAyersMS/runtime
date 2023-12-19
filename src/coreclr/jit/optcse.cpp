@@ -267,78 +267,6 @@ bool Compiler::optCSE_canSwap(GenTree* op1, GenTree* op2)
 
 /*****************************************************************************
  *
- *  Compare function passed to jitstd::sort() by CSE_Heuristic::SortCandidates
- *  when (CodeOptKind() != Compiler::SMALL_CODE)
- */
-
-/* static */
-bool Compiler::optCSEcostCmpEx::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
-{
-    GenTree* exp1 = dsc1->csdTree;
-    GenTree* exp2 = dsc2->csdTree;
-
-    auto expCost1 = exp1->GetCostEx();
-    auto expCost2 = exp2->GetCostEx();
-
-    if (expCost2 != expCost1)
-    {
-        return expCost2 < expCost1;
-    }
-
-    // Sort the higher Use Counts toward the top
-    if (dsc2->csdUseWtCnt != dsc1->csdUseWtCnt)
-    {
-        return dsc2->csdUseWtCnt < dsc1->csdUseWtCnt;
-    }
-
-    // With the same use count, Sort the lower Def Counts toward the top
-    if (dsc1->csdDefWtCnt != dsc2->csdDefWtCnt)
-    {
-        return dsc1->csdDefWtCnt < dsc2->csdDefWtCnt;
-    }
-
-    // In order to ensure that we have a stable sort, we break ties using the csdIndex
-    return dsc1->csdIndex < dsc2->csdIndex;
-}
-
-/*****************************************************************************
- *
- *  Compare function passed to jitstd::sort() by CSE_Heuristic::SortCandidates
- *  when (CodeOptKind() == Compiler::SMALL_CODE)
- */
-
-/* static */
-bool Compiler::optCSEcostCmpSz::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
-{
-    GenTree* exp1 = dsc1->csdTree;
-    GenTree* exp2 = dsc2->csdTree;
-
-    auto expCost1 = exp1->GetCostSz();
-    auto expCost2 = exp2->GetCostSz();
-
-    if (expCost2 != expCost1)
-    {
-        return expCost2 < expCost1;
-    }
-
-    // Sort the higher Use Counts toward the top
-    if (dsc2->csdUseCount != dsc1->csdUseCount)
-    {
-        return dsc2->csdUseCount < dsc1->csdUseCount;
-    }
-
-    // With the same use count, Sort the lower Def Counts toward the top
-    if (dsc1->csdDefCount != dsc2->csdDefCount)
-    {
-        return dsc1->csdDefCount < dsc2->csdDefCount;
-    }
-
-    // In order to ensure that we have a stable sort, we break ties using the csdIndex
-    return dsc1->csdIndex < dsc2->csdIndex;
-}
-
-/*****************************************************************************
- *
  *  Initialize the Value Number CSE tracking logic.
  */
 
@@ -2234,14 +2162,18 @@ void CSE_Heuristic::Initialize()
         // For other architecture and platforms these values dynamically change
         // based upon the number of callee saved and callee scratch registers.
         //
+        INDEBUG(unsigned const lclNum = m_pCompiler->lvaGetLclNum(varDsc));
+
         if ((aggressiveRefCnt == 0) && (enregCount > aggressiveEnregNum))
         {
             if (CodeOptKind() == Compiler::SMALL_CODE)
             {
+                JITDUMP("Basing aggressiveRefCnt on V%02u [T%02u] ref count\n", lclNum, enregCount); 
                 aggressiveRefCnt = varDsc->lvRefCnt();
             }
             else
             {
+                JITDUMP("Basing aggressiveRefCnt on V%02u [T%02u] weighted ref count\n", lclNum, enregCount); 
                 aggressiveRefCnt = varDsc->lvRefCntWtd();
             }
             aggressiveRefCnt += BB_UNITY_WEIGHT;
@@ -2250,14 +2182,25 @@ void CSE_Heuristic::Initialize()
         {
             if (CodeOptKind() == Compiler::SMALL_CODE)
             {
+                JITDUMP("Basing moderateRefCnt on V%02u [T%02u] ref count\n", lclNum, enregCount); 
                 moderateRefCnt = varDsc->lvRefCnt();
             }
             else
             {
+                JITDUMP("Basing moderateRefCnt on V%02u [T%02u] weighted ref count\n", lclNum, enregCount); 
                 moderateRefCnt = varDsc->lvRefCntWtd();
             }
             moderateRefCnt += (BB_UNITY_WEIGHT / 2);
         }
+    }
+
+    if (aggressiveRefCnt == 0)
+    {
+        JITDUMP("Only %u tracked locals -- using simple fixed aggressiveRefCnt and moderateRefCnt\n");
+    }
+    else if (moderateRefCnt == 0)
+    {
+        JITDUMP("Only %u tracked locals -- using simple fixed moderateRefCnt\n");
     }
 
     // The minumum value that we want to use for aggressiveRefCnt is BB_UNITY_WEIGHT * 2
@@ -2283,6 +2226,133 @@ void CSE_Heuristic::Initialize()
 #endif
 }
 
+//---------------------------------------------------------------------------
+// optCSEcostCmpEx: CSE heuristic ranking for normal optimization (not small code)
+//
+// Arguments:
+//    dsc1 - descriptor for first CSE candidate
+//    dsc2 - descriptor for second CSE candidate
+//
+// Returns:
+//    true if dsc1 is a less desirable CSE candidate than dsc2.
+//
+bool CSE_Heuristic::optCSEcostCmpEx::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
+{
+    GenTree* exp1 = dsc1->csdTree;
+    GenTree* exp2 = dsc2->csdTree;
+
+    auto expCost1 = exp1->GetCostEx();
+    auto expCost2 = exp2->GetCostEx();
+
+    if (expCost2 != expCost1)
+    {
+        return expCost2 < expCost1;
+    }
+
+    // Sort the higher Use Counts toward the top
+    if (dsc2->csdUseWtCnt != dsc1->csdUseWtCnt)
+    {
+        return dsc2->csdUseWtCnt < dsc1->csdUseWtCnt;
+    }
+
+    // With the same use count, Sort the lower Def Counts toward the top
+    if (dsc1->csdDefWtCnt != dsc2->csdDefWtCnt)
+    {
+        return dsc1->csdDefWtCnt < dsc2->csdDefWtCnt;
+    }
+
+    // In order to ensure that we have a stable sort, we break ties using the csdIndex
+    return dsc1->csdIndex < dsc2->csdIndex;
+}
+
+//---------------------------------------------------------------------------
+// optCSEcostCmpSz: CSE heuristic ranking for small code optimization
+//
+// Arguments:
+//    dsc1 - descriptor for first CSE candidate
+//    dsc2 - descriptor for second CSE candidate
+//
+// Returns:
+//    true if dsc1 is a less desirable CSE candidate than dsc2.
+//
+bool CSE_Heuristic::optCSEcostCmpSz::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
+{
+    GenTree* exp1 = dsc1->csdTree;
+    GenTree* exp2 = dsc2->csdTree;
+
+    auto expCost1 = exp1->GetCostSz();
+    auto expCost2 = exp2->GetCostSz();
+
+    if (expCost2 != expCost1)
+    {
+        return expCost2 < expCost1;
+    }
+
+    // Sort the higher Use Counts toward the top
+    if (dsc2->csdUseCount != dsc1->csdUseCount)
+    {
+        return dsc2->csdUseCount < dsc1->csdUseCount;
+    }
+
+    // With the same use count, Sort the lower Def Counts toward the top
+    if (dsc1->csdDefCount != dsc2->csdDefCount)
+    {
+        return dsc1->csdDefCount < dsc2->csdDefCount;
+    }
+
+    // In order to ensure that we have a stable sort, we break ties using the csdIndex
+    return dsc1->csdIndex < dsc2->csdIndex;
+}
+
+
+//---------------------------------------------------------------------------
+// optCSEcostCmpEx2: New CSE heuristic ranking for normal optimization (not small code)
+//
+// Arguments:
+//    dsc1 - descriptor for first CSE candidate
+//    dsc2 - descriptor for second CSE candidate
+//
+// Returns:
+//    true if dsc1 is a less desirable CSE candidate than dsc2.
+//
+bool CSE_Heuristic::optCSEcostCmpEx2::operator()(const CSEdsc* dsc1, const CSEdsc* dsc2)
+{
+    GenTree* const exp1 = dsc1->csdTree;
+    GenTree* const exp2 = dsc2->csdTree;
+
+    weight_t const expCost1 = (weight_t) exp1->GetCostEx();
+    weight_t const expCost2 = (weight_t) exp2->GetCostEx();
+
+    weight_t const expWeightedCost1 = expCost1 * dsc1->csdUseWtCnt;    
+    weight_t const expWeightedCost2 = expCost2 * dsc2->csdUseWtCnt;
+
+    if (expWeightedCost2 != expWeightedCost1)
+    {
+        return expWeightedCost2 < expWeightedCost1;
+    }
+
+    if (expCost2 != expCost1)
+    {
+        return expCost2 < expCost1;
+    }
+
+    // Sort the higher Use Counts toward the top
+    if (dsc2->csdUseWtCnt != dsc1->csdUseWtCnt)
+    {
+        return dsc2->csdUseWtCnt < dsc1->csdUseWtCnt;
+    }
+
+    // With the same use count, Sort the lower Def Counts toward the top
+    if (dsc1->csdDefWtCnt != dsc2->csdDefWtCnt)
+    {
+        return dsc1->csdDefWtCnt < dsc2->csdDefWtCnt;
+    }
+
+    // In order to ensure that we have a stable sort, we break ties using the csdIndex
+    return dsc1->csdIndex < dsc2->csdIndex;
+}
+
+
 //------------------------------------------------------------------------
 // SortCandidates: standard heuristic candidate sort
 //
@@ -2300,11 +2370,11 @@ void CSE_Heuristic::SortCandidates()
 
     if (CodeOptKind() == Compiler::SMALL_CODE)
     {
-        jitstd::sort(sortTab, sortTab + m_pCompiler->optCSECandidateCount, Compiler::optCSEcostCmpSz());
+        jitstd::sort(sortTab, sortTab + m_pCompiler->optCSECandidateCount, optCSEcostCmpSz());
     }
     else
     {
-        jitstd::sort(sortTab, sortTab + m_pCompiler->optCSECandidateCount, Compiler::optCSEcostCmpEx());
+        jitstd::sort(sortTab, sortTab + m_pCompiler->optCSECandidateCount, optCSEcostCmpEx2());
     }
 
 #ifdef DEBUG
@@ -3367,11 +3437,11 @@ void CSE_HeuristicCommon::PerformCSE(CSE_Candidate* successfulCandidate)
 
 void CSE_Heuristic::AdjustHeuristic(CSE_Candidate* successfulCandidate)
 {
-    weight_t cseRefCnt = (successfulCandidate->DefCount() * 2) + successfulCandidate->UseCount();
-
     // FACTOR THIS
     if (successfulCandidate->LiveAcrossCall() != 0)
     {
+        weight_t cseRefCnt = (successfulCandidate->DefCount() * 2) + successfulCandidate->UseCount();
+
         // As we introduce new LclVars for these CSE we slightly
         // increase the cutoffs for aggressive and moderate CSE's
         //
@@ -3379,11 +3449,16 @@ void CSE_Heuristic::AdjustHeuristic(CSE_Candidate* successfulCandidate)
 
         if (cseRefCnt > aggressiveRefCnt)
         {
+            JITDUMP("... live across call CSE with " FMT_WT " refs, increasing aggressive count from " FMT_WT " to " FMT_WT "\n", cseRefCnt, aggressiveRefCnt,
+                aggressiveRefCnt + incr);
             aggressiveRefCnt += incr;
         }
 
         if (cseRefCnt > moderateRefCnt)
         {
+            JITDUMP("... live across call CSE with " FMT_WT " refs increasing moderateRefCnt count from " FMT_WT " to " FMT_WT "\n", cseRefCnt, moderateRefCnt,
+                moderateRefCnt + (incr/2));
+
             moderateRefCnt += (incr / 2);
         }
     }

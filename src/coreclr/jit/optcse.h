@@ -117,6 +117,21 @@ private:
     bool     largeFrame;
     bool     hugeFrame;
 
+    struct optCSEcostCmpEx
+    {
+        bool operator()(const CSEdsc* op1, const CSEdsc* op2);
+    };
+
+    struct optCSEcostCmpSz
+    {
+        bool operator()(const CSEdsc* op1, const CSEdsc* op2);
+    };
+
+    struct optCSEcostCmpEx2
+    {
+        bool operator()(const CSEdsc* op1, const CSEdsc* op2);
+    };
+
 public:
     CSE_Heuristic(Compiler*);
 
