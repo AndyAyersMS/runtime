@@ -1652,6 +1652,13 @@ CSE_HeuristicCommon::CSE_HeuristicCommon(Compiler* pCompiler) : m_pCompiler(pCom
     }
 #endif
 
+#ifdef DEBUG
+    // Track the order of CSEs done (candidate number)
+    //
+    CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
+    m_sequence              = new (allocator) jitstd::vector<unsigned>(allocator);
+#endif
+
     JITDUMP("CONST CSE is %s\n", enableConstCSE ? "enabled" : "disabled");
 }
 
@@ -1956,21 +1963,8 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 //
 CSE_HeuristicRandom::CSE_HeuristicRandom(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler)
 {
-    m_cseRNG.Init(m_pCompiler->info.compMethodHash());
-
-    // We should either have a bias or stress should be enabled.
-    m_bias = ReinterpretHexAsDecimal(JitConfig.JitRandomCSE());
-
-    if (m_bias == 0)
-    {
-        // Note this bias will vary per method, depending on hash...
-        m_bias = m_cseRNG.Next(100);
-        JITDUMP("JitRandomCSE is OFF, but JitStress is ON: using random bias=%d.\n", m_bias);
-    }
-    else
-    {
-        JITDUMP("JitRandomCSE is ON; using random bias=%d.\n", m_bias);
-    }
+    m_cseRNG.Init(m_pCompiler->info.compMethodHash() ^ JitConfig.JitRandomCSE());
+    JITDUMP("JitRandomCSE is enabled with salt %d\n", JitConfig.JitRandomCSE());
 }
 
 //------------------------------------------------------------------------
@@ -1987,6 +1981,85 @@ bool CSE_HeuristicRandom::ConsiderTree(GenTree* tree, bool isReturn)
 {
     return CanConsiderTree(tree, isReturn);
 }
+
+void CSE_HeuristicRandom::ConsiderCandidates()
+{
+    // Generate a random permutation of all candidates.
+    // We rely on the fact that SortCandidates set up
+    // sortTab to be a copy of m_pCompiler->optCSEtab.
+    //
+    const unsigned n = m_pCompiler->optCSECandidateCount;
+
+    if (n == 0)
+    {
+        // No candidates
+        return;
+    }
+
+    // Fill sortTab with random permutation of the optCSETab
+    // (via the "inside-out" Fisher-Yates shuffle)
+    //
+    sortTab = new (m_pCompiler, CMK_CSE) CSEdsc*[n];
+
+    for (unsigned i = 0; i < n; i++)
+    {
+        // Choose j in [0...i]
+        //
+        const unsigned j = m_cseRNG.Next(i + 1);
+        if (i != j)
+        {
+            sortTab[i] = sortTab[j];
+        }
+        sortTab[j] = m_pCompiler->optCSEtab[i];
+    }
+
+    // Randomly perform the first K of these CSEs
+    // where K is uniform within [1...n].
+    //
+    unsigned k = m_cseRNG.Next(n) + 1;
+
+    CSEdsc** ptr = sortTab;
+    for (; (k > 0); k--, ptr++)
+    {
+        const int     attempt = m_pCompiler->optCSEattempt++;
+        CSEdsc* const dsc     = *ptr;
+        CSE_Candidate candidate(this, dsc);
+
+        JITDUMP("\nRandomly attempting " FMT_CSE "\n", candidate.CseIndex());
+        JITDUMP("CSE Expression : \n");
+        JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
+        JITDUMP("\n");
+
+        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        {
+            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
+            continue;
+        }
+
+        candidate.InitializeCounts();
+
+        if (candidate.UseCount() == 0)
+        {
+            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
+            continue;
+        }
+
+        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
+        {
+            // If we reach this point, then the CSE def was incorrectly marked or the
+            // block with this use is unreachable. So skip and go to the next CSE.
+            // Without the "continue", we'd generate bad code in retail.
+            // Commented out a noway_assert(false) here due to bug: 3290124.
+            // The problem is if there is sub-graph that is not reachable from the
+            // entry point, the CSE flags propagated, would be incorrect for it.
+            continue;
+        }
+
+        PerformCSE(&candidate);
+        madeChanges = true;
+    }
+}
+
 #endif
 
 //------------------------------------------------------------------------
@@ -2343,48 +2416,6 @@ void CSE_Heuristic::SortCandidates()
     }
 #endif // DEBUG
 }
-
-#ifdef DEBUG
-//------------------------------------------------------------------------
-// PromotionCheck: decide whether to perform this CSE
-//
-// Arguments:
-//   candidate - cse candidate to consider
-//
-// Return Value:
-//   true if the CSE should be performed
-//
-bool CSE_HeuristicRandom::PromotionCheck(CSE_Candidate* candidate)
-{
-    // Generate a number between (0, 99) and if the generated
-    // number is smaller than bias, then perform CSE.
-    unsigned const gen   = m_cseRNG.Next(100);
-    bool const     doCSE = gen < m_bias;
-
-    JITDUMP("%s CSE; gen=%d; bias=%d\n", doCSE ? "Promoting" : "No", gen, m_bias);
-
-    if (doCSE)
-    {
-        candidate->SetStressCSE();
-    }
-
-    return doCSE;
-}
-
-//------------------------------------------------------------------------
-// SortCandidate: fill in the CSE sort tab
-//
-void CSE_HeuristicRandom::SortCandidates()
-{
-    // Just fill in the sort tab, but don't bother sorting as order
-    // should not matter for random CSEs
-    //
-    sortTab = new (m_pCompiler, CMK_CSE) CSEdsc*[m_pCompiler->optCSECandidateCount];
-    sortSiz = m_pCompiler->optCSECandidateCount * sizeof(*sortTab);
-    memcpy(sortTab, m_pCompiler->optCSEtab, sortSiz);
-}
-
-#endif
 
 //------------------------------------------------------------------------
 // PromotionCheck: decide whether to perform this CSE
@@ -2860,6 +2891,10 @@ void CSE_HeuristicCommon::PerformCSE(CSE_Candidate* successfulCandidate)
     {
         grabTempMessage = "CSE - stress mode";
     }
+    else if (successfulCandidate->IsRandom())
+    {
+        grabTempMessage = "CSE - random";
+    }
 #endif // DEBUG
 
     /* Introduce a new temp for the CSE */
@@ -2887,6 +2922,10 @@ void CSE_HeuristicCommon::PerformCSE(CSE_Candidate* successfulCandidate)
     //  Later we will unmark any nested CSE's for the CSE uses.
     //
     CSEdsc* dsc = successfulCandidate->CseDsc();
+
+#ifdef DEBUG
+    m_sequence->push_back(dsc->csdIndex);
+#endif
 
     // If there's just a single def for the CSE, we'll put this
     // CSE into SSA form on the fly. We won't need any PHIs.
@@ -3389,7 +3428,8 @@ void CSE_HeuristicCommon::ConsiderCandidates()
     CSEdsc** ptr = sortTab;
     for (; (cnt > 0); cnt--, ptr++)
     {
-        CSEdsc*       dsc = *ptr;
+        const int     attempt = m_pCompiler->optCSEattempt++;
+        CSEdsc* const dsc     = *ptr;
         CSE_Candidate candidate(this, dsc);
 
         if (dsc->defExcSetPromise == ValueNumStore::NoVN)
@@ -3443,26 +3483,23 @@ void CSE_HeuristicCommon::ConsiderCandidates()
 
 #ifdef DEBUG
 
-        if (doCSE)
-        {
-            const int attempt = m_pCompiler->optCSEattempt++;
+        const int hash = JitConfig.JitCSEHash();
 
-            if (m_pCompiler->info.compMethodHash() == (unsigned)JitConfig.JitCSEHash())
+        if ((hash == 0) || (m_pCompiler->info.compMethodHash() == (unsigned)hash))
+        {
+            // We can only mask the first 32 CSE attempts, so suppress anything beyond that.
+            // Note methods with >= 32 CSEs are currently quite rare.
+            //
+            if (attempt >= 32)
             {
-                // We can only mask the first 32 CSE attempts, so suppress anything beyond that.
-                // Note methods with >= 32 CSEs are currently quite rare.
-                //
-                if (attempt >= 32)
-                {
-                    doCSE = false;
-                    JITDUMP(FMT_CSE " attempt %u disabled, out of mask range\n", candidate.CseIndex(), attempt);
-                }
-                else
-                {
-                    doCSE = ((1 << attempt) & ((unsigned)JitConfig.JitCSEMask())) != 0;
-                    JITDUMP(FMT_CSE " attempt %u mask 0x%08x: %s\n", candidate.CseIndex(), attempt,
-                            JitConfig.JitCSEMask(), doCSE ? "allowed" : "disabled");
-                }
+                doCSE = false;
+                JITDUMP(FMT_CSE " attempt %u disabled, out of mask range\n", candidate.CseIndex(), attempt);
+            }
+            else
+            {
+                doCSE = ((1 << attempt) & ((unsigned)JitConfig.JitCSEMask())) != 0;
+                JITDUMP(FMT_CSE " attempt %u mask 0x%08x: %s\n", candidate.CseIndex(), attempt, JitConfig.JitCSEMask(),
+                        doCSE ? "allowed" : "disabled");
             }
         }
 

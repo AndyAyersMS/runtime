@@ -382,8 +382,8 @@ CONFIG_INTEGER(JitConstCSE, W("JitConstCSE"), 0)
 // Allow fine-grained controls of CSEs done in a particular method
 //
 // Specify method that will respond to the CSEMask.
-// 0 means feature disabled and all methods run CSE normally.
-CONFIG_INTEGER(JitCSEHash, W("JitCSEHash"), 0)
+// -1 means feature disabled and all methods run CSE normally.
+CONFIG_INTEGER(JitCSEHash, W("JitCSEHash"), -1)
 
 // Bitmask of allowed CSEs in methods specified by JitCSEHash.
 // These bits control the "cse attempts" made by normal jitting,
@@ -403,7 +403,7 @@ CONFIG_INTEGER(JitCSEMask, W("JitCSEMask"), 0)
 // Enable metric output in jit disasm & elsewhere
 CONFIG_INTEGER(JitMetrics, W("JitMetrics"), 0)
 
-// When nonzero, choose CSE candidates randomly, with probability
+// When nonzero, choose CSE candidates randomly, with hash salt
 // specified by the (decimal) value of the config
 CONFIG_INTEGER(JitRandomCSE, W("JitRandomCSE"), 0)
 

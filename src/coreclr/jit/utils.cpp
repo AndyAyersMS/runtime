@@ -924,6 +924,105 @@ void ConfigMethodRange::Dump()
     }
 }
 
+//------------------------------------------------------------------------
+// Init: parse a string to set up a ConfigArray
+//
+// Arguments:
+//    str -- string to parse (may be nullptr)
+//
+// Notes:
+//    Values are separated decimal with no whitespace.
+//    Separators are any digit not '-' or '0-9'
+//
+void ConfigArray::Init(const WCHAR* str)
+{
+    // Count the number of values
+    //
+    const WCHAR* p         = str;
+    unsigned     numValues = 0;
+    while (*p != 0)
+    {
+        if ((*p == L'-') || ((L'0' <= *p) && (*p <= L'9')))
+        {
+            if (*p == L'-')
+            {
+                p++;
+            }
+
+            while ((L'0' <= *p) && (*p <= L'9'))
+            {
+                p++;
+            }
+
+            numValues++;
+        }
+        else
+        {
+            p++;
+        }
+    }
+
+    m_length = numValues;
+    m_values = (int*)g_jitHost->allocateMemory(numValues * sizeof(int));
+
+    numValues         = 0;
+    int  currentValue = 0;
+    bool isNegative   = false;
+    while (*p != 0)
+    {
+        if ((*p == L'-') || ((L'0' <= *p) && (*p <= L'9')))
+        {
+            if (*p == L'-')
+            {
+                isNegative = true;
+                p++;
+            }
+
+            while ((L'0' <= *p) && (*p <= L'9'))
+            {
+                currentValue += currentValue * 10 + (*p++) - L'0';
+            }
+
+            if (isNegative)
+            {
+                currentValue = -currentValue;
+            }
+
+            m_values[numValues++] = currentValue;
+            currentValue          = 0;
+        }
+        else
+        {
+            p++;
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// Dump: dump config array to stdout
+//
+void ConfigArray::Dump()
+{
+    if (m_values == nullptr)
+    {
+        printf("<uninitialized config array>\n");
+        return;
+    }
+
+    if (m_length == 0)
+    {
+        printf("<empty config array>\n");
+        return;
+    }
+
+    printf("<config array with %u entries>\n", m_length);
+    for (unsigned i = 0; i < m_length; i++)
+    {
+        printf("%i ", m_values[i]);
+    }
+    printf("\n");
+}
+
 #endif // defined(DEBUG)
 
 #if CALL_ARG_STATS || COUNT_BASIC_BLOCKS || COUNT_LOOPS || EMITTER_STATS || MEASURE_NODE_SIZE || MEASURE_MEM_ALLOC

@@ -18,13 +18,14 @@ class CSE_HeuristicCommon
 protected:
     CSE_HeuristicCommon(Compiler*);
 
-    Compiler*              m_pCompiler;
-    unsigned               m_addCSEcount;
-    CSEdsc**               sortTab;
-    size_t                 sortSiz;
-    bool                   madeChanges;
-    Compiler::codeOptimize codeOptKind;
-    bool                   enableConstCSE;
+    Compiler*                 m_pCompiler;
+    unsigned                  m_addCSEcount;
+    CSEdsc**                  sortTab;
+    size_t                    sortSiz;
+    bool                      madeChanges;
+    Compiler::codeOptimize    codeOptKind;
+    bool                      enableConstCSE;
+    jitstd::vector<unsigned>* m_sequence;
 
 public:
     virtual void Initialize()
@@ -65,7 +66,7 @@ public:
         return "Common CSE Heuristic";
     }
 
-    void ConsiderCandidates();
+    virtual void ConsiderCandidates();
 
     bool MadeChanges() const
     {
@@ -78,6 +79,13 @@ public:
     }
 
     bool IsCompatibleType(var_types cseLclVarTyp, var_types expTyp);
+
+#ifdef DEBUG
+    const jitstd::vector<unsigned>* CseSequence() const
+    {
+        return m_sequence;
+    }
+#endif
 };
 
 #ifdef DEBUG
@@ -94,8 +102,7 @@ private:
 
 public:
     CSE_HeuristicRandom(Compiler*);
-    void SortCandidates();
-    bool PromotionCheck(CSE_Candidate* candidate);
+    void ConsiderCandidates();
     bool ConsiderTree(GenTree* tree, bool isReturn);
 
     const char* Name() const
@@ -221,10 +228,14 @@ class CSE_Candidate
     //  We will set  m_StressCSE:
     //    When the candidate is only being promoted because of a Stress mode.
     //
+    //  We will set  m_Random
+    //    When the candidate is randomly promoted
+    //
     bool m_Aggressive;
     bool m_Moderate;
     bool m_Conservative;
     bool m_StressCSE;
+    bool m_Random;
 
 public:
     CSE_Candidate(CSE_HeuristicCommon* context, CSEdsc* cseDsc)
@@ -239,6 +250,7 @@ public:
         , m_Moderate(false)
         , m_Conservative(false)
         , m_StressCSE(false)
+        , m_Random(false)
     {
     }
 
@@ -320,6 +332,16 @@ public:
     bool IsStressCSE()
     {
         return m_StressCSE;
+    }
+
+    void SetRandom()
+    {
+        m_Random = true;
+    }
+
+    bool IsRandom()
+    {
+        return m_Random;
     }
 
     void InitializeCounts()
