@@ -2175,8 +2175,29 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //
 CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler), m_parameters(nullptr)
 {
+    static ConfigDoubleArray initialParameters;
+    initialParameters.EnsureInit(JitConfig.JitRLCSE());
+
     // Initial parameters come from config, for now
-    JITDUMP("RL CSE heuristic with parameters %s\n", JitConfig.JitRLCSE());
+    JITDUMP("RL CSE heuristic with initial parameters ");
+    JITDUMPEXEC(initialParameters.Dump());
+    
+    if (numParameters > initialParameters.GetLength())
+    {
+        JITDUMP("Too few parameters (expected %d), trailing will be zero", numParameters);
+    }
+    else if (numParameters < initialParameters.GetLength())
+    {
+        JITDUMP("Too many parameters (expected %d), trailing will be ignored", numParameters);
+    }
+
+    CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
+    m_parameters = new (allocator) jitstd::vector<double>(numParameters, 0.0, allocator);
+
+    for (unsigned i = 0; i < initialParameters.GetLength(); i++)
+    {
+        (*m_parameters)[i] = initialParameters.GetData()[i];
+    }
 }
 
 //------------------------------------------------------------------------

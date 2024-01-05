@@ -136,6 +136,7 @@ public:
 class CSE_HeuristicRL : public CSE_HeuristicCommon
 {
 private:
+    const unsigned numParameters = 10;
     jitstd::vector<double>* m_parameters;
     double Preference(CSEdsc* dsc);
     CSEdsc* ChooseCSE();
