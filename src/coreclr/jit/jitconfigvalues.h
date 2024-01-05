@@ -411,6 +411,10 @@ CONFIG_INTEGER(JitRandomCSE, W("JitRandomCSE"), 0)
 // as a sequence of CSE candidate numbers
 CONFIG_STRING(JitReplayCSE, W("JitReplayCSE"))
 
+// When set, specifies the initial parameter string for
+// a reinforcement-learning based CSE heuristic
+CONFIG_STRING(JitRLCSE, W("JitRLCSE"))
+
 #endif
 
 ///

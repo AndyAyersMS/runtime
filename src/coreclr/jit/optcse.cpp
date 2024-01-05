@@ -2110,14 +2110,14 @@ void CSE_HeuristicReplay::ConsiderCandidates()
         return;
     }
 
-    static ConfigArray JitReplaceCSEArray;
-    JitReplaceCSEArray.EnsureInit(JitConfig.JitReplayCSE());
+    static ConfigIntArray JitReplayCSEArray;
+    JitReplayCSEArray.EnsureInit(JitConfig.JitReplayCSE());
 
-    for (unsigned i = 0; i < JitReplaceCSEArray.GetLength(); i++)
+    for (unsigned i = 0; i < JitReplayCSEArray.GetLength(); i++)
     {
         // optCSEtab is 0-based; candidate numbers are 1-based
         //
-        const int index = JitReplaceCSEArray.GetData()[i] - 1;
+        const int index = JitReplayCSEArray.GetData()[i] - 1;
 
         if ((index < 0) || (index >= (int)n))
         {
@@ -2162,6 +2162,56 @@ void CSE_HeuristicReplay::ConsiderCandidates()
         madeChanges = true;
     }
 }
+
+//------------------------------------------------------------------------
+// CSE_HeuristicRL: construct RL CSE heuristic
+//
+// Arguments;
+//  pCompiler - compiler instance
+//
+// Notes:
+//  This creates the RL CSE heuristic. It does CSEs based on a softmax
+//  policy, governed by a parameter vector.
+//
+CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler), m_parameters(nullptr)
+{
+    // Initial parameters come from config, for now
+    JITDUMP("RL CSE heuristic with parameters %s\n", JitConfig.JitRLCSE());
+}
+
+//------------------------------------------------------------------------
+// ConsiderTree: check if this tree can be a CSE candidate
+//
+// Arguments:
+//   tree - tree in question
+//   isReturn - true if tree is part of a return statement
+//
+// Returns:
+//    true if this tree can be a CSE candidate
+//
+bool CSE_HeuristicRL::ConsiderTree(GenTree* tree, bool isReturn)
+{
+    return CanConsiderTree(tree, isReturn);
+}
+
+//------------------------------------------------------------------------
+// ConsiderCandidates: examine candidates and perform CSEs.
+//
+void CSE_HeuristicRL::ConsiderCandidates()
+{
+    return;
+}
+
+double CSE_HeuristicRL::Preference(CSEdsc* cse)
+{
+    return 0;
+}
+
+CSEdsc* CSE_HeuristicRL::ChooseCSE()
+{
+    return nullptr;
+}
+
 #endif // DEBUG
 
 //------------------------------------------------------------------------
@@ -3685,13 +3735,24 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
     {
         optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicRandom(this);
     }
-    else
+
+    if (optCSEheuristic == nullptr)
     {
         bool useReplayHeuristic = (JitConfig.JitReplayCSE() != nullptr);
 
         if (useReplayHeuristic)
         {
             optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicReplay(this);
+        }
+    }
+
+    if (optCSEheuristic == nullptr)
+    {
+        bool useRLHeuristic = (JitConfig.JitRLCSE() != nullptr);
+
+        if (useRLHeuristic)
+        {
+            optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicRL(this);
         }
     }
 

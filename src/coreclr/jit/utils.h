@@ -241,9 +241,9 @@ private:
     Range*   m_ranges;    // ranges of functions to include
 };
 
-// ConfigArray is an integer-valued array
+// ConfigInArray is an integer-valued array
 //
-class ConfigArray
+class ConfigIntArray
 {
 public:
     // Ensure the string has been parsed.
@@ -268,6 +268,36 @@ public:
 private:
     void Init(const WCHAR* str);
     int*     m_values;
+    unsigned m_length;
+};
+
+// ConfigDoubleArray is an double-valued array
+//
+class ConfigDoubleArray
+{
+public:
+    // Ensure the string has been parsed.
+    void EnsureInit(const WCHAR* str)
+    {
+        if (m_values == nullptr)
+        {
+            Init(str);
+        }
+    }
+
+    void    Dump();
+    double* GetData() const
+    {
+        return m_values;
+    }
+    unsigned GetLength() const
+    {
+        return m_length;
+    }
+
+private:
+    void Init(const WCHAR* str);
+    double*  m_values;
     unsigned m_length;
 };
 

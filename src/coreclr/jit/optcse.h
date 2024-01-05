@@ -127,6 +127,30 @@ public:
         return "Replay CSE Heuristic";
     }
 };
+
+// Reinforcement Learning CSE heuristic
+//
+// Uses a "linear" feature model with
+// softmax policy.
+//
+class CSE_HeuristicRL : public CSE_HeuristicCommon
+{
+private:
+    jitstd::vector<double>* m_parameters;
+    double Preference(CSEdsc* dsc);
+    CSEdsc* ChooseCSE();
+
+public:
+    CSE_HeuristicRL(Compiler*);
+    void ConsiderCandidates();
+    bool ConsiderTree(GenTree* tree, bool isReturn);
+
+    const char* Name() const
+    {
+        return "RL (Reforcement Learning CSE Heuristic";
+    }
+};
+
 #endif
 
 // Standard CSE heuristic
