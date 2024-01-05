@@ -2504,6 +2504,7 @@ class Compiler
     friend class CSE_DataFlow;
     friend class CSE_HeuristicCommon;
     friend class CSE_HeuristicRandom;
+    friend class CSE_HeuristicReplay;
     friend class CSE_Heuristic;
     friend class CodeGenInterface;
     friend class CodeGen;

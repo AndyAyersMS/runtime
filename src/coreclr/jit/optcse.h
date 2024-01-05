@@ -111,6 +111,22 @@ public:
     }
 };
 
+// Replay CSE heuristic
+//
+// Performs CSE specified by JitReplayCSE
+//
+class CSE_HeuristicReplay : public CSE_HeuristicCommon
+{
+public:
+    CSE_HeuristicReplay(Compiler*);
+    void ConsiderCandidates();
+    bool ConsiderTree(GenTree* tree, bool isReturn);
+
+    const char* Name() const
+    {
+        return "Replay CSE Heuristic";
+    }
+};
 #endif
 
 // Standard CSE heuristic

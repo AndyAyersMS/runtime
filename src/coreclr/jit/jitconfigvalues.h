@@ -407,6 +407,10 @@ CONFIG_INTEGER(JitMetrics, W("JitMetrics"), 0)
 // specified by the (decimal) value of the config
 CONFIG_INTEGER(JitRandomCSE, W("JitRandomCSE"), 0)
 
+// When set, specifies the exact CSEs to perform
+// as a sequence of CSE candidate numbers
+CONFIG_STRING(JitReplayCSE, W("JitReplayCSE"))
+
 #endif
 
 ///

@@ -1982,6 +1982,9 @@ bool CSE_HeuristicRandom::ConsiderTree(GenTree* tree, bool isReturn)
     return CanConsiderTree(tree, isReturn);
 }
 
+//------------------------------------------------------------------------
+// ConsiderCandidates: examine candidates and perform CSEs.
+//
 void CSE_HeuristicRandom::ConsiderCandidates()
 {
     // Generate a random permutation of all candidates.
@@ -2060,7 +2063,106 @@ void CSE_HeuristicRandom::ConsiderCandidates()
     }
 }
 
-#endif
+//------------------------------------------------------------------------
+// CSE_HeuristicReplay: construct replay CSE heuristic
+//
+// Arguments;
+//  pCompiler - compiler instance
+//
+// Notes:
+//  This creates the replay CSE heuristic. It does CSEs specifed by
+//  the ArrayConfig parsing of JitReplayCSE.
+//
+CSE_HeuristicReplay::CSE_HeuristicReplay(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler)
+{
+    JITDUMP("JitReplayCSE is enabled with config %s\n", JitConfig.JitReplayCSE());
+}
+
+//------------------------------------------------------------------------
+// ConsiderTree: check if this tree can be a CSE candidate
+//
+// Arguments:
+//   tree - tree in question
+//   isReturn - true if tree is part of a return statement
+//
+// Returns:
+//    true if this tree can be a CSE candidate
+//
+bool CSE_HeuristicReplay::ConsiderTree(GenTree* tree, bool isReturn)
+{
+    return CanConsiderTree(tree, isReturn);
+}
+
+//------------------------------------------------------------------------
+// ConsiderCandidates: examine candidates and perform CSEs.
+//
+void CSE_HeuristicReplay::ConsiderCandidates()
+{
+    // Generate a random permutation of all candidates.
+    // We rely on the fact that SortCandidates set up
+    // sortTab to be a copy of m_pCompiler->optCSEtab.
+    //
+    const unsigned n = m_pCompiler->optCSECandidateCount;
+
+    if (n == 0)
+    {
+        // No candidates
+        return;
+    }
+
+    static ConfigArray JitReplaceCSEArray;
+    JitReplaceCSEArray.EnsureInit(JitConfig.JitReplayCSE());
+
+    for (unsigned i = 0; i < JitReplaceCSEArray.GetLength(); i++)
+    {
+        // optCSEtab is 0-based; candidate numbers are 1-based
+        //
+        const int index = JitReplaceCSEArray.GetData()[i] - 1;
+
+        if ((index < 0) || (index >= (int)n))
+        {
+            JITDUMP("Invalid candidate number %d\n", index + 1);
+            continue;
+        }
+        const int     attempt = m_pCompiler->optCSEattempt++;
+        CSEdsc* const dsc     = m_pCompiler->optCSEtab[index];
+        CSE_Candidate candidate(this, dsc);
+
+        JITDUMP("\nReplay attempting " FMT_CSE "\n", candidate.CseIndex());
+        JITDUMP("CSE Expression : \n");
+        JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
+        JITDUMP("\n");
+
+        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        {
+            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
+            continue;
+        }
+
+        candidate.InitializeCounts();
+
+        if (candidate.UseCount() == 0)
+        {
+            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
+            continue;
+        }
+
+        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
+        {
+            // If we reach this point, then the CSE def was incorrectly marked or the
+            // block with this use is unreachable. So skip and go to the next CSE.
+            // Without the "continue", we'd generate bad code in retail.
+            // Commented out a noway_assert(false) here due to bug: 3290124.
+            // The problem is if there is sub-graph that is not reachable from the
+            // entry point, the CSE flags propagated, would be incorrect for it.
+            continue;
+        }
+
+        PerformCSE(&candidate);
+        madeChanges = true;
+    }
+}
+#endif // DEBUG
 
 //------------------------------------------------------------------------
 // CSE_Heuristic: construct standard CSE heuristic
@@ -3418,8 +3520,12 @@ void CSE_Heuristic::AdjustHeuristic(CSE_Candidate* successfulCandidate)
     }
 }
 
-// Consider each of the CSE candidates and if the CSE passes
-// the PromotionCheck then transform the CSE by calling PerformCSE
+//------------------------------------------------------------------------
+// ConsiderCandidates: examine candidates and perform CSEs.
+//
+// Notes:
+//   Consider each of the CSE candidates and if the CSE passes
+//   the PromotionCheck then transform the CSE by calling PerformCSE
 //
 void CSE_HeuristicCommon::ConsiderCandidates()
 {
@@ -3579,6 +3685,16 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
     {
         optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicRandom(this);
     }
+    else
+    {
+        bool useReplayHeuristic = (JitConfig.JitReplayCSE() != nullptr);
+
+        if (useReplayHeuristic)
+        {
+            optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicReplay(this);
+        }
+    }
+
 #endif
 
     if (optCSEheuristic == nullptr)

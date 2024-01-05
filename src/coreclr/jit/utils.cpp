@@ -966,6 +966,7 @@ void ConfigArray::Init(const WCHAR* str)
     m_values = (int*)g_jitHost->allocateMemory(numValues * sizeof(int));
 
     numValues         = 0;
+    p                 = str;
     int  currentValue = 0;
     bool isNegative   = false;
     while (*p != 0)
