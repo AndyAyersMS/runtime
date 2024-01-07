@@ -2187,6 +2187,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
     //
     JITDUMP("RL CSE heuristic with salt %d and initial parameters ", JitConfig.JitRandomCSE());
     JITDUMPEXEC(initialParameters.Dump());
+    JITDUMP("\n");
 
     // Set up the random state
     //
@@ -2578,7 +2579,7 @@ void CSE_HeuristicRL::UpdateParameters()
 
     JITDUMP("Updating parameters with sequence ");
     JITDUMPEXEC(JitReplayCSEArray.Dump());
-    JITDUMP("and reward " FMT_WT "\n", reward);
+    JITDUMP(" and reward " FMT_WT "\n", reward);
 
     double newParameters[numParameters];
     for (int i = 0; i < numParameters; i++)
@@ -2623,9 +2624,12 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMP("\n");
 
         // Since this is an "on-policy" process, the dsc
-        // should be among the possible options.
+        // should be among the possible choices.
         //
+        // Eventually (with a well-trained policy) it should be the strongly preferred choice,
+        // if this is an optimal sequence.
         Choice* const currentChoice = FindChoice(dsc, choices);
+        JITDUMP("Choice likelihood was " FMT_WT "\n", currentChoice->m_softmax);
 
         // Compute the parameter update...
         //
@@ -2639,7 +2643,7 @@ void CSE_HeuristicRL::UpdateParameters()
 
             for (int i = 0; i < numParameters; i++)
             {
-                gradient[i] -= choices.TopRef(i).m_softmax * choiceFeature[i];
+                gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
             }
         }
 

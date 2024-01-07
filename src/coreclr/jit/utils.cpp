@@ -1006,22 +1006,20 @@ void ConfigIntArray::Dump()
 {
     if (m_values == nullptr)
     {
-        printf("<uninitialized config array>\n");
+        printf("<uninitialized config int array>\n");
         return;
     }
 
     if (m_length == 0)
     {
-        printf("<empty config array>\n");
+        printf("<empty config int array>\n");
         return;
     }
 
-    printf("<config array with %u entries>\n", m_length);
     for (unsigned i = 0; i < m_length; i++)
     {
         printf("%i ", m_values[i]);
     }
-    printf("\n");
 }
 
 //------------------------------------------------------------------------
@@ -1031,8 +1029,8 @@ void ConfigIntArray::Dump()
 //    str -- string to parse (may be nullptr)
 //
 // Notes:
-//    Values are separated in ddd.ddd format.
-//    Separators are any digit not '-' or '.' or '0-9'
+//    Values are comma, tab or space separated.
+//    Consecutive separators are ignored
 //
 void ConfigDoubleArray::Init(const WCHAR* str)
 {
@@ -1042,84 +1040,39 @@ void ConfigDoubleArray::Init(const WCHAR* str)
     unsigned     numValues = 0;
     while (*p != 0)
     {
-        if ((*p == L'-') || (*p == L'.') || ((L'0' <= *p) && (*p <= L'9')))
+        if (*p == L',')
         {
-            if (*p == L'-')
-            {
-                p++;
-            }
-
-            while ((L'0' <= *p) && (*p <= L'9'))
-            {
-                p++;
-            }
-
-            if (*p == L'.')
-            {
-                p++;
-            }
-
-            while ((L'0' <= *p) && (*p <= L'9'))
-            {
-                p++;
-            }
-
+            p++;
+            continue;
+        }
+        WCHAR* pNext = nullptr;
+        wcstod(p, &pNext);
+        if (errno == 0)
+        {
             numValues++;
         }
-        else
-        {
-            p++;
-        }
+        p = pNext;
     }
 
-    m_length = numValues;
-    m_values = (double*)g_jitHost->allocateMemory(numValues * sizeof(double));
-
-    numValues           = 0;
-    p                   = str;
-    double currentValue = 0;
-    bool   isNegative   = false;
+    m_length  = numValues;
+    m_values  = (double*)g_jitHost->allocateMemory(numValues * sizeof(double));
+    p         = str;
+    numValues = 0;
     while (*p != 0)
     {
-        if ((*p == L'-') || ((L'0' <= *p) && (*p <= L'9')))
-        {
-            if (*p == L'-')
-            {
-                isNegative = true;
-                p++;
-            }
-
-            while ((L'0' <= *p) && (*p <= L'9'))
-            {
-                currentValue += currentValue * 10 + (*p++) - L'0';
-            }
-
-            if (*p == L'.')
-            {
-                p++;
-            }
-
-            double fracPart = 0.1;
-
-            while ((L'0' <= *p) && (*p <= L'9'))
-            {
-                currentValue += currentValue + ((*p++) - L'0') * fracPart;
-                fracPart *= 0.01;
-                p++;
-            }
-
-            if (isNegative)
-            {
-                currentValue = -currentValue;
-            }
-
-            m_values[numValues++] = currentValue;
-            currentValue          = 0;
-        }
-        else
+        if (*p == L',')
         {
             p++;
+            continue;
         }
+
+        WCHAR* pNext = nullptr;
+        double val   = wcstod(p, &pNext);
+        if (errno == 0)
+        {
+            m_values[numValues++] = val;
+        }
+        p = pNext;
     }
 }
 
@@ -1130,22 +1083,20 @@ void ConfigDoubleArray::Dump()
 {
     if (m_values == nullptr)
     {
-        printf("<uninitialized config array>\n");
+        printf("<uninitialized config double array>\n");
         return;
     }
 
     if (m_length == 0)
     {
-        printf("<empty config array>\n");
+        printf("<empty config double rray>\n");
         return;
     }
 
-    printf("<config array with %u entries>\n", m_length);
     for (unsigned i = 0; i < m_length; i++)
     {
         printf("%f ", m_values[i]);
     }
-    printf("\n");
 }
 
 #endif // defined(DEBUG)
