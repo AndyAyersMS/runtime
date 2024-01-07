@@ -2096,12 +2096,11 @@ bool CSE_HeuristicReplay::ConsiderTree(GenTree* tree, bool isReturn)
 //------------------------------------------------------------------------
 // ConsiderCandidates: examine candidates and perform CSEs.
 //
+// Notes:
+//   Simply follows the script provided.
+//
 void CSE_HeuristicReplay::ConsiderCandidates()
 {
-    // Generate a random permutation of all candidates.
-    // We rely on the fact that SortCandidates set up
-    // sortTab to be a copy of m_pCompiler->optCSEtab.
-    //
     const unsigned n = m_pCompiler->optCSECandidateCount;
 
     if (n == 0)
@@ -2179,7 +2178,7 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  JitReplayCSEReward can be used to supply the perf score for the sequence.
 //
 CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
-    : CSE_HeuristicCommon(pCompiler), m_parameters(nullptr), m_alpha(0.0)
+    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_updateParameters(false)
 {
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
@@ -2204,12 +2203,9 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
         JITDUMP("Too many parameters (expected %d), trailing will be ignored", numParameters);
     }
 
-    CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
-    m_parameters            = new (allocator) jitstd::vector<double>(numParameters, 0.0, allocator);
-
     for (unsigned i = 0; i < initialParamLength; i++)
     {
-        (*m_parameters)[i] = initialParameters.GetData()[i];
+        m_parameters[i] = initialParameters.GetData()[i];
     }
 
     // Optionally we may be given a prior sequence and perf score to use to
@@ -2232,7 +2228,8 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
 
         // We will likely need to vary this too
         //
-        m_alpha = 1e-4;
+        m_alpha            = 1e-4;
+        m_updateParameters = true;
     }
 }
 
@@ -2259,6 +2256,12 @@ void CSE_HeuristicRL::ConsiderCandidates()
     sortTab = new (m_pCompiler, CMK_CSE) CSEdsc*[m_pCompiler->optCSECandidateCount];
     sortSiz = m_pCompiler->optCSECandidateCount * sizeof(*sortTab);
     memcpy(sortTab, m_pCompiler->optCSEtab, sortSiz);
+
+    if (m_updateParameters)
+    {
+        UpdateParameters();
+        return;
+    }
 
     while (true)
     {
@@ -2314,13 +2317,14 @@ void CSE_HeuristicRL::ConsiderCandidates()
 }
 
 //------------------------------------------------------------------------
-// Preference: determine a preference score for this CSE
+// GetFeatures: extract features for this CSE
 //
 // Arguments:
 //    cse - cse descriptor, or nullptr for the option to stop doing CSEs.
+//    features - array to fill in with feature values
 //
 // Notes:
-//    Current set of parameter features:
+//    Current set of features:
 //    0. cse costEx
 //    1. cse use count weighted (log)
 //    2. cse def count weighted (log)
@@ -2334,6 +2338,53 @@ void CSE_HeuristicRL::ConsiderCandidates()
 //   10. cse is shared const (0/1)
 //   11. cse is not shared const (0/1)
 //
+void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
+{
+    for (int i = 0; i < numParameters; i++)
+    {
+        features[i] = 0;
+    }
+
+    if (cse == nullptr)
+    {
+        // "stopping" preference.... fixed for now,
+        // but likely should be parameterized
+        //
+        return;
+    }
+
+    features[0] = cse->csdTree->GetCostEx();
+
+    if (cse->csdUseWtCnt > 0)
+    {
+        features[1] = log(cse->csdUseWtCnt);
+    }
+
+    if (cse->csdDefWtCnt > 0)
+    {
+        features[2] = log(cse->csdDefWtCnt);
+    }
+
+    features[3] = cse->csdTree->GetCostSz();
+    features[4] = cse->csdUseCount;
+    features[5] = cse->csdDefCount;
+
+    features[6] = cse->csdLiveAcrossCall;
+    features[7] = !cse->csdLiveAcrossCall;
+
+    features[8] = cse->csdTree->TypeIs(TYP_INT);
+    features[9] = cse->csdTree->TypeIs(TYP_FLOAT, TYP_DOUBLE);
+
+    features[10] = cse->csdIsSharedConst;
+    features[11] = !cse->csdIsSharedConst;
+}
+
+//------------------------------------------------------------------------
+// Preference: determine a preference score for this CSE
+//
+// Arguments:
+//    cse - cse descriptor, or nullptr for the option to stop doing CSEs.
+//
 double CSE_HeuristicRL::Preference(CSEdsc* cse)
 {
     if (cse == nullptr)
@@ -2344,32 +2395,14 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
         return 1.0;
     }
 
+    double features[12];
+    GetFeatures(cse, features);
+
     double preference = 0;
-
-    preference += (*m_parameters)[0] * cse->csdTree->GetCostEx();
-
-    if (cse->csdUseWtCnt > 0)
+    for (int i = 0; i < numParameters; i++)
     {
-        preference += (*m_parameters)[1] * log(cse->csdUseWtCnt);
+        preference += features[i] * m_parameters[i];
     }
-
-    if (cse->csdDefWtCnt > 0)
-    {
-        preference += (*m_parameters)[2] * log(cse->csdDefWtCnt);
-    }
-
-    preference += (*m_parameters)[3] * cse->csdTree->GetCostSz();
-    preference += (*m_parameters)[4] * cse->csdUseCount;
-    preference += (*m_parameters)[5] * cse->csdDefCount;
-
-    preference += (*m_parameters)[6] * cse->csdLiveAcrossCall;
-    preference += (*m_parameters)[7] * !cse->csdLiveAcrossCall;
-
-    preference += (*m_parameters)[8] * cse->csdTree->TypeIs(TYP_INT);
-    preference += (*m_parameters)[9] * cse->csdTree->TypeIs(TYP_FLOAT, TYP_DOUBLE);
-
-    preference += (*m_parameters)[10] * cse->csdIsSharedConst;
-    preference += (*m_parameters)[11] * !cse->csdIsSharedConst;
 
     return preference;
 }
@@ -2399,51 +2432,16 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //
 CSEdsc* CSE_HeuristicRL::ChooseCSE()
 {
-    // presize
+    // Todo: presize
+    //
     ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE));
-
-    // Fill in the choices
-    //
-    for (unsigned i = 0; i < m_pCompiler->optCSECandidateCount; i++)
-    {
-        CSEdsc* const dsc = sortTab[i];
-        if (dsc == nullptr)
-        {
-            // already did this cse
-            continue;
-        }
-
-        double preference = Preference(dsc);
-        choices.Emplace(dsc, preference);
-    }
-
-    // Doing nothing is also an option.
-    //
-    const double doNothingPreference = Preference(nullptr);
-    choices.Emplace(nullptr, doNothingPreference);
+    BuildChoices(choices);
 
     // Compute softmax likelihoods
     //
     Softmax(choices);
-
-#ifdef DEBUG
     JITDUMP("Current candidate evaluation\n");
-    for (int i = 0; i < choices.Height(); i++)
-    {
-        Choice&       choice = choices.TopRef(i);
-        CSEdsc* const cse    = choice.m_dsc;
-        if (cse != nullptr)
-        {
-            JITDUMP("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
-                    choice.m_preference, choice.m_softmax);
-        }
-        else
-        {
-            JITDUMP("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference,
-                    choice.m_softmax);
-        }
-    }
-#endif
+    JITDUMPEXEC(DumpChoices(choices));
 
     // Generate a random number and choose the CSE to perform.
     //
@@ -2464,6 +2462,32 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
     // just return the first one.
     //
     return choices.TopRef().m_dsc;
+}
+
+//------------------------------------------------------------------------
+// BuildChoices: fill in the choices currently available
+//
+//   choices - array of choices to be filled in
+//
+void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
+{
+    for (unsigned i = 0; i < m_pCompiler->optCSECandidateCount; i++)
+    {
+        CSEdsc* const dsc = sortTab[i];
+        if (dsc == nullptr)
+        {
+            // already did this cse
+            continue;
+        }
+
+        double preference = Preference(dsc);
+        choices.Emplace(dsc, preference);
+    }
+
+    // Doing nothing is also an option.
+    //
+    const double doNothingPreference = Preference(nullptr);
+    choices.Emplace(nullptr, doNothingPreference);
 }
 
 //------------------------------------------------------------------------
@@ -2500,6 +2524,199 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
     {
         choices.TopRef(i).m_softmax /= softmaxSum;
     }
+}
+
+//------------------------------------------------------------------------
+// DumpChoices: dump out information on current choices
+//
+//   choices - array of choices
+//
+void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices)
+{
+#ifdef DEBUG
+    for (int i = 0; i < choices.Height(); i++)
+    {
+        Choice&       choice = choices.TopRef(i);
+        CSEdsc* const cse    = choice.m_dsc;
+        if (cse != nullptr)
+        {
+            JITDUMP("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
+                    choice.m_preference, choice.m_softmax);
+        }
+        else
+        {
+            JITDUMP("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference,
+                    choice.m_softmax);
+        }
+    }
+#endif
+}
+
+//------------------------------------------------------------------------
+// UpdateParameters: Replay an existing CSE sequence with known reward,
+//   and update the model parameters via the policy gradient.
+//
+void CSE_HeuristicRL::UpdateParameters()
+{
+    const unsigned n = m_pCompiler->optCSECandidateCount;
+
+    if (n == 0)
+    {
+        // No candidates, nothing to update.
+        return;
+    }
+
+    ArrayStack<Choice>    choices(m_pCompiler->getAllocator(CMK_CSE));
+    static ConfigIntArray JitReplayCSEArray;
+    JitReplayCSEArray.EnsureInit(JitConfig.JitReplayCSE());
+
+    // We have an undiscounted reward, so it applies equally
+    // to all steps in the computation.
+    static ConfigDoubleArray JitReplayCSERewardArray;
+    JitReplayCSERewardArray.EnsureInit(JitConfig.JitReplayCSEReward());
+    const double reward = JitReplayCSERewardArray.GetData()[0];
+
+    JITDUMP("Updating parameters with sequence ");
+    JITDUMPEXEC(JitReplayCSEArray.Dump());
+    JITDUMP("and reward " FMT_WT "\n", reward);
+
+    double newParameters[numParameters];
+    for (int i = 0; i < numParameters; i++)
+    {
+        newParameters[i] = m_parameters[i];
+    }
+
+    for (unsigned i = 0; i < JitReplayCSEArray.GetLength(); i++)
+    {
+        // optCSEtab is 0-based; candidate numbers are 1-based
+        //
+        const int index = JitReplayCSEArray.GetData()[i] - 1;
+
+        if ((index < 0) || (index >= (int)n))
+        {
+            JITDUMP("Invalid candidate number %d\n", index + 1);
+            continue;
+        }
+
+        // Re-evaluate the available options.
+        //
+        choices.Reset();
+        BuildChoices(choices);
+        Softmax(choices);
+
+        const int     attempt = m_pCompiler->optCSEattempt++;
+        CSEdsc* const dsc     = sortTab[index];
+
+        // purge this CSE so we don't consider it again
+        //
+        assert(sortTab[dsc->csdIndex - 1] == dsc);
+        sortTab[dsc->csdIndex - 1] = nullptr;
+
+        // We are actually going to do this CSE since
+        // we want the state to evolve as it did originally
+        //
+        CSE_Candidate candidate(this, dsc);
+
+        JITDUMP("\nRL Update attempting " FMT_CSE "\n", candidate.CseIndex());
+        JITDUMP("CSE Expression : \n");
+        JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
+        JITDUMP("\n");
+
+        // Since this is an "on-policy" process, the dsc
+        // should be among the possible options.
+        //
+        Choice* const currentChoice = FindChoice(dsc, choices);
+
+        // Compute the parameter update...
+        //
+        double gradient[numParameters];
+        GetFeatures(dsc, gradient);
+
+        for (int c = 0; c < choices.Height(); c++)
+        {
+            double choiceFeature[numParameters];
+            GetFeatures(choices.TopRef(i).m_dsc, choiceFeature);
+
+            for (int i = 0; i < numParameters; i++)
+            {
+                gradient[i] -= choices.TopRef(i).m_softmax * choiceFeature[i];
+            }
+        }
+
+#ifdef DEBUG
+        JITDUMP("Gradient vector for this step\n");
+        for (int i = 0; i < numParameters; i++)
+        {
+            printf("%2d: %f\n", i, gradient[i]);
+        }
+#endif
+
+        // Todo: baseline?
+        //
+        for (int i = 0; i < numParameters; i++)
+        {
+            gradient[i] *= m_alpha * reward;
+            newParameters[i] += gradient[i];
+        }
+
+#ifdef DEBUG
+        JITDUMP("Parameter update for this step and total\n");
+        for (int i = 0; i < numParameters; i++)
+        {
+            printf("%2d: %10.7f %10.7f\n", i, gradient[i], newParameters[i]);
+        }
+#endif
+
+        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        {
+            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
+            continue;
+        }
+
+        candidate.InitializeCounts();
+
+        if (candidate.UseCount() == 0)
+        {
+            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
+            continue;
+        }
+
+        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
+        {
+            // If we reach this point, then the CSE def was incorrectly marked or the
+            // block with this use is unreachable. So skip and go to the next CSE.
+            // Without the "continue", we'd generate bad code in retail.
+            // Commented out a noway_assert(false) here due to bug: 3290124.
+            // The problem is if there is sub-graph that is not reachable from the
+            // entry point, the CSE flags propagated, would be incorrect for it.
+            continue;
+        }
+
+        PerformCSE(&candidate);
+        madeChanges = true;
+    }
+}
+
+//------------------------------------------------------------------------
+// FindChoice: Find the choice info for a particular CSE.
+//
+// Arguments:
+//   dsc -- cse to search for
+//   choices -- choice array to search
+//
+// Returns:
+//   indicated choice, or nullptr
+//
+CSE_HeuristicRL::Choice* CSE_HeuristicRL::FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices)
+{
+    for (int i = 0; i < choices.Height(); i++)
+    {
+        if (choices.TopRef(i).m_dsc == dsc)
+        {
+            return &choices.TopRef(i);
+        }
+    }
+    return nullptr;
 }
 
 #endif // DEBUG

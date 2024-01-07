@@ -146,13 +146,23 @@ private:
         double  m_softmax;
     };
 
-    const unsigned          numParameters = 12;
-    jitstd::vector<double>* m_parameters;
-    double                  m_alpha;
-    CLRRandom               m_cseRNG;
+    enum
+    {
+        numParameters = 12
+    };
+    double    m_parameters[numParameters];
+    double    m_alpha;
+    CLRRandom m_cseRNG;
+    bool      m_updateParameters;
+
+    void GetFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
     CSEdsc* ChooseCSE();
+    void BuildChoices(ArrayStack<Choice>& choices);
     void Softmax(ArrayStack<Choice>& choices);
+    void DumpChoices(ArrayStack<Choice>& choices);
+    void    UpdateParameters();
+    Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
 
 public:
     CSE_HeuristicRL(Compiler*);
@@ -161,7 +171,7 @@ public:
 
     const char* Name() const
     {
-        return "RL (Reforcement Learning CSE Heuristic";
+        return "Reinforcement Learning CSE Heuristic";
     }
 };
 
