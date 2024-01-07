@@ -411,8 +411,17 @@ CONFIG_INTEGER(JitRandomCSE, W("JitRandomCSE"), 0)
 // as a sequence of CSE candidate numbers
 CONFIG_STRING(JitReplayCSE, W("JitReplayCSE"))
 
+// When set, specify the expected reward from the CSE replay.
+// Currently this is just a single value, the relative ultimate
+// reward from doing the sequence of CSEs.
+CONFIG_STRING(JitReplayCSEReward, W("JitReplayCSEReward"))
+
 // When set, specifies the initial parameter string for
-// a reinforcement-learning based CSE heuristic
+// a reinforcement-learning based CSE heuristic.
+//
+// Note you can also set JitReplayCSE and JitReplayCSEPerfScore
+// along with this, in which case we are asking for a policy 
+// evaluation/update based on the provided sequence.
 CONFIG_STRING(JitRLCSE, W("JitRLCSE"))
 
 #endif

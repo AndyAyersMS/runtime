@@ -136,10 +136,22 @@ public:
 class CSE_HeuristicRL : public CSE_HeuristicCommon
 {
 private:
+
+    struct Choice
+    {
+        Choice(CSEdsc* dsc, double preference) : m_dsc(dsc), m_preference(preference), m_softmax(0) {}
+        CSEdsc* m_dsc;
+        double m_preference;
+        double m_softmax;
+    };
+
     const unsigned numParameters = 10;
     jitstd::vector<double>* m_parameters;
+    double m_alpha;
+    CLRRandom m_cseRNG;
     double Preference(CSEdsc* dsc);
     CSEdsc* ChooseCSE();
+    void Softmax(ArrayStack<Choice>& choices);
 
 public:
     CSE_HeuristicRL(Compiler*);
