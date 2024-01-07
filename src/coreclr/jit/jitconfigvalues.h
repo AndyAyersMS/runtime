@@ -420,7 +420,7 @@ CONFIG_STRING(JitReplayCSEReward, W("JitReplayCSEReward"))
 // a reinforcement-learning based CSE heuristic.
 //
 // Note you can also set JitReplayCSE and JitReplayCSEPerfScore
-// along with this, in which case we are asking for a policy 
+// along with this, in which case we are asking for a policy
 // evaluation/update based on the provided sequence.
 CONFIG_STRING(JitRLCSE, W("JitRLCSE"))
 

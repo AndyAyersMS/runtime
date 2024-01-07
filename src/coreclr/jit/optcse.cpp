@@ -2170,7 +2170,7 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  pCompiler - compiler instance
 //
 // Notes:
-//  This creates the RL CSE heuristic. It does CSEs based on a stochastic 
+//  This creates the RL CSE heuristic. It does CSEs based on a stochastic
 //  softmax policy, governed by a parameter vector.
 //
 //  JitRLCSE specified the initial parameter values.
@@ -2178,7 +2178,8 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  JitReplayCSE can be used to supply a sequence to follow.
 //  JitReplayCSEReward can be used to supply the perf score for the sequence.
 //
-CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler), m_parameters(nullptr), m_alpha(0.0)
+CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
+    : CSE_HeuristicCommon(pCompiler), m_parameters(nullptr), m_alpha(0.0)
 {
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
@@ -2193,7 +2194,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCom
     m_cseRNG.Init(m_pCompiler->info.compMethodHash() ^ JitConfig.JitRandomCSE());
 
     const unsigned initialParamLength = initialParameters.GetLength();
-    
+
     if (numParameters > initialParamLength)
     {
         JITDUMP("Too few parameters (expected %d), trailing will be zero", numParameters);
@@ -2204,7 +2205,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCom
     }
 
     CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
-    m_parameters = new (allocator) jitstd::vector<double>(numParameters, 0.0, allocator);
+    m_parameters            = new (allocator) jitstd::vector<double>(numParameters, 0.0, allocator);
 
     for (unsigned i = 0; i < initialParamLength; i++)
     {
@@ -2213,7 +2214,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCom
 
     // Optionally we may be given a prior sequence and perf score to use to
     // update the parameters .... if so, we will replay same sequence of CSEs
-    // (like the replay policy) and update the parameters via the policy 
+    // (like the replay policy) and update the parameters via the policy
     // gradient algorithm.
     //
     // m_alpha controls the "step size" or learning rate; when we want to adjust
@@ -2226,8 +2227,8 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler) : CSE_HeuristicCommon(pCom
     //
     if ((JitConfig.JitReplayCSE() != nullptr) && (JitConfig.JitReplayCSEReward() != nullptr))
     {
-        JITDUMP("Operating in update mode with sequence %s, reward %s, and alpha %f\n",
-            JitConfig.JitReplayCSE(), JitConfig.JitReplayCSEReward(), m_alpha);
+        JITDUMP("Operating in update mode with sequence %s, reward %s, and alpha %f\n", JitConfig.JitReplayCSE(),
+                JitConfig.JitReplayCSEReward(), m_alpha);
 
         // We will likely need to vary this too
         //
@@ -2337,7 +2338,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
     {
         // "stopping" preference.... fixed for now,
         // but likely should be parameterized
-        // 
+        //
         return 1.0;
     }
 
@@ -2385,7 +2386,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //   "spans" in the [0..1] range via softmax, and then a random value
 //   is generated in [0..1] and we choose the candidate whose range contains
 //   this value.
-// 
+//
 //   For example if there are 3 candidates with scores 1,0, 2.0, and 0.3,
 //   the softmax sum is e^1.0 + e^2.0 + e^0.3 = 2.78 + 7.39 + 1.35 = 11.52,
 //   and so the spans are 0.24, 0.64, 0.12 (note they sum to 1.0).
@@ -2401,7 +2402,7 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
 
     // Fill in the choices
     //
-    for (int i = 0; i < m_pCompiler->optCSECandidateCount; i++)
+    for (unsigned i = 0; i < m_pCompiler->optCSECandidateCount; i++)
     {
         CSEdsc* const dsc = sortTab[i];
         if (dsc == nullptr)
@@ -2417,7 +2418,7 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
     // Doing nothing is also an option.
     //
     const double doNothingPreference = Preference(nullptr);
-    choices.Emplace(nullptr, doNothingPreference);    
+    choices.Emplace(nullptr, doNothingPreference);
 
     // Compute softmax likelihoods
     //
@@ -2426,19 +2427,19 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
     // Generate a random number and choose the CSE to perform.
     //
     double randomFactor = m_cseRNG.NextDouble();
-    double softmaxSum = 0;
+    double softmaxSum   = 0;
 
     for (int i = 0; i < choices.Height(); i++)
     {
         softmaxSum += choices.TopRef(i).m_softmax;
-        
+
         if (randomFactor < softmaxSum)
         {
             return choices.TopRef(i).m_dsc;
         }
     }
-    
-    // If we failed to match above (say from the sum not rounding to 1.0) 
+
+    // If we failed to match above (say from the sum not rounding to 1.0)
     // just return the first one.
     //
     return choices.TopRef().m_dsc;
@@ -2451,32 +2452,32 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
 //
 // Notes:
 //
-//   Each choice has already been given a preference score. 
-//   These are converted into likelihoods in the [0..1] range via softmax, 
+//   Each choice has already been given a preference score.
+//   These are converted into likelihoods in the [0..1] range via softmax,
 //   where the sum across all choices is 1.0.
 //
 //   For each choice i, softmax(i) = e^preference(i) / sum_k (e^preference(k))
-//   
+//
 //   For example if there are 3 choices with preferences 1,0, 2.0, and 0.3,
 //   the softmax sum is e^1.0 + e^2.0 + e^0.3 = 2.78 + 7.39 + 1.35 = 11.52,
 //   and so the likelihoods are 0.24, 0.64, 0.12 (note they sum to 1.0).
 //
-void CSE_HeurisicRL::Softmax(ArrayStack<Choice>& choices)
+void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
 {
     // Determine likelihood via softmax.
-    // 
+    //
     double softmaxSum = 0;
-    for (unsigned i = 0; i < Choices.Height(); i++)
+    for (int i = 0; i < choices.Height(); i++)
     {
-        Choices.TopRef(i).m_softmax = exp(Choices.TopRef(i).m_preference);
-        softmaxSum += Choices.TopRef(i).m_softmax;
+        choices.TopRef(i).m_softmax = exp(choices.TopRef(i).m_preference);
+        softmaxSum += choices.TopRef(i).m_softmax;
     }
 
     // Normalize each choice's softmax likelihood
     //
-    for (unsigned i = 0; i < Choices.Height(); i++)
+    for (int i = 0; i < choices.Height(); i++)
     {
-        Choices.TopRef(i).m_softmax /= softmaxSum;
+        choices.TopRef(i).m_softmax /= softmaxSum;
     }
 }
 
@@ -4017,7 +4018,7 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
             JITDUMP("Using Random CSE heuristic (stress)\n");
             useRandomHeuristic = true;
         }
-        
+
         if (useRandomHeuristic)
         {
             optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicRandom(this);
