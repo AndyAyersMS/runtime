@@ -146,7 +146,7 @@ private:
         double  m_softmax;
     };
 
-    const unsigned          numParameters = 10;
+    const unsigned          numParameters = 12;
     jitstd::vector<double>* m_parameters;
     double                  m_alpha;
     CLRRandom               m_cseRNG;

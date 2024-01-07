@@ -2259,10 +2259,21 @@ void CSE_HeuristicRL::ConsiderCandidates()
     sortTab = new (m_pCompiler, CMK_CSE) CSEdsc*[m_pCompiler->optCSECandidateCount];
     sortSiz = m_pCompiler->optCSECandidateCount * sizeof(*sortTab);
     memcpy(sortTab, m_pCompiler->optCSEtab, sortSiz);
-    CSEdsc* dsc = ChooseCSE();
 
-    while (dsc != nullptr)
+    while (true)
     {
+        CSEdsc* const dsc = ChooseCSE();
+
+        if (dsc == nullptr)
+        {
+            break;
+        }
+
+        // purge this CSE so we don't consider it again
+        //
+        assert(sortTab[dsc->csdIndex - 1] == dsc);
+        sortTab[dsc->csdIndex - 1] = nullptr;
+
         CSE_Candidate candidate(this, dsc);
 
         JITDUMP("\nReplay attempting " FMT_CSE "\n", candidate.CseIndex());
@@ -2297,15 +2308,6 @@ void CSE_HeuristicRL::ConsiderCandidates()
 
         PerformCSE(&candidate);
         madeChanges = true;
-
-        // purge this CSE so we don't consider it again
-        //
-        assert(sortTab[dsc->csdIndex - 1] == dsc);
-        sortTab[dsc->csdIndex - 1] = nullptr;
-
-        // Select the next one
-        //
-        dsc = ChooseCSE();
     }
 
     return;
@@ -2423,6 +2425,25 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
     // Compute softmax likelihoods
     //
     Softmax(choices);
+
+#ifdef DEBUG
+    JITDUMP("Current candidate evaluation\n");
+    for (int i = 0; i < choices.Height(); i++)
+    {
+        Choice&       choice = choices.TopRef(i);
+        CSEdsc* const cse    = choice.m_dsc;
+        if (cse != nullptr)
+        {
+            JITDUMP("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
+                    choice.m_preference, choice.m_softmax);
+        }
+        else
+        {
+            JITDUMP("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference,
+                    choice.m_softmax);
+        }
+    }
+#endif
 
     // Generate a random number and choose the CSE to perform.
     //
