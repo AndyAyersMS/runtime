@@ -2027,15 +2027,12 @@ void CodeGen::genEmitMachineCode()
 
         if (dspMetrics)
         {
-            printf(", num cse %d, num cand %d, seq ", compiler->optCSEcount, compiler->optCSECandidateCount);
+            printf(", num cse %d, num cand %d ", compiler->optCSEcount, compiler->optCSECandidateCount);
 
             CSE_HeuristicCommon* const cseHeuristic = compiler->optGetCSEheuristic();
             if (cseHeuristic != nullptr)
             {
-                for (unsigned i : *cseHeuristic->CseSequence())
-                {
-                    printf("%u ", i);
-                }
+                cseHeuristic->DumpMetrics();
             }
 
             if (compiler->info.compMethodSuperPMIIndex >= 0)

@@ -1951,6 +1951,19 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 }
 
 #ifdef DEBUG
+
+//------------------------------------------------------------------------
+// DumpMetrics: dump post-CSE metrics
+//
+void CSE_HeuristicCommon::DumpMetrics()
+{
+    printf(", seq ");
+    for (int i = 0; i < m_sequence->size(); i++)
+    {
+        printf("%s%i", (i == 0) ? "" : ",", (*m_sequence)[i]);
+    }
+}
+
 //------------------------------------------------------------------------
 // CSE_HeuristicRandom: construct random CSE heuristic
 //
@@ -1964,6 +1977,14 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 CSE_HeuristicRandom::CSE_HeuristicRandom(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler)
 {
     m_cseRNG.Init(m_pCompiler->info.compMethodHash() ^ JitConfig.JitRandomCSE());
+    Announce();
+}
+
+//------------------------------------------------------------------------
+// Announce: describe heuristic in jit dump
+//
+void CSE_HeuristicRandom::Announce()
+{
     JITDUMP("JitRandomCSE is enabled with salt %d\n", JitConfig.JitRandomCSE());
 }
 
@@ -2075,6 +2096,14 @@ void CSE_HeuristicRandom::ConsiderCandidates()
 //
 CSE_HeuristicReplay::CSE_HeuristicReplay(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler)
 {
+    Announce();
+}
+
+//------------------------------------------------------------------------
+// Announce: describe heuristic in jit dump
+//
+void CSE_HeuristicReplay::Announce()
+{
     JITDUMP("JitReplayCSE is enabled with config %s\n", JitConfig.JitReplayCSE());
 }
 
@@ -2183,12 +2212,6 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
 
-    // Initial parameters come from config, for now
-    //
-    JITDUMP("RL CSE heuristic with salt %d and initial parameters ", JitConfig.JitRandomCSE());
-    JITDUMPEXEC(initialParameters.Dump());
-    JITDUMP("\n");
-
     // Set up the random state
     //
     m_cseRNG.Init(m_pCompiler->info.compMethodHash() ^ JitConfig.JitRandomCSE());
@@ -2224,13 +2247,48 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
     //
     if ((JitConfig.JitReplayCSE() != nullptr) && (JitConfig.JitReplayCSEReward() != nullptr))
     {
-        JITDUMP("Operating in update mode with sequence %s, reward %s, and alpha %f\n", JitConfig.JitReplayCSE(),
-                JitConfig.JitReplayCSEReward(), m_alpha);
-
         // We will likely need to vary this too
         //
         m_alpha            = 1e-4;
         m_updateParameters = true;
+    }
+
+    Announce();
+}
+
+//------------------------------------------------------------------------
+// Announce: describe heuristic in jit dump
+//
+void CSE_HeuristicRL::Announce()
+{
+    JITDUMP("RL CSE heuristic with salt %d and initial parameters ", JitConfig.JitRandomCSE());
+    for (int i = 0; i < numParameters; i++)
+    {
+        JITDUMP("%s%f", (i == 0) ? "" : ",", m_parameters[i]);
+    }
+    JITDUMP("\n");
+
+    if (m_updateParameters)
+    {
+        JITDUMP("Operating in update mode with sequence %s, reward %s, and alpha %f\n", JitConfig.JitReplayCSE(),
+                JitConfig.JitReplayCSEReward(), m_alpha);
+    }
+}
+
+//------------------------------------------------------------------------
+// DumpMetrics: dump post-CSE metrics
+//
+void CSE_HeuristicRL::DumpMetrics()
+{
+    CSE_HeuristicCommon::DumpMetrics();
+
+    if (m_updateParameters)
+    {
+        printf(", updatedparams ");
+        for (int i = 0; i < numParameters; i++)
+        {
+            printf("%s%f", (i == 0) ? "" : ",", m_updatedParameters[i]);
+        }
     }
 }
 
@@ -2581,10 +2639,9 @@ void CSE_HeuristicRL::UpdateParameters()
     JITDUMPEXEC(JitReplayCSEArray.Dump());
     JITDUMP(" and reward " FMT_WT "\n", reward);
 
-    double newParameters[numParameters];
     for (int i = 0; i < numParameters; i++)
     {
-        newParameters[i] = m_parameters[i];
+        m_updatedParameters[i] = m_parameters[i];
     }
 
     for (unsigned i = 0; i < JitReplayCSEArray.GetLength(); i++)
@@ -2660,14 +2717,14 @@ void CSE_HeuristicRL::UpdateParameters()
         for (int i = 0; i < numParameters; i++)
         {
             gradient[i] *= m_alpha * reward;
-            newParameters[i] += gradient[i];
+            m_updatedParameters[i] += gradient[i];
         }
 
 #ifdef DEBUG
         JITDUMP("Parameter update for this step and total\n");
         for (int i = 0; i < numParameters; i++)
         {
-            printf("%2d: %10.7f %10.7f\n", i, gradient[i], newParameters[i]);
+            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
         }
 #endif
 
@@ -4207,6 +4264,8 @@ void Compiler::optValnumCSE_Heuristic(CSE_HeuristicCommon* heuristic)
         fgDumpTrees(fgFirstBB, nullptr);
         printf("\n");
     }
+
+    heuristic->Announce();
 #endif // DEBUG
 
     heuristic->Initialize();

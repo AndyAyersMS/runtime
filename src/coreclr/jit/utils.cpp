@@ -1018,7 +1018,7 @@ void ConfigIntArray::Dump()
 
     for (unsigned i = 0; i < m_length; i++)
     {
-        printf("%i ", m_values[i]);
+        printf("%s%i ", i == 0 ? "" : ",", m_values[i]);
     }
 }
 
@@ -1089,13 +1089,13 @@ void ConfigDoubleArray::Dump()
 
     if (m_length == 0)
     {
-        printf("<empty config double rray>\n");
+        printf("<empty config double array>\n");
         return;
     }
 
     for (unsigned i = 0; i < m_length; i++)
     {
-        printf("%f ", m_values[i]);
+        printf("%s%f ", i == 0 ? "" : ",", m_values[i]);
     }
 }
 

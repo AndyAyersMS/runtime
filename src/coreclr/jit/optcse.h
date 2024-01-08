@@ -81,9 +81,10 @@ public:
     bool IsCompatibleType(var_types cseLclVarTyp, var_types expTyp);
 
 #ifdef DEBUG
-    const jitstd::vector<unsigned>* CseSequence() const
+    virtual void DumpMetrics();
+    virtual void Announce()
     {
-        return m_sequence;
+        JITDUMP("%s\n", Name());
     }
 #endif
 };
@@ -109,6 +110,10 @@ public:
     {
         return "Random CSE Heuristic";
     }
+
+#ifdef DEBUG
+    virtual void Announce();
+#endif
 };
 
 // Replay CSE heuristic
@@ -126,6 +131,10 @@ public:
     {
         return "Replay CSE Heuristic";
     }
+
+#ifdef DEBUG
+    virtual void Announce();
+#endif
 };
 
 // Reinforcement Learning CSE heuristic
@@ -151,6 +160,7 @@ private:
         numParameters = 12
     };
     double    m_parameters[numParameters];
+    double    m_updatedParameters[numParameters];
     double    m_alpha;
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
@@ -173,6 +183,11 @@ public:
     {
         return "Reinforcement Learning CSE Heuristic";
     }
+
+#ifdef DEBUG
+    virtual void DumpMetrics();
+    virtual void Announce();
+#endif
 };
 
 #endif
