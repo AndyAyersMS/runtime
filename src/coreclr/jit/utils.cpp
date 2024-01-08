@@ -1018,7 +1018,7 @@ void ConfigIntArray::Dump()
 
     for (unsigned i = 0; i < m_length; i++)
     {
-        printf("%s%i ", i == 0 ? "" : ",", m_values[i]);
+        printf("%s%i", i == 0 ? "" : ", ", m_values[i]);
     }
 }
 

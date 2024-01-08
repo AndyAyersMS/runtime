@@ -2207,7 +2207,7 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  JitReplayCSEReward can be used to supply the perf score for the sequence.
 //
 CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
-    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_updateParameters(false)
+    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_reward(0.0), m_updateParameters(false)
 {
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
@@ -2247,7 +2247,11 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
     //
     if ((JitConfig.JitReplayCSE() != nullptr) && (JitConfig.JitReplayCSEReward() != nullptr))
     {
-        // We will likely need to vary this too
+        static ConfigDoubleArray JitReplayCSERewardArray;
+        JitReplayCSERewardArray.EnsureInit(JitConfig.JitReplayCSEReward());
+        m_reward = JitReplayCSERewardArray.GetData()[0];
+
+        // We will likely need to vary this externally too
         //
         m_alpha            = 1e-4;
         m_updateParameters = true;
@@ -2270,8 +2274,8 @@ void CSE_HeuristicRL::Announce()
 
     if (m_updateParameters)
     {
-        JITDUMP("Operating in update mode with sequence %s, reward %s, and alpha %f\n", JitConfig.JitReplayCSE(),
-                JitConfig.JitReplayCSEReward(), m_alpha);
+        JITDUMP("Operating in update mode with sequence %s, reward %f, and alpha %f\n", JitConfig.JitReplayCSE(),
+                m_reward, m_alpha);
     }
 }
 
@@ -2631,13 +2635,10 @@ void CSE_HeuristicRL::UpdateParameters()
 
     // We have an undiscounted reward, so it applies equally
     // to all steps in the computation.
-    static ConfigDoubleArray JitReplayCSERewardArray;
-    JitReplayCSERewardArray.EnsureInit(JitConfig.JitReplayCSEReward());
-    const double reward = JitReplayCSERewardArray.GetData()[0];
-
+    //
     JITDUMP("Updating parameters with sequence ");
     JITDUMPEXEC(JitReplayCSEArray.Dump());
-    JITDUMP(" and reward " FMT_WT "\n", reward);
+    JITDUMP(" and reward " FMT_WT "\n", m_reward);
 
     for (int i = 0; i < numParameters; i++)
     {
@@ -2716,7 +2717,7 @@ void CSE_HeuristicRL::UpdateParameters()
         //
         for (int i = 0; i < numParameters; i++)
         {
-            gradient[i] *= m_alpha * reward;
+            gradient[i] *= m_alpha * m_reward;
             m_updatedParameters[i] += gradient[i];
         }
 

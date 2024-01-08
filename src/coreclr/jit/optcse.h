@@ -162,6 +162,7 @@ private:
     double    m_parameters[numParameters];
     double    m_updatedParameters[numParameters];
     double    m_alpha;
+    double    m_reward;
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
 
