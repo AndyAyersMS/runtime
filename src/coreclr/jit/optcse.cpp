@@ -2697,7 +2697,7 @@ void CSE_HeuristicRL::UpdateParameters()
         for (int c = 0; c < choices.Height(); c++)
         {
             double choiceFeature[numParameters];
-            GetFeatures(dsc, choiceFeature);
+            GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
 
             for (int i = 0; i < numParameters; i++)
             {
