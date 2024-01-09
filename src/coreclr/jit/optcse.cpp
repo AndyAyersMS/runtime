@@ -2251,9 +2251,9 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
         JitReplayCSERewardArray.EnsureInit(JitConfig.JitReplayCSEReward());
         m_reward = JitReplayCSERewardArray.GetData()[0];
 
-        // We will likely need to vary this externally too
+        // We will likely need to vary alpha externally too
         //
-        m_alpha            = 1e-4;
+        m_alpha            = 0.01;
         m_updateParameters = true;
     }
 
@@ -2455,7 +2455,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
         // "stopping" preference.... fixed for now,
         // but likely should be parameterized
         //
-        return 1.0;
+        return 0.0;
     }
 
     double features[12];
@@ -2697,7 +2697,7 @@ void CSE_HeuristicRL::UpdateParameters()
         for (int c = 0; c < choices.Height(); c++)
         {
             double choiceFeature[numParameters];
-            GetFeatures(choices.TopRef(i).m_dsc, choiceFeature);
+            GetFeatures(dsc, choiceFeature);
 
             for (int i = 0; i < numParameters; i++)
             {
@@ -2709,7 +2709,7 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMP("Gradient vector for this step\n");
         for (int i = 0; i < numParameters; i++)
         {
-            printf("%2d: %f\n", i, gradient[i]);
+            JITDUMP("%2d: %f\n", i, gradient[i]);
         }
 #endif
 
@@ -2725,7 +2725,7 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMP("Parameter update for this step and total\n");
         for (int i = 0; i < numParameters; i++)
         {
-            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
+            JITDUMP("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
         }
 #endif
 
