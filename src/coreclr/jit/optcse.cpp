@@ -2253,7 +2253,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
 
         // We will likely need to vary alpha externally too
         //
-        m_alpha            = 0.01;
+        m_alpha            = 0.025;
         m_updateParameters = true;
     }
 
@@ -2756,6 +2756,55 @@ void CSE_HeuristicRL::UpdateParameters()
 
         PerformCSE(&candidate);
         madeChanges = true;
+    }
+
+    // If we did not exhaust all choices (we stopped early) we need one
+    // last parameter update.
+
+    // todo: refactor so we aren't duplicating logic here.
+    //
+    choices.Reset();
+    BuildChoices(choices);
+    if (choices.Height() > 0)
+    {
+        Softmax(choices);
+        double gradient[numParameters];
+        GetFeatures(nullptr, gradient); // last action was to stop
+
+        for (int c = 0; c < choices.Height(); c++)
+        {
+            double choiceFeature[numParameters];
+            GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
+
+            for (int i = 0; i < numParameters; i++)
+            {
+                gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
+            }
+        }
+
+#ifdef DEBUG
+        JITDUMP("Gradient vector final step\n");
+        for (int i = 0; i < numParameters; i++)
+        {
+            JITDUMP("%2d: %f\n", i, gradient[i]);
+        }
+#endif
+
+        // Todo: baseline?
+        //
+        for (int i = 0; i < numParameters; i++)
+        {
+            gradient[i] *= m_alpha * m_reward;
+            m_updatedParameters[i] += gradient[i];
+        }
+
+#ifdef DEBUG
+        JITDUMP("Parameter update for this step and total\n");
+        for (int i = 0; i < numParameters; i++)
+        {
+            JITDUMP("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
+        }
+#endif
     }
 }
 
