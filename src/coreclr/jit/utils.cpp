@@ -981,7 +981,7 @@ void ConfigIntArray::Init(const WCHAR* str)
 
             while ((L'0' <= *p) && (*p <= L'9'))
             {
-                currentValue += currentValue * 10 + (*p++) - L'0';
+                currentValue = currentValue * 10 + (*p++) - L'0';
             }
 
             if (isNegative)
