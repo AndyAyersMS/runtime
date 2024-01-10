@@ -168,6 +168,7 @@ private:
     double    m_reward;
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
+    bool      m_verbose;
 
     void GetFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
@@ -175,7 +176,8 @@ private:
     void BuildChoices(ArrayStack<Choice>& choices);
     void Softmax(ArrayStack<Choice>& choices);
     void DumpChoices(ArrayStack<Choice>& choices);
-    void    UpdateParameters();
+    void UpdateParameters();
+    void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
     Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
 
 public:

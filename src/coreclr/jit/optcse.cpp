@@ -2207,7 +2207,7 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  JitReplayCSEReward can be used to supply the perf score for the sequence.
 //
 CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
-    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_reward(0.0), m_updateParameters(false)
+    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_reward(0.0), m_updateParameters(false), m_verbose(false)
 {
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
@@ -2251,10 +2251,23 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
         JitReplayCSERewardArray.EnsureInit(JitConfig.JitReplayCSEReward());
         m_reward = JitReplayCSERewardArray.GetData()[0];
 
-        // We will likely need to vary alpha externally too
-        //
-        m_alpha            = 0.025;
         m_updateParameters = true;
+    }
+
+    if (JitConfig.JitRLCSEAlpha() != nullptr)
+    {
+        static ConfigDoubleArray JitRLCSEAlphaArray;
+        JitRLCSEAlphaArray.EnsureInit(JitConfig.JitRLCSEAlpha());
+        m_alpha = JitRLCSEAlphaArray.GetData()[0];
+    }
+    else
+    {
+        m_alpha = 0.001;
+    }
+
+    if (m_pCompiler->verbose || (JitConfig.JitRLCSEVerbose() > 0))
+    {
+        m_verbose = true;
     }
 
     Announce();
@@ -2636,9 +2649,12 @@ void CSE_HeuristicRL::UpdateParameters()
     // We have an undiscounted reward, so it applies equally
     // to all steps in the computation.
     //
-    JITDUMP("Updating parameters with sequence ");
-    JITDUMPEXEC(JitReplayCSEArray.Dump());
-    JITDUMP(" and reward " FMT_WT "\n", m_reward);
+    if (m_verbose)
+    {
+        printf("Updating parameters with sequence ");
+        JitReplayCSEArray.Dump();
+        printf(" and reward " FMT_WT "\n", m_reward);
+    }
 
     for (int i = 0; i < numParameters; i++)
     {
@@ -2676,10 +2692,15 @@ void CSE_HeuristicRL::UpdateParameters()
         //
         CSE_Candidate candidate(this, dsc);
 
-        JITDUMP("\nRL Update attempting " FMT_CSE "\n", candidate.CseIndex());
+        if (m_verbose)
+        {
+            printf("\nRL Update attempting " FMT_CSE "\n", candidate.CseIndex());
+        }
+
         JITDUMP("CSE Expression : \n");
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
+
         if (dsc->defExcSetPromise == ValueNumStore::NoVN)
         {
             JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
@@ -2705,108 +2726,103 @@ void CSE_HeuristicRL::UpdateParameters()
             continue;
         }
 
-        // Parameter Update
+        // Compute the parameter update
         //
-        // Since this is an "on-policy" process, the dsc
-        // should be among the possible choices.
+        UpdateParametersStep(dsc, choices);
+
+        // Acually do the cse, since subsequent step updates
+        // possibly can observe changes to the method caused by this CSE.
         //
-        // Eventually (with a well-trained policy) the current choice will
-        // be (one of) the strongly preferred choice(s), if this is an optimal sequence.
-        //
-        Choice* const currentChoice = FindChoice(dsc, choices);
-        JITDUMP("Choice likelihood was " FMT_WT "\n", currentChoice->m_softmax);
-
-        // Compute the parameter update...
-        //
-        double gradient[numParameters];
-        GetFeatures(dsc, gradient);
-
-        for (int c = 0; c < choices.Height(); c++)
-        {
-            double choiceFeature[numParameters];
-            GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
-
-            for (int i = 0; i < numParameters; i++)
-            {
-                gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
-            }
-        }
-
-#ifdef DEBUG
-        JITDUMP("Gradient vector for this step\n");
-        for (int i = 0; i < numParameters; i++)
-        {
-            JITDUMP("%2d: %f\n", i, gradient[i]);
-        }
-#endif
-
-        // Todo: baseline?
-        //
-        for (int i = 0; i < numParameters; i++)
-        {
-            gradient[i] *= m_alpha * m_reward;
-            m_updatedParameters[i] += gradient[i];
-        }
-
-#ifdef DEBUG
-        JITDUMP("Parameter update for this step and total\n");
-        for (int i = 0; i < numParameters; i++)
-        {
-            JITDUMP("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
-        }
-#endif
-
         PerformCSE(&candidate);
         madeChanges = true;
     }
 
     // If we did not exhaust all choices (we stopped early) we need one
     // last parameter update.
-
-    // todo: refactor so we aren't duplicating logic here.
     //
     choices.Reset();
     BuildChoices(choices);
     if (choices.Height() > 0)
     {
         Softmax(choices);
-        double gradient[numParameters];
-        GetFeatures(nullptr, gradient); // last action was to stop
+        // nullptr here means "stopping"
+        UpdateParametersStep(nullptr, choices);
+    }
+}
 
-        for (int c = 0; c < choices.Height(); c++)
-        {
-            double choiceFeature[numParameters];
-            GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
+//------------------------------------------------------------------------
+// UpdateParameterStep: perform parameter update for this step in
+//   the CSE sequence
+//
+// Arguments;
+//   dsc -- cse to perform (nullptr if stopping)
+//   choices -- alternatives available, with preference and softmax computed
+//
+// Notes:
+//   modifies m_updatedParameters to include the adjustments due to this
+//   choice, with ultimate reward m_reward.
+//
+//   Takes into account both the likelihood of the choice and the magnitude
+//   of reward, briefly:
+//   - likely   choices and good rewards are strongly enouraged
+//   - unlikely choices and good rewards are mildly   encouraged
+//   - unlikely choices and bad  rewards are mildly   discouraged
+//   - likely   choices and bad  rewards are strongly discouraged
+//
+void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices)
+{
+    // Since this is an "on-policy" process, the dsc
+    // should be among the possible choices.
+    //
+    // Eventually (with a well-trained policy) the current choice will
+    // be (one of) the strongly preferred choice(s), if this is an optimal sequence.
+    //
+    Choice* const currentChoice = FindChoice(dsc, choices);
+    if (m_verbose)
+    {
+        printf("Choice likelihood was " FMT_WT "\n", currentChoice->m_softmax);
+    }
 
-            for (int i = 0; i < numParameters; i++)
-            {
-                gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
-            }
-        }
+    // Compute the parameter update...
+    //
+    double gradient[numParameters];
+    GetFeatures(dsc, gradient);
 
-#ifdef DEBUG
-        JITDUMP("Gradient vector final step\n");
+    for (int c = 0; c < choices.Height(); c++)
+    {
+        double choiceFeature[numParameters];
+        GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
+
         for (int i = 0; i < numParameters; i++)
         {
-            JITDUMP("%2d: %f\n", i, gradient[i]);
+            gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
         }
-#endif
+    }
 
-        // Todo: baseline?
-        //
+    if (m_verbose)
+    {
+        printf("Gradient vector for this step\n");
         for (int i = 0; i < numParameters; i++)
         {
-            gradient[i] *= m_alpha * m_reward;
-            m_updatedParameters[i] += gradient[i];
+            printf("%2d: %f\n", i, gradient[i]);
         }
+    }
 
-#ifdef DEBUG
-        JITDUMP("Parameter update for this step and total\n");
+    // Todo: baseline?
+    //
+    for (int i = 0; i < numParameters; i++)
+    {
+        gradient[i] *= m_alpha * m_reward;
+        m_updatedParameters[i] += gradient[i];
+    }
+
+    if (m_verbose)
+    {
+        printf("Parameter update for this step and total\n");
         for (int i = 0; i < numParameters; i++)
         {
-            JITDUMP("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
+            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
         }
-#endif
     }
 }
 

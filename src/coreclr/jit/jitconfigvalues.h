@@ -424,6 +424,14 @@ CONFIG_STRING(JitReplayCSEReward, W("JitReplayCSEReward"))
 // evaluation/update based on the provided sequence.
 CONFIG_STRING(JitRLCSE, W("JitRLCSE"))
 
+// When set, specify the alpha value (step size) to
+// use in learning.
+CONFIG_STRING(JitRLCSEAlpha, W("JitRLCSEalpha"))
+
+// If nonzero, dump out details of policy evaluation and
+// gradient updates
+CONFIG_INTEGER(JitRLCSEVerbose, W("JitRLCSEVerbose"), 0)
+
 #endif
 
 ///
