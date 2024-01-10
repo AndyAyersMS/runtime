@@ -2342,7 +2342,7 @@ void CSE_HeuristicRL::ConsiderCandidates()
 
         CSE_Candidate candidate(this, dsc);
 
-        JITDUMP("\nReplay attempting " FMT_CSE "\n", candidate.CseIndex());
+        JITDUMP("\nRL attempting " FMT_CSE "\n", candidate.CseIndex());
         JITDUMP("CSE Expression : \n");
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
@@ -2680,12 +2680,39 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMP("CSE Expression : \n");
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
+        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        {
+            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
+            continue;
+        }
 
+        candidate.InitializeCounts();
+
+        if (candidate.UseCount() == 0)
+        {
+            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
+            continue;
+        }
+
+        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
+        {
+            // If we reach this point, then the CSE def was incorrectly marked or the
+            // block with this use is unreachable. So skip and go to the next CSE.
+            // Without the "continue", we'd generate bad code in retail.
+            // Commented out a noway_assert(false) here due to bug: 3290124.
+            // The problem is if there is sub-graph that is not reachable from the
+            // entry point, the CSE flags propagated, would be incorrect for it.
+            continue;
+        }
+
+        // Parameter Update
+        //
         // Since this is an "on-policy" process, the dsc
         // should be among the possible choices.
         //
-        // Eventually (with a well-trained policy) it should be the strongly preferred choice,
-        // if this is an optimal sequence.
+        // Eventually (with a well-trained policy) the current choice will
+        // be (one of) the strongly preferred choice(s), if this is an optimal sequence.
+        //
         Choice* const currentChoice = FindChoice(dsc, choices);
         JITDUMP("Choice likelihood was " FMT_WT "\n", currentChoice->m_softmax);
 
@@ -2728,31 +2755,6 @@ void CSE_HeuristicRL::UpdateParameters()
             JITDUMP("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
         }
 #endif
-
-        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
-        {
-            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
-            continue;
-        }
-
-        candidate.InitializeCounts();
-
-        if (candidate.UseCount() == 0)
-        {
-            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
-            continue;
-        }
-
-        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
-        {
-            // If we reach this point, then the CSE def was incorrectly marked or the
-            // block with this use is unreachable. So skip and go to the next CSE.
-            // Without the "continue", we'd generate bad code in retail.
-            // Commented out a noway_assert(false) here due to bug: 3290124.
-            // The problem is if there is sub-graph that is not reachable from the
-            // entry point, the CSE flags propagated, would be incorrect for it.
-            continue;
-        }
 
         PerformCSE(&candidate);
         madeChanges = true;
@@ -3692,10 +3694,7 @@ void CSE_HeuristicCommon::PerformCSE(CSE_Candidate* successfulCandidate)
     //  Later we will unmark any nested CSE's for the CSE uses.
     //
     CSEdsc* dsc = successfulCandidate->CseDsc();
-
-#ifdef DEBUG
-    m_sequence->push_back(dsc->csdIndex);
-#endif
+    INDEBUG(m_sequence->push_back(dsc->csdIndex));
 
     // If there's just a single def for the CSE, we'll put this
     // CSE into SSA form on the fly. We won't need any PHIs.

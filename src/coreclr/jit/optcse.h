@@ -18,14 +18,17 @@ class CSE_HeuristicCommon
 protected:
     CSE_HeuristicCommon(Compiler*);
 
-    Compiler*                 m_pCompiler;
-    unsigned                  m_addCSEcount;
-    CSEdsc**                  sortTab;
-    size_t                    sortSiz;
-    bool                      madeChanges;
-    Compiler::codeOptimize    codeOptKind;
-    bool                      enableConstCSE;
+    Compiler*              m_pCompiler;
+    unsigned               m_addCSEcount;
+    CSEdsc**               sortTab;
+    size_t                 sortSiz;
+    bool                   madeChanges;
+    Compiler::codeOptimize codeOptKind;
+    bool                   enableConstCSE;
+
+#ifdef DEBUG
     jitstd::vector<unsigned>* m_sequence;
+#endif
 
 public:
     virtual void Initialize()
