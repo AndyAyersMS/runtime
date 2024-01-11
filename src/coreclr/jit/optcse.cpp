@@ -2304,7 +2304,7 @@ void CSE_HeuristicRL::DumpMetrics()
         printf(", updatedparams ");
         for (int i = 0; i < numParameters; i++)
         {
-            printf("%s%f", (i == 0) ? "" : ",", m_updatedParameters[i]);
+            printf("%s%f", (i == 0) ? "" : ",", m_parameters[i]);
         }
     }
 }
@@ -2339,6 +2339,11 @@ void CSE_HeuristicRL::ConsiderCandidates()
         return;
     }
 
+    if (m_verbose)
+    {
+        printf("RL using softmax policy\n");
+    }
+
     while (true)
     {
         CSEdsc* const dsc = ChooseCSE();
@@ -2355,7 +2360,11 @@ void CSE_HeuristicRL::ConsiderCandidates()
 
         CSE_Candidate candidate(this, dsc);
 
-        JITDUMP("\nRL attempting " FMT_CSE "\n", candidate.CseIndex());
+        if (m_verbose)
+        {
+            printf("\nRL attempting " FMT_CSE "\n", candidate.CseIndex());
+        }
+
         JITDUMP("CSE Expression : \n");
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
@@ -2467,8 +2476,9 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
     {
         // "stopping" preference.... fixed for now,
         // but likely should be parameterized
-        //
-        return 0.0;
+        // or derived from the method ambient state?
+        // (pressure estimate?)
+        return 0.1 * (m_addCSEcount);
     }
 
     double features[12];
@@ -2516,13 +2526,17 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
     // Compute softmax likelihoods
     //
     Softmax(choices);
-    JITDUMP("Current candidate evaluation\n");
-    JITDUMPEXEC(DumpChoices(choices));
 
     // Generate a random number and choose the CSE to perform.
     //
     double randomFactor = m_cseRNG.NextDouble();
     double softmaxSum   = 0;
+
+    if (m_verbose)
+    {
+        printf("Current candidate evaluation, rng is %f\n", randomFactor);
+        DumpChoices(choices);
+    }
 
     for (int i = 0; i < choices.Height(); i++)
     {
@@ -2530,6 +2544,8 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
 
         if (randomFactor < softmaxSum)
         {
+            if (m_verbose)
+                printf(" === choosing %d\n", i);
             return choices.TopRef(i).m_dsc;
         }
     }
@@ -2609,23 +2625,20 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
 //
 void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices)
 {
-#ifdef DEBUG
     for (int i = 0; i < choices.Height(); i++)
     {
         Choice&       choice = choices.TopRef(i);
         CSEdsc* const cse    = choice.m_dsc;
         if (cse != nullptr)
         {
-            JITDUMP("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
-                    choice.m_preference, choice.m_softmax);
+            printf("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
+                   choice.m_preference, choice.m_softmax);
         }
         else
         {
-            JITDUMP("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference,
-                    choice.m_softmax);
+            printf("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference, choice.m_softmax);
         }
     }
-#endif
 }
 
 //------------------------------------------------------------------------
@@ -2653,12 +2666,7 @@ void CSE_HeuristicRL::UpdateParameters()
     {
         printf("Updating parameters with sequence ");
         JitReplayCSEArray.Dump();
-        printf(" and reward " FMT_WT "\n", m_reward);
-    }
-
-    for (int i = 0; i < numParameters; i++)
-    {
-        m_updatedParameters[i] = m_parameters[i];
+        printf(" alpha " FMT_WT " and reward " FMT_WT "\n", m_alpha, m_reward);
     }
 
     for (unsigned i = 0; i < JitReplayCSEArray.GetLength(); i++)
@@ -2813,7 +2821,7 @@ void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choi
     for (int i = 0; i < numParameters; i++)
     {
         gradient[i] *= m_alpha * m_reward;
-        m_updatedParameters[i] += gradient[i];
+        m_parameters[i] += gradient[i];
     }
 
     if (m_verbose)
@@ -2821,7 +2829,7 @@ void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choi
         printf("Parameter update for this step and total\n");
         for (int i = 0; i < numParameters; i++)
         {
-            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_updatedParameters[i]);
+            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_parameters[i]);
         }
     }
 }

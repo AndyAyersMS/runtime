@@ -426,7 +426,7 @@ CONFIG_STRING(JitRLCSE, W("JitRLCSE"))
 
 // When set, specify the alpha value (step size) to
 // use in learning.
-CONFIG_STRING(JitRLCSEAlpha, W("JitRLCSEalpha"))
+CONFIG_STRING(JitRLCSEAlpha, W("JitRLCSEAlpha"))
 
 // If nonzero, dump out details of policy evaluation and
 // gradient updates
