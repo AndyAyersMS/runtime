@@ -2301,11 +2301,19 @@ void CSE_HeuristicRL::DumpMetrics()
 
     if (m_updateParameters)
     {
+        // For update, dump the new parameter values
+        //
         printf(", updatedparams ");
         for (int i = 0; i < numParameters; i++)
         {
             printf("%s%f", (i == 0) ? "" : ",", m_parameters[i]);
         }
+    }
+    else
+    {
+        // For evaluation, dump certainty of the first decision
+        //
+        printf(", cert %f", m_certainty);
     }
 }
 
@@ -2344,9 +2352,13 @@ void CSE_HeuristicRL::ConsiderCandidates()
         printf("RL using softmax policy\n");
     }
 
+    m_certainty = 0;
+    bool first = true;
+
     while (true)
     {
-        CSEdsc* const dsc = ChooseCSE();
+        CSEdsc* const dsc = ChooseCSE(first ? &m_certainty : nullptr);
+        first = false;
 
         if (dsc == nullptr)
         {
@@ -2496,6 +2508,9 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //------------------------------------------------------------------------
 // ChooseCSE: examine candidates and choose the next CSE to perform
 //
+// Arguments:
+//   mostLikely - [out, optional] set to maximum likelihood of any choice
+//
 // Returns:
 //   Next CSE to perform, or nullptr to stop doing CSEs.
 //
@@ -2516,7 +2531,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //      if the random value is in [0.24, 0.88) we choose candidate 2;
 //      else we choose candidate 3;
 //
-CSEdsc* CSE_HeuristicRL::ChooseCSE()
+CSEdsc* CSE_HeuristicRL::ChooseCSE(double* mostLikely)
 {
     // Todo: presize
     //
@@ -2525,7 +2540,7 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
 
     // Compute softmax likelihoods
     //
-    Softmax(choices);
+    Softmax(choices, mostLikely);
 
     // Generate a random number and choose the CSE to perform.
     //
@@ -2544,8 +2559,6 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE()
 
         if (randomFactor < softmaxSum)
         {
-            if (m_verbose)
-                printf(" === choosing %d\n", i);
             return choices.TopRef(i).m_dsc;
         }
     }
@@ -2585,7 +2598,9 @@ void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
 //------------------------------------------------------------------------
 // Softmax: fill in likelihoods for each choice vis softmax
 //
+// Arguments:
 //   choices - array of choices
+//   mostLikely - [out, optional] set to maximum likelihood of any choice
 //
 // Notes:
 //
@@ -2599,15 +2614,18 @@ void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
 //   the softmax sum is e^1.0 + e^2.0 + e^0.3 = 2.78 + 7.39 + 1.35 = 11.52,
 //   and so the likelihoods are 0.24, 0.64, 0.12 (note they sum to 1.0).
 //
-void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
+void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices, double* mostLikely)
 {
     // Determine likelihood via softmax.
     //
     double softmaxSum = 0;
+    double softmaxMax = 0;
     for (int i = 0; i < choices.Height(); i++)
     {
-        choices.TopRef(i).m_softmax = exp(choices.TopRef(i).m_preference);
-        softmaxSum += choices.TopRef(i).m_softmax;
+        double softmax = exp(choices.TopRef(i).m_preference);
+        choices.TopRef(i).m_softmax = softmax;
+        softmaxSum += softmax;
+        softmaxMax = max(softmaxMax, softmax);
     }
 
     // Normalize each choice's softmax likelihood
@@ -2615,6 +2633,11 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
     for (int i = 0; i < choices.Height(); i++)
     {
         choices.TopRef(i).m_softmax /= softmaxSum;
+    }
+
+    if (mostLikely != nullptr)
+    {
+        *mostLikely = softmaxMax / softmaxSum;
     }
 }
 

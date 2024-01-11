@@ -168,12 +168,13 @@ private:
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
     bool      m_verbose;
+    double    m_certainty;
 
     void GetFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
-    CSEdsc* ChooseCSE();
+    CSEdsc* ChooseCSE(double* mostLikely = nullptr);
     void BuildChoices(ArrayStack<Choice>& choices);
-    void Softmax(ArrayStack<Choice>& choices);
+    void Softmax(ArrayStack<Choice>& choices, double* mostLikely = nullptr);
     void DumpChoices(ArrayStack<Choice>& choices);
     void UpdateParameters();
     void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
