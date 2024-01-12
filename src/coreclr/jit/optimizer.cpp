@@ -41,6 +41,7 @@ void Compiler::optInit()
     optAssertionDep      = nullptr;
     optCSEstart          = BAD_VAR_NUM;
     optCSEcount          = 0;
+    optCSECandidateCount = 0;
     optCSEattempt        = 0;
     optCSEheuristic      = nullptr;
 }

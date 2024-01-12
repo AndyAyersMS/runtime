@@ -174,7 +174,7 @@ private:
     Choice& ChooseCSE(ArrayStack<Choice>& choices);
     void BuildChoices(ArrayStack<Choice>& choices);
     void Softmax(ArrayStack<Choice>& choices);
-    void DumpChoices(ArrayStack<Choice>& choices);
+    void DumpChoices(ArrayStack<Choice>& choices, int higlight = -1);
     void UpdateParameters();
     void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
     Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
@@ -297,7 +297,7 @@ struct CSEdsc
         if ((csdDefWtCnt <= 0) || (csdUseWtCnt <= 0))
         {
             // No hot uses, or messed up profile
-                //
+            //
             return false;
         }
 

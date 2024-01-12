@@ -2515,27 +2515,25 @@ CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseCSE(ArrayStack<Choice>& choices)
     //
     double randomFactor = m_cseRNG.NextDouble();
     double softmaxSum   = 0;
-
-    if (m_verbose)
-    {
-        printf("Current candidate evaluation, rng is %f\n", randomFactor);
-        DumpChoices(choices);
-    }
-
+    int    choiceNum    = 0;
     for (int i = 0; i < choices.Height(); i++)
     {
         softmaxSum += choices.TopRef(i).m_softmax;
 
         if (randomFactor < softmaxSum)
         {
-            return choices.TopRef(i);
+            choiceNum = i;
+            break;
         }
     }
 
-    // If we failed to match above (say from the sum not rounding to 1.0)
-    // just return the first one.
-    //
-    return choices.TopRef();
+    if (m_verbose)
+    {
+        printf("Current candidate evaluation, rng is %f\n", randomFactor);
+        DumpChoices(choices, choiceNum);
+    }
+
+    return choices.TopRef(choiceNum);
 }
 
 //------------------------------------------------------------------------
@@ -2607,21 +2605,24 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
 // DumpChoices: dump out information on current choices
 //
 //   choices - array of choices
+//   highlight - highlight this choice
 //
-void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices)
+void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices, int highlight)
 {
     for (int i = 0; i < choices.Height(); i++)
     {
         Choice&       choice = choices.TopRef(i);
         CSEdsc* const cse    = choice.m_dsc;
+        const char*   msg    = i == highlight ? "=>" : "  ";
         if (cse != nullptr)
         {
-            printf("%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", i, cse->csdIndex,
+            printf("%s%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, cse->csdIndex,
                    choice.m_preference, choice.m_softmax);
         }
         else
         {
-            printf("%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", i, choice.m_preference, choice.m_softmax);
+            printf("%s%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, choice.m_preference,
+                   choice.m_softmax);
         }
     }
 }
@@ -2712,8 +2713,18 @@ void CSE_HeuristicRL::UpdateParameters()
     //
     choices.Reset();
     BuildChoices(choices);
-    if (choices.Height() > 0)
+
+    // The "Stop" choice is always added so if we see more than one choice
+    // then there is an option left besides stopping.
+    //
+    int undoneCSEs = choices.Height() - 1;
+    if (undoneCSEs > 0)
     {
+        if (m_verbose)
+        {
+            printf("\nRL Update stopping early (%d CSEs left undone)\n", undoneCSEs);
+        }
+
         Softmax(choices);
         // nullptr here means "stopping"
         UpdateParametersStep(nullptr, choices);
