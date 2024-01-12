@@ -1958,7 +1958,7 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 void CSE_HeuristicCommon::DumpMetrics()
 {
     printf(", seq ");
-    for (int i = 0; i < m_sequence->size(); i++)
+    for (unsigned i = 0; i < m_sequence->size(); i++)
     {
         printf("%s%i", (i == 0) ? "" : ",", (*m_sequence)[i]);
     }
@@ -2621,7 +2621,7 @@ void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices, int highlight)
         }
         else
         {
-            printf("%s%2d: QUIT preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, choice.m_preference,
+            printf("%s%2d: QUIT    preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, choice.m_preference,
                    choice.m_softmax);
         }
     }
