@@ -24,6 +24,8 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #include "opcode.h"
 #include "jitstd/algorithm.h"
 
+#include <dn-u16.h>  // for u16_strtod
+
 /*****************************************************************************/
 
 #define DECLARE_DATA
@@ -1046,7 +1048,7 @@ void ConfigDoubleArray::Init(const WCHAR* str)
             continue;
         }
         WCHAR* pNext = nullptr;
-        wcstod(p, &pNext);
+        u16_strtod(p, &pNext);
         if (errno == 0)
         {
             numValues++;
@@ -1067,7 +1069,7 @@ void ConfigDoubleArray::Init(const WCHAR* str)
         }
 
         WCHAR* pNext = nullptr;
-        double val   = wcstod(p, &pNext);
+        double val   = u16_strtod(p, &pNext);
         if (errno == 0)
         {
             m_values[numValues++] = val;
