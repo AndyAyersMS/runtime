@@ -168,13 +168,12 @@ private:
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
     bool      m_verbose;
-    double    m_certainty;
 
     void GetFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
-    CSEdsc* ChooseCSE(double* mostLikely = nullptr);
+    Choice& ChooseCSE(ArrayStack<Choice>& choices);
     void BuildChoices(ArrayStack<Choice>& choices);
-    void Softmax(ArrayStack<Choice>& choices, double* mostLikely = nullptr);
+    void Softmax(ArrayStack<Choice>& choices);
     void DumpChoices(ArrayStack<Choice>& choices);
     void UpdateParameters();
     void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
@@ -191,8 +190,9 @@ public:
     }
 
 #ifdef DEBUG
-    virtual void DumpMetrics();
-    virtual void Announce();
+    virtual void            DumpMetrics();
+    virtual void            Announce();
+    jitstd::vector<double>* m_likelihoods;
 #endif
 };
 
@@ -275,6 +275,34 @@ struct CSEdsc
     // number, this will reflect it; otherwise, NoVN.
     // not used for shared const CSE's
     ValueNum defConservNormVN;
+
+    // We may form candidates that we can't use.
+    // Is this a viable cse?
+    bool IsViable()
+    {
+        if (defExcSetPromise == ValueNumStore::NoVN)
+        {
+            // Multiple defs with incompatible def sets
+            //
+            return false;
+        }
+
+        if ((csdDefCount == 0) || (csdUseCount == 0))
+        {
+            // No uses, or perhaps unreachable uses.
+            //
+            return false;
+        }
+
+        if ((csdDefWtCnt <= 0) || (csdUseWtCnt <= 0))
+        {
+            // No hot uses, or messed up profile
+                //
+            return false;
+        }
+
+        return true;
+    }
 };
 
 //  The following class nested within CSE_Heuristic encapsulates the information

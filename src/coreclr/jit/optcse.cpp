@@ -2161,28 +2161,9 @@ void CSE_HeuristicReplay::ConsiderCandidates()
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
 
-        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        if (!dsc->IsViable())
         {
-            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
-            continue;
-        }
-
-        candidate.InitializeCounts();
-
-        if (candidate.UseCount() == 0)
-        {
-            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
-            continue;
-        }
-
-        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
-        {
-            // If we reach this point, then the CSE def was incorrectly marked or the
-            // block with this use is unreachable. So skip and go to the next CSE.
-            // Without the "continue", we'd generate bad code in retail.
-            // Commented out a noway_assert(false) here due to bug: 3290124.
-            // The problem is if there is sub-graph that is not reachable from the
-            // entry point, the CSE flags propagated, would be incorrect for it.
+            JITDUMP("Abandoned " FMT_CSE " -- not viable\n", candidate.CseIndex());
             continue;
         }
 
@@ -2270,6 +2251,10 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
         m_verbose = true;
     }
 
+#ifdef DEBUG
+    CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
+    m_likelihoods           = new (allocator) jitstd::vector<double>(allocator);
+#endif
     Announce();
 }
 
@@ -2311,9 +2296,15 @@ void CSE_HeuristicRL::DumpMetrics()
     }
     else
     {
-        // For evaluation, dump certainty of the first decision
+        // For evaluation, dump likelihood of the choices made
         //
-        printf(", cert %f", m_certainty);
+        printf(", likelihoods ");
+        bool first = true;
+        for (double d : *m_likelihoods)
+        {
+            printf("%s%.3f", first ? "" : ",", d);
+            first = false;
+        }
     }
 }
 
@@ -2337,8 +2328,9 @@ bool CSE_HeuristicRL::ConsiderTree(GenTree* tree, bool isReturn)
 //
 void CSE_HeuristicRL::ConsiderCandidates()
 {
-    sortTab = new (m_pCompiler, CMK_CSE) CSEdsc*[m_pCompiler->optCSECandidateCount];
-    sortSiz = m_pCompiler->optCSECandidateCount * sizeof(*sortTab);
+    const int numCandidates = m_pCompiler->optCSECandidateCount;
+    sortTab                 = new (m_pCompiler, CMK_CSE) CSEdsc*[numCandidates];
+    sortSiz                 = numCandidates * sizeof(*sortTab);
     memcpy(sortTab, m_pCompiler->optCSEtab, sortSiz);
 
     if (m_updateParameters)
@@ -2352,23 +2344,29 @@ void CSE_HeuristicRL::ConsiderCandidates()
         printf("RL using softmax policy\n");
     }
 
-    m_certainty = 0;
-    bool first = true;
+    // Number of choices is num candidates + 1, since
+    // early stopping is also a choice.
+    //
+    ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE), numCandidates + 1);
 
     while (true)
     {
-        CSEdsc* const dsc = ChooseCSE(first ? &m_certainty : nullptr);
-        first = false;
-
+        Choice&       choice = ChooseCSE(choices);
+        CSEdsc* const dsc    = choice.m_dsc;
         if (dsc == nullptr)
         {
+            m_likelihoods->push_back(choice.m_softmax);
             break;
         }
 
-        // purge this CSE so we don't consider it again
+        // purge this CSE from sortTab so we won't choose it again
         //
         assert(sortTab[dsc->csdIndex - 1] == dsc);
         sortTab[dsc->csdIndex - 1] = nullptr;
+
+        // ChooseCSE should only choose viable options
+        //
+        assert(dsc->IsViable());
 
         CSE_Candidate candidate(this, dsc);
 
@@ -2381,33 +2379,9 @@ void CSE_HeuristicRL::ConsiderCandidates()
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
 
-        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
-        {
-            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
-            continue;
-        }
-
-        candidate.InitializeCounts();
-
-        if (candidate.UseCount() == 0)
-        {
-            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
-            continue;
-        }
-
-        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
-        {
-            // If we reach this point, then the CSE def was incorrectly marked or the
-            // block with this use is unreachable. So skip and go to the next CSE.
-            // Without the "continue", we'd generate bad code in retail.
-            // Commented out a noway_assert(false) here due to bug: 3290124.
-            // The problem is if there is sub-graph that is not reachable from the
-            // entry point, the CSE flags propagated, would be incorrect for it.
-            continue;
-        }
-
         PerformCSE(&candidate);
         madeChanges = true;
+        m_likelihoods->push_back(choice.m_softmax);
     }
 
     return;
@@ -2508,11 +2482,8 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //------------------------------------------------------------------------
 // ChooseCSE: examine candidates and choose the next CSE to perform
 //
-// Arguments:
-//   mostLikely - [out, optional] set to maximum likelihood of any choice
-//
 // Returns:
-//   Next CSE to perform, or nullptr to stop doing CSEs.
+//   Choice of CSE to perform
 //
 // Notes:
 //   This is a softmax policy, meaning that there is some randomness
@@ -2531,16 +2502,14 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //      if the random value is in [0.24, 0.88) we choose candidate 2;
 //      else we choose candidate 3;
 //
-CSEdsc* CSE_HeuristicRL::ChooseCSE(double* mostLikely)
+CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseCSE(ArrayStack<Choice>& choices)
 {
-    // Todo: presize
-    //
-    ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE));
+    choices.Reset();
     BuildChoices(choices);
 
     // Compute softmax likelihoods
     //
-    Softmax(choices, mostLikely);
+    Softmax(choices);
 
     // Generate a random number and choose the CSE to perform.
     //
@@ -2559,14 +2528,14 @@ CSEdsc* CSE_HeuristicRL::ChooseCSE(double* mostLikely)
 
         if (randomFactor < softmaxSum)
         {
-            return choices.TopRef(i).m_dsc;
+            return choices.TopRef(i);
         }
     }
 
     // If we failed to match above (say from the sum not rounding to 1.0)
     // just return the first one.
     //
-    return choices.TopRef().m_dsc;
+    return choices.TopRef();
 }
 
 //------------------------------------------------------------------------
@@ -2579,9 +2548,10 @@ void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
     for (unsigned i = 0; i < m_pCompiler->optCSECandidateCount; i++)
     {
         CSEdsc* const dsc = sortTab[i];
-        if (dsc == nullptr)
+        if (dsc == nullptr || !dsc->IsViable())
         {
-            // already did this cse
+            // already did this cse,
+            // or the cse is not viable
             continue;
         }
 
@@ -2600,7 +2570,6 @@ void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
 //
 // Arguments:
 //   choices - array of choices
-//   mostLikely - [out, optional] set to maximum likelihood of any choice
 //
 // Notes:
 //
@@ -2614,18 +2583,16 @@ void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
 //   the softmax sum is e^1.0 + e^2.0 + e^0.3 = 2.78 + 7.39 + 1.35 = 11.52,
 //   and so the likelihoods are 0.24, 0.64, 0.12 (note they sum to 1.0).
 //
-void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices, double* mostLikely)
+void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
 {
     // Determine likelihood via softmax.
     //
     double softmaxSum = 0;
-    double softmaxMax = 0;
     for (int i = 0; i < choices.Height(); i++)
     {
-        double softmax = exp(choices.TopRef(i).m_preference);
+        double softmax              = exp(choices.TopRef(i).m_preference);
         choices.TopRef(i).m_softmax = softmax;
         softmaxSum += softmax;
-        softmaxMax = max(softmaxMax, softmax);
     }
 
     // Normalize each choice's softmax likelihood
@@ -2633,11 +2600,6 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices, double* mostLikely)
     for (int i = 0; i < choices.Height(); i++)
     {
         choices.TopRef(i).m_softmax /= softmaxSum;
-    }
-
-    if (mostLikely != nullptr)
-    {
-        *mostLikely = softmaxMax / softmaxSum;
     }
 }
 
@@ -2713,10 +2675,12 @@ void CSE_HeuristicRL::UpdateParameters()
         const int     attempt = m_pCompiler->optCSEattempt++;
         CSEdsc* const dsc     = sortTab[index];
 
-        // purge this CSE so we don't consider it again
+        // purge this CSE so we don't consider it again when
+        // building choices
         //
         assert(sortTab[dsc->csdIndex - 1] == dsc);
         sortTab[dsc->csdIndex - 1] = nullptr;
+        assert(dsc->IsViable());
 
         // We are actually going to do this CSE since
         // we want the state to evolve as it did originally
@@ -2731,31 +2695,6 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMP("CSE Expression : \n");
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
-
-        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
-        {
-            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
-            continue;
-        }
-
-        candidate.InitializeCounts();
-
-        if (candidate.UseCount() == 0)
-        {
-            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
-            continue;
-        }
-
-        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
-        {
-            // If we reach this point, then the CSE def was incorrectly marked or the
-            // block with this use is unreachable. So skip and go to the next CSE.
-            // Without the "continue", we'd generate bad code in retail.
-            // Commented out a noway_assert(false) here due to bug: 3290124.
-            // The problem is if there is sub-graph that is not reachable from the
-            // entry point, the CSE flags propagated, would be incorrect for it.
-            continue;
-        }
 
         // Compute the parameter update
         //
@@ -4252,19 +4191,12 @@ void CSE_HeuristicCommon::ConsiderCandidates()
         CSEdsc* const dsc     = *ptr;
         CSE_Candidate candidate(this, dsc);
 
-        if (dsc->defExcSetPromise == ValueNumStore::NoVN)
+        if (!dsc->IsViable())
         {
-            JITDUMP("Abandoned " FMT_CSE " because we had defs with different Exc sets\n", candidate.CseIndex());
             continue;
         }
 
         candidate.InitializeCounts();
-
-        if (candidate.UseCount() == 0)
-        {
-            JITDUMP("Skipped " FMT_CSE " because use count is 0\n", candidate.CseIndex());
-            continue;
-        }
 
 #ifdef DEBUG
         if (m_pCompiler->verbose)
@@ -4287,17 +4219,6 @@ void CSE_HeuristicCommon::ConsiderCandidates()
             printf("\n");
         }
 #endif // DEBUG
-
-        if ((dsc->csdDefCount <= 0) || (dsc->csdUseCount == 0))
-        {
-            // If we reach this point, then the CSE def was incorrectly marked or the
-            // block with this use is unreachable. So skip and go to the next CSE.
-            // Without the "continue", we'd generate bad code in retail.
-            // Commented out a noway_assert(false) here due to bug: 3290124.
-            // The problem is if there is sub-graph that is not reachable from the
-            // entry point, the CSE flags propagated, would be incorrect for it.
-            continue;
-        }
 
         bool doCSE = PromotionCheck(&candidate);
 
