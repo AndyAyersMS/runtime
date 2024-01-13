@@ -2199,18 +2199,22 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
 
     const unsigned initialParamLength = initialParameters.GetLength();
 
+    for (unsigned i = 0; (i < initialParamLength) && (i < numParameters); i++)
+    {
+        m_parameters[i] = initialParameters.GetData()[i];
+    }
+
     if (numParameters > initialParamLength)
     {
         JITDUMP("Too few parameters (expected %d), trailing will be zero", numParameters);
+        for (unsigned i = initialParamLength; i < numParameters; i++)
+        {
+            m_parameters[i] = 0;
+        }
     }
     else if (numParameters < initialParamLength)
     {
         JITDUMP("Too many parameters (expected %d), trailing will be ignored", numParameters);
-    }
-
-    for (unsigned i = 0; i < initialParamLength; i++)
-    {
-        m_parameters[i] = initialParameters.GetData()[i];
     }
 
     // Optionally we may be given a prior sequence and perf score to use to
@@ -2408,6 +2412,8 @@ void CSE_HeuristicRL::ConsiderCandidates()
 //    9. cse is float (0/1)
 //   10. cse is shared const (0/1)
 //   11. cse is not shared const (0/1)
+//   12. cse costEx is <= MIN_CSE_COST (0/1)
+//   13. cse costEx is >  MIN_CSE_COST (0/1)
 //
 void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
 {
@@ -2443,11 +2449,14 @@ void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
     features[6] = cse->csdLiveAcrossCall;
     features[7] = !cse->csdLiveAcrossCall;
 
-    features[8] = cse->csdTree->TypeIs(TYP_INT);
-    features[9] = cse->csdTree->TypeIs(TYP_FLOAT, TYP_DOUBLE);
+    features[8] = varTypeUsesIntReg(cse->csdTree->TypeGet());
+    features[9] = varTypeUsesFloatReg(cse->csdTree->TypeGet());
 
     features[10] = cse->csdIsSharedConst;
     features[11] = !cse->csdIsSharedConst;
+
+    features[12] = 5 * (features[0] <= Compiler::MIN_CSE_COST);
+    features[13] = 5 * (features[0] > Compiler::MIN_CSE_COST);
 }
 
 //------------------------------------------------------------------------
@@ -2467,7 +2476,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
         return 0.1 * (m_addCSEcount);
     }
 
-    double features[12];
+    double features[numParameters];
     GetFeatures(cse, features);
 
     double preference = 0;
@@ -2604,6 +2613,7 @@ void CSE_HeuristicRL::Softmax(ArrayStack<Choice>& choices)
 //------------------------------------------------------------------------
 // DumpChoices: dump out information on current choices
 //
+// Arguments:
 //   choices - array of choices
 //   highlight - highlight this choice
 //
@@ -2616,12 +2626,39 @@ void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices, int highlight)
         const char*   msg    = i == highlight ? "=>" : "  ";
         if (cse != nullptr)
         {
-            printf("%s%2d: " FMT_CSE " preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, cse->csdIndex,
+            printf("%s%2d: " FMT_CSE " preference %10.7f likelihood %10.7f\n", msg, i, cse->csdIndex,
                    choice.m_preference, choice.m_softmax);
         }
         else
         {
-            printf("%s%2d: QUIT    preference " FMT_WT " likelihood " FMT_WT "\n", msg, i, choice.m_preference,
+            printf("%s%2d: QUIT    preference %10.7f likelihood %10.7f\n", msg, i, choice.m_preference,
+                   choice.m_softmax);
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// DumpChoices: dump out information on current choices
+//
+// Arguments:
+//   choices - array of choices
+//   highlight - highlight this choice
+//
+void CSE_HeuristicRL::DumpChoices(ArrayStack<Choice>& choices, CSEdsc* highlight)
+{
+    for (int i = 0; i < choices.Height(); i++)
+    {
+        Choice&       choice = choices.TopRef(i);
+        CSEdsc* const cse    = choice.m_dsc;
+        const char*   msg    = cse == highlight ? "=>" : "  ";
+        if (cse != nullptr)
+        {
+            printf("%s%2d: " FMT_CSE " preference %10.7f likelihood %10.7f\n", msg, i, cse->csdIndex,
+                   choice.m_preference, choice.m_softmax);
+        }
+        else
+        {
+            printf("%s%2d: QUIT    preference %10.7f likelihood %10.7f\n", msg, i, choice.m_preference,
                    choice.m_softmax);
         }
     }
@@ -2701,7 +2738,7 @@ void CSE_HeuristicRL::UpdateParameters()
         //
         UpdateParametersStep(dsc, choices);
 
-        // Acually do the cse, since subsequent step updates
+        // Actually do the cse, since subsequent step updates
         // possibly can observe changes to the method caused by this CSE.
         //
         PerformCSE(&candidate);
@@ -2745,7 +2782,7 @@ void CSE_HeuristicRL::UpdateParameters()
 //
 //   Takes into account both the likelihood of the choice and the magnitude
 //   of reward, briefly:
-//   - likely   choices and good rewards are strongly enouraged
+//   - likely   choices and good rewards are strongly encouraged
 //   - unlikely choices and good rewards are mildly   encouraged
 //   - unlikely choices and bad  rewards are mildly   discouraged
 //   - likely   choices and bad  rewards are strongly discouraged
@@ -2761,49 +2798,57 @@ void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choi
     Choice* const currentChoice = FindChoice(dsc, choices);
     if (m_verbose)
     {
-        printf("Choice likelihood was " FMT_WT "\n", currentChoice->m_softmax);
+        DumpChoices(choices, dsc);
     }
 
     // Compute the parameter update...
     //
-    double gradient[numParameters];
-    GetFeatures(dsc, gradient);
+    double currentFeatures[numParameters];
+    GetFeatures(dsc, currentFeatures);
+
+    double adjustment[numParameters];
+    for (int i = 0; i < numParameters; i++)
+    {
+        adjustment[i] = 0;
+    }
 
     for (int c = 0; c < choices.Height(); c++)
     {
-        double choiceFeature[numParameters];
-        GetFeatures(choices.TopRef(c).m_dsc, choiceFeature);
+        double choiceFeatures[numParameters];
+        GetFeatures(choices.TopRef(c).m_dsc, choiceFeatures);
+        double softmax = choices.TopRef(c).m_softmax;
 
         for (int i = 0; i < numParameters; i++)
         {
-            gradient[i] -= choices.TopRef(c).m_softmax * choiceFeature[i];
+            adjustment[i] += softmax * choiceFeatures[i];
         }
     }
 
-    if (m_verbose)
-    {
-        printf("Gradient vector for this step\n");
-        for (int i = 0; i < numParameters; i++)
-        {
-            printf("%2d: %f\n", i, gradient[i]);
-        }
-    }
-
-    // Todo: baseline?
-    //
+    double gradient[numParameters];
     for (int i = 0; i < numParameters; i++)
     {
-        gradient[i] *= m_alpha * m_reward;
-        m_parameters[i] += gradient[i];
+        gradient[i] = currentFeatures[i] - adjustment[i];
     }
 
-    if (m_verbose)
+    double newParameters[numParameters];
+    for (int i = 0; i < numParameters; i++)
     {
-        printf("Parameter update for this step and total\n");
-        for (int i = 0; i < numParameters; i++)
-        {
-            printf("%2d: %10.7f %10.7f\n", i, gradient[i], m_parameters[i]);
-        }
+        // Todo: baseline?
+        // Todo: discount?
+        //
+        newParameters[i] = m_parameters[i] + m_alpha * m_reward * gradient[i];
+    }
+
+    printf("      Parameter     Feature  Adjustment NewParamter\n");
+    for (int i = 0; i < numParameters; i++)
+    {
+        printf("%2d:  %10.7f  %10.7f  %10.7f  %10.7f\n", i, m_parameters[i], currentFeatures[i], adjustment[i],
+               newParameters[i]);
+    }
+
+    for (int i = 0; i < numParameters; i++)
+    {
+        m_parameters[i] = newParameters[i];
     }
 }
 

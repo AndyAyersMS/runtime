@@ -160,7 +160,7 @@ private:
 
     enum
     {
-        numParameters = 12
+        numParameters = 14
     };
     double    m_parameters[numParameters];
     double    m_alpha;
@@ -175,6 +175,7 @@ private:
     void BuildChoices(ArrayStack<Choice>& choices);
     void Softmax(ArrayStack<Choice>& choices);
     void DumpChoices(ArrayStack<Choice>& choices, int higlight = -1);
+    void DumpChoices(ArrayStack<Choice>& choices, CSEdsc* higlight);
     void UpdateParameters();
     void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
     Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
