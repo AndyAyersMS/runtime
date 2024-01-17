@@ -160,7 +160,8 @@ private:
 
     enum
     {
-        numParameters = 14
+        numParameters = 15,
+        booleanScale  = 5
     };
     double    m_parameters[numParameters];
     double    m_alpha;
@@ -170,6 +171,7 @@ private:
     bool      m_verbose;
 
     void GetFeatures(CSEdsc* dsc, double* features);
+    void DumpFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
     Choice& ChooseCSE(ArrayStack<Choice>& choices);
     void BuildChoices(ArrayStack<Choice>& choices);
@@ -194,6 +196,7 @@ public:
     virtual void            DumpMetrics();
     virtual void            Announce();
     jitstd::vector<double>* m_likelihoods;
+    jitstd::vector<char*>*  m_features;
 #endif
 };
 

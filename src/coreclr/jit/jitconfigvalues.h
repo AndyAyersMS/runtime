@@ -432,6 +432,9 @@ CONFIG_STRING(JitRLCSEAlpha, W("JitRLCSEAlpha"))
 // gradient updates
 CONFIG_INTEGER(JitRLCSEVerbose, W("JitRLCSEVerbose"), 0)
 
+// If nonzero, dump candidate feature values
+CONFIG_INTEGER(JitRLCSECandidateFeatures, W("JitRLCSECandidateFeatures"), 0)
+
 #endif
 
 ///

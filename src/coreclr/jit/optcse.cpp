@@ -2258,6 +2258,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
 #ifdef DEBUG
     CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
     m_likelihoods           = new (allocator) jitstd::vector<double>(allocator);
+    m_features              = new (allocator) jitstd::vector<char*>(allocator);
 #endif
     Announce();
 }
@@ -2296,6 +2297,17 @@ void CSE_HeuristicRL::DumpMetrics()
         for (int i = 0; i < numParameters; i++)
         {
             printf("%s%f", (i == 0) ? "" : ",", m_parameters[i]);
+        }
+
+        if (JitConfig.JitRLCSECandidateFeatures() > 0)
+        {
+            bool first = true;
+            printf(", features ");
+            for (char* f : *m_features)
+            {
+                printf("%s%s", first ? "" : ",", f);
+                first = false;
+            }
         }
     }
     else
@@ -2410,10 +2422,11 @@ void CSE_HeuristicRL::ConsiderCandidates()
 //    7. cse not live across call (0/1)
 //    8. cse is int (0/1)
 //    9. cse is float (0/1)
-//   10. cse is shared const (0/1)
-//   11. cse is not shared const (0/1)
-//   12. cse costEx is <= MIN_CSE_COST (0/1)
-//   13. cse costEx is >  MIN_CSE_COST (0/1)
+//   10. cse is a constant, but not shared (0/1)
+//   11. cse is a shared const (0/1)
+//   12. cse is not a constant (0/1)
+//   13. cse costEx is <= MIN_CSE_COST (0/1)
+//   14. cse costEx is >  MIN_CSE_COST (0/1)
 //
 void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
 {
@@ -2446,17 +2459,42 @@ void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
     features[4] = cse->csdUseCount;
     features[5] = cse->csdDefCount;
 
-    features[6] = cse->csdLiveAcrossCall;
-    features[7] = !cse->csdLiveAcrossCall;
+    // Boolean features get a "one-hot" encoding and get
+    // scaled up so their dynamic range is similar to the
+    // features above
+    //
+    features[6] = booleanScale * cse->csdLiveAcrossCall;
+    features[7] = booleanScale * !cse->csdLiveAcrossCall;
 
-    features[8] = varTypeUsesIntReg(cse->csdTree->TypeGet());
-    features[9] = varTypeUsesFloatReg(cse->csdTree->TypeGet());
+    features[8] = booleanScale * varTypeUsesIntReg(cse->csdTree->TypeGet());
+    features[9] = booleanScale * varTypeUsesFloatReg(cse->csdTree->TypeGet());
 
-    features[10] = cse->csdIsSharedConst;
-    features[11] = !cse->csdIsSharedConst;
+    features[10] = booleanScale * cse->csdTree->OperIsConst();
+    features[11] = booleanScale * cse->csdIsSharedConst;
+    features[12] = booleanScale * !cse->csdTree->OperIsConst();
 
-    features[12] = 5 * (features[0] <= Compiler::MIN_CSE_COST);
-    features[13] = 5 * (features[0] > Compiler::MIN_CSE_COST);
+    features[13] = booleanScale * (features[0] <= Compiler::MIN_CSE_COST);
+    features[14] = booleanScale * (features[0] > Compiler::MIN_CSE_COST);
+}
+
+//------------------------------------------------------------------------
+// DumpFeatures: dump feature values for a CSE candidate
+//
+// Arguments:
+//    dsc - cse descriptor
+//    features - feature vector for that candidate
+//
+// Notes:
+//    Dumps a comma separated row of data, prefixed by method index.
+//
+void CSE_HeuristicRL::DumpFeatures(CSEdsc* dsc, double* features)
+{
+    printf("features,%d," FMT_CSE, m_pCompiler->info.compMethodSuperPMIIndex, dsc->csdIndex);
+    for (int i = 0; i < numParameters; i++)
+    {
+        printf(",%f", features[i]);
+    }
+    printf("\n");
 }
 
 //------------------------------------------------------------------------
@@ -2478,6 +2516,11 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 
     double features[numParameters];
     GetFeatures(cse, features);
+
+    if (JitConfig.JitRLCSECandidateFeatures() > 0)
+    {
+        DumpFeatures(cse, features);
+    }
 
     double preference = 0;
     for (int i = 0; i < numParameters; i++)
@@ -2718,7 +2761,13 @@ void CSE_HeuristicRL::UpdateParameters()
         //
         assert(sortTab[dsc->csdIndex - 1] == dsc);
         sortTab[dsc->csdIndex - 1] = nullptr;
-        assert(dsc->IsViable());
+        if (!dsc->IsViable())
+        {
+            // If we are replaying an off-policy sequence
+            // it may contain non-viable candidates.
+            // Ignore them.
+            continue;
+        }
 
         // We are actually going to do this CSE since
         // we want the state to evolve as it did originally
