@@ -2258,6 +2258,7 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
 #ifdef DEBUG
     CompAllocator allocator = m_pCompiler->getAllocator(CMK_CSE);
     m_likelihoods           = new (allocator) jitstd::vector<double>(allocator);
+    m_baseLikelihoods       = new (allocator) jitstd::vector<double>(allocator);
     m_features              = new (allocator) jitstd::vector<char*>(allocator);
 #endif
     Announce();
@@ -2321,6 +2322,16 @@ void CSE_HeuristicRL::DumpMetrics()
             printf("%s%.3f", first ? "" : ",", d);
             first = false;
         }
+
+        // For evaluation, dump initial likelihood each choice
+        //
+        printf(", baseLikelihoods ");
+        first = true;
+        for (double d : *m_baseLikelihoods)
+        {
+            printf("%s%.3f", first ? "" : ",", d);
+            first = false;
+        }
     }
 }
 
@@ -2364,11 +2375,32 @@ void CSE_HeuristicRL::ConsiderCandidates()
     // early stopping is also a choice.
     //
     ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE), numCandidates + 1);
+    bool               first = true;
 
     while (true)
     {
-        Choice&       choice = ChooseCSE(choices);
-        CSEdsc* const dsc    = choice.m_dsc;
+        Choice& choice = ChooseCSE(choices);
+
+        if (first)
+        {
+            for (int i = 0; i < choices.Height(); i++)
+            {
+                Choice& option = choices.TopRef(i);
+                if (option.m_dsc == nullptr)
+                {
+                    m_baseLikelihoods->push_back(0);
+                }
+                else
+                {
+                    m_baseLikelihoods->push_back(option.m_dsc->csdIndex);
+                }
+                m_baseLikelihoods->push_back(option.m_softmax);
+            }
+            first = false;
+        }
+
+        CSEdsc* const dsc = choice.m_dsc;
+
         if (dsc == nullptr)
         {
             m_likelihoods->push_back(choice.m_softmax);
@@ -2511,7 +2543,8 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
         // but likely should be parameterized
         // or derived from the method ambient state?
         // (pressure estimate?)
-        return 0.1 * (m_addCSEcount);
+        // return 0.1 * (m_addCSEcount);
+        return 0;
     }
 
     double features[numParameters];
@@ -2735,6 +2768,14 @@ void CSE_HeuristicRL::UpdateParameters()
         printf(" alpha " FMT_WT " and reward " FMT_WT "\n", m_alpha, m_reward);
     }
 
+    // We need to evaluate likelihoods based on the current parameters
+    // so we save up the accumulated upates here.
+    double parameterDelta[numParameters];
+    for (int i = 0; i < numParameters; i++)
+    {
+        parameterDelta[i] = 0;
+    }
+
     for (unsigned i = 0; i < JitReplayCSEArray.GetLength(); i++)
     {
         // optCSEtab is 0-based; candidate numbers are 1-based
@@ -2783,9 +2824,10 @@ void CSE_HeuristicRL::UpdateParameters()
         JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
         JITDUMP("\n");
 
-        // Compute the parameter update
+        // Compute the parameter update impact from this step
+        // and add it to the net delta.
         //
-        UpdateParametersStep(dsc, choices);
+        UpdateParametersStep(dsc, choices, parameterDelta);
 
         // Actually do the cse, since subsequent step updates
         // possibly can observe changes to the method caused by this CSE.
@@ -2813,20 +2855,28 @@ void CSE_HeuristicRL::UpdateParameters()
 
         Softmax(choices);
         // nullptr here means "stopping"
-        UpdateParametersStep(nullptr, choices);
+        UpdateParametersStep(nullptr, choices, parameterDelta);
+    }
+
+    // Update the parameters to include the computed delta
+    //
+    for (int i = 0; i < numParameters; i++)
+    {
+        m_parameters[i] += parameterDelta[i];
     }
 }
 
 //------------------------------------------------------------------------
-// UpdateParameterStep: perform parameter update for this step in
+// UpdateParametersStep: perform parameter update for this step in
 //   the CSE sequence
 //
 // Arguments;
 //   dsc -- cse to perform (nullptr if stopping)
 //   choices -- alternatives available, with preference and softmax computed
+//   delta -- accumulated change to the parameters (in, out)
 //
 // Notes:
-//   modifies m_updatedParameters to include the adjustments due to this
+//   modifies delta to include the adjustments due to this
 //   choice, with ultimate reward m_reward.
 //
 //   Takes into account both the likelihood of the choice and the magnitude
@@ -2836,7 +2886,7 @@ void CSE_HeuristicRL::UpdateParameters()
 //   - unlikely choices and bad  rewards are mildly   discouraged
 //   - likely   choices and bad  rewards are strongly discouraged
 //
-void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices)
+void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices, double* delta)
 {
     // Since this is an "on-policy" process, the dsc
     // should be among the possible choices.
@@ -2879,25 +2929,29 @@ void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choi
         gradient[i] = currentFeatures[i] - adjustment[i];
     }
 
-    double newParameters[numParameters];
+    double newDelta[numParameters];
     for (int i = 0; i < numParameters; i++)
     {
         // Todo: baseline?
         // Todo: discount?
         //
-        newParameters[i] = m_parameters[i] + m_alpha * m_reward * gradient[i];
+        newDelta[i] = m_alpha * m_reward * gradient[i];
     }
 
-    printf("      Parameter     Feature  Adjustment NewParamter\n");
-    for (int i = 0; i < numParameters; i++)
+    if (m_verbose)
     {
-        printf("%2d:  %10.7f  %10.7f  %10.7f  %10.7f\n", i, m_parameters[i], currentFeatures[i], adjustment[i],
-               newParameters[i]);
+        printf("      OldDelta     Feature  Adjustment    Gradient    StepDelta   NewDelta\n");
+
+        for (int i = 0; i < numParameters; i++)
+        {
+            printf("%2d:  %10.7f  %10.7f  %10.7f  %10.7f  %10.7f\n", i, delta[i], currentFeatures[i], adjustment[i],
+                   gradient[i], newDelta[i], newDelta[i] + delta[i]);
+        }
     }
 
     for (int i = 0; i < numParameters; i++)
     {
-        m_parameters[i] = newParameters[i];
+        delta[i] += newDelta[i];
     }
 }
 

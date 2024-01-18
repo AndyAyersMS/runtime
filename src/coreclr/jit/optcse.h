@@ -179,7 +179,7 @@ private:
     void DumpChoices(ArrayStack<Choice>& choices, int higlight = -1);
     void DumpChoices(ArrayStack<Choice>& choices, CSEdsc* higlight);
     void UpdateParameters();
-    void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices);
+    void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices, double* delta);
     Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
 
 public:
@@ -193,9 +193,12 @@ public:
     }
 
 #ifdef DEBUG
-    virtual void            DumpMetrics();
-    virtual void            Announce();
+    virtual void DumpMetrics();
+    virtual void Announce();
+    // Likelihood of each choice made in the sequence
     jitstd::vector<double>* m_likelihoods;
+    // Likelihood of each action from starting state
+    jitstd::vector<double>* m_baseLikelihoods;
     jitstd::vector<char*>*  m_features;
 #endif
 };
