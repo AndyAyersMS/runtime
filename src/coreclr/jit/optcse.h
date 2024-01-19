@@ -168,17 +168,21 @@ private:
     double    m_reward;
     CLRRandom m_cseRNG;
     bool      m_updateParameters;
+    bool      m_greedy;
     bool      m_verbose;
 
     void GetFeatures(CSEdsc* dsc, double* features);
     void DumpFeatures(CSEdsc* dsc, double* features);
     double Preference(CSEdsc* dsc);
-    Choice& ChooseCSE(ArrayStack<Choice>& choices);
+    Choice& ChooseSoftmax(ArrayStack<Choice>& choices);
+    Choice& ChooseGreedy(ArrayStack<Choice>& choices);
     void BuildChoices(ArrayStack<Choice>& choices);
     void Softmax(ArrayStack<Choice>& choices);
     void DumpChoices(ArrayStack<Choice>& choices, int higlight = -1);
     void DumpChoices(ArrayStack<Choice>& choices, CSEdsc* higlight);
     void UpdateParameters();
+    void GreedyPolicy();
+    void SoftmaxPolicy();
     void UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choices, double* delta);
     Choice* FindChoice(CSEdsc* dsc, ArrayStack<Choice>& choices);
 

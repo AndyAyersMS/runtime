@@ -435,6 +435,9 @@ CONFIG_INTEGER(JitRLCSEVerbose, W("JitRLCSEVerbose"), 0)
 // If nonzero, dump candidate feature values
 CONFIG_INTEGER(JitRLCSECandidateFeatures, W("JitRLCSECandidateFeatures"), 0)
 
+// If nonzero, use the greedy policy with current parameters.
+CONFIG_INTEGER(JitRLCSEGreedy, W("JitRLCSEGreedy"), 0)
+
 #endif
 
 ///

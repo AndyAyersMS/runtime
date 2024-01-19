@@ -2188,7 +2188,12 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 //  JitReplayCSEReward can be used to supply the perf score for the sequence.
 //
 CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
-    : CSE_HeuristicCommon(pCompiler), m_alpha(0.0), m_reward(0.0), m_updateParameters(false), m_verbose(false)
+    : CSE_HeuristicCommon(pCompiler)
+    , m_alpha(0.0)
+    , m_reward(0.0)
+    , m_updateParameters(false)
+    , m_greedy(false)
+    , m_verbose(false)
 {
     static ConfigDoubleArray initialParameters;
     initialParameters.EnsureInit(JitConfig.JitRLCSE());
@@ -2237,6 +2242,10 @@ CSE_HeuristicRL::CSE_HeuristicRL(Compiler* pCompiler)
         m_reward = JitReplayCSERewardArray.GetData()[0];
 
         m_updateParameters = true;
+    }
+    else if (JitConfig.JitRLCSEGreedy() > 0)
+    {
+        m_greedy = true;
     }
 
     if (JitConfig.JitRLCSEAlpha() != nullptr)
@@ -2366,6 +2375,83 @@ void CSE_HeuristicRL::ConsiderCandidates()
         return;
     }
 
+    if (m_greedy)
+    {
+        GreedyPolicy();
+        return;
+    }
+
+    SoftmaxPolicy();
+}
+
+//------------------------------------------------------------------------
+// GreedyPolicy: use a greedy policy
+//
+// Notes:
+//   This always performs the most-preferred choice, using lower candidate number
+//   as a tie-breaker.
+//
+void CSE_HeuristicRL::GreedyPolicy()
+{
+    if (m_verbose)
+    {
+        printf("RL using greedy policy\n");
+    }
+
+    // Number of choices is num candidates + 1, since
+    // early stopping is also a choice.
+    //
+    const int          numCandidates = m_pCompiler->optCSECandidateCount;
+    ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE), numCandidates + 1);
+
+    while (true)
+    {
+        Choice&       choice = ChooseGreedy(choices);
+        CSEdsc* const dsc    = choice.m_dsc;
+
+        if (dsc == nullptr)
+        {
+            m_likelihoods->push_back(choice.m_softmax);
+            break;
+        }
+
+        // purge this CSE from sortTab so we won't choose it again
+        //
+        assert(sortTab[dsc->csdIndex - 1] == dsc);
+        sortTab[dsc->csdIndex - 1] = nullptr;
+
+        // ChooseCSE should only choose viable options
+        //
+        assert(dsc->IsViable());
+
+        CSE_Candidate candidate(this, dsc);
+
+        if (m_verbose)
+        {
+            printf("\nRL attempting " FMT_CSE "\n", candidate.CseIndex());
+        }
+
+        JITDUMP("CSE Expression : \n");
+        JITDUMPEXEC(m_pCompiler->gtDispTree(candidate.Expr()));
+        JITDUMP("\n");
+
+        PerformCSE(&candidate);
+        madeChanges = true;
+        m_likelihoods->push_back(choice.m_softmax);
+    }
+
+    return;
+}
+
+//------------------------------------------------------------------------
+// SoftmaxPolicy: use a randomized softmax policy
+//
+// Notes:
+//   This converts preferences to likelihoods using softmax, and then
+//   randomly selects a candidate proportional to its likelihood.
+//
+void CSE_HeuristicRL::SoftmaxPolicy()
+{
     if (m_verbose)
     {
         printf("RL using softmax policy\n");
@@ -2374,12 +2460,13 @@ void CSE_HeuristicRL::ConsiderCandidates()
     // Number of choices is num candidates + 1, since
     // early stopping is also a choice.
     //
+    const int          numCandidates = m_pCompiler->optCSECandidateCount;
     ArrayStack<Choice> choices(m_pCompiler->getAllocator(CMK_CSE), numCandidates + 1);
     bool               first = true;
 
     while (true)
     {
-        Choice& choice = ChooseCSE(choices);
+        Choice& choice = ChooseSoftmax(choices);
 
         if (first)
         {
@@ -2565,7 +2652,68 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 }
 
 //------------------------------------------------------------------------
-// ChooseCSE: examine candidates and choose the next CSE to perform
+// ChooseGreedy: examine candidates and choose the next CSE to perform
+//   via greedy policy
+//
+// Returns:
+//   Choice of CSE to perform
+//
+// Notes:
+//   Picks the most-preferred candidate.
+//   If there is a tie, picks stop, or the lowest cse index.
+//
+CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseGreedy(ArrayStack<Choice>& choices)
+{
+    choices.Reset();
+    BuildChoices(choices);
+
+    // Find the maximally preferred case.
+    //
+    Choice& bestChoice = choices.TopRef(0);
+    int     choiceNum  = 0;
+
+    for (int i = 1; i < choices.Height(); i++)
+    {
+        Choice&      choice = choices.TopRef(i);
+        const double delta  = choice.m_preference - bestChoice.m_preference;
+
+        bool update = false;
+
+        if (delta > 0)
+        {
+            update = true;
+        }
+        else if (delta == 0)
+        {
+            if (choice.m_dsc == nullptr)
+            {
+                update = true;
+            }
+            else if ((bestChoice.m_dsc != nullptr) && (choice.m_dsc->csdIndex < bestChoice.m_dsc->csdIndex))
+            {
+                update = true;
+            }
+        }
+
+        if (update)
+        {
+            bestChoice = choice;
+            choiceNum  = i;
+        }
+    }
+
+    if (m_verbose)
+    {
+        printf("Greedy candidate evaluation\n");
+        DumpChoices(choices, choiceNum);
+    }
+
+    return bestChoice;
+}
+
+//------------------------------------------------------------------------
+// ChooseSoftmax: examine candidates and choose the next CSE to perform
+//   via softmax
 //
 // Returns:
 //   Choice of CSE to perform
@@ -2587,7 +2735,7 @@ double CSE_HeuristicRL::Preference(CSEdsc* cse)
 //      if the random value is in [0.24, 0.88) we choose candidate 2;
 //      else we choose candidate 3;
 //
-CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseCSE(ArrayStack<Choice>& choices)
+CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseSoftmax(ArrayStack<Choice>& choices)
 {
     choices.Reset();
     BuildChoices(choices);
@@ -2625,6 +2773,9 @@ CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseCSE(ArrayStack<Choice>& choices)
 // BuildChoices: fill in the choices currently available
 //
 //   choices - array of choices to be filled in
+//
+// Notes:
+//    Also computes the preference for each choice.
 //
 void CSE_HeuristicRL::BuildChoices(ArrayStack<Choice>& choices)
 {
