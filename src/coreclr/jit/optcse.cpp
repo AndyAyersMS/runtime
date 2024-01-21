@@ -1957,7 +1957,7 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
 //
 void CSE_HeuristicCommon::DumpMetrics()
 {
-    printf(", seq ");
+    printf(" seq ");
     for (unsigned i = 0; i < m_sequence->size(); i++)
     {
         printf("%s%i", (i == 0) ? "" : ",", (*m_sequence)[i]);
@@ -2303,7 +2303,7 @@ void CSE_HeuristicRL::DumpMetrics()
     {
         // For update, dump the new parameter values
         //
-        printf(", updatedparams ");
+        printf(" updatedparams ");
         for (int i = 0; i < numParameters; i++)
         {
             printf("%s%f", (i == 0) ? "" : ",", m_parameters[i]);
@@ -2324,7 +2324,7 @@ void CSE_HeuristicRL::DumpMetrics()
     {
         // For evaluation, dump likelihood of the choices made
         //
-        printf(", likelihoods ");
+        printf(" likelihoods ");
         bool first = true;
         for (double d : *m_likelihoods)
         {
@@ -2334,7 +2334,7 @@ void CSE_HeuristicRL::DumpMetrics()
 
         // For evaluation, dump initial likelihood each choice
         //
-        printf(", baseLikelihoods ");
+        printf(" baseLikelihoods ");
         first = true;
         for (double d : *m_baseLikelihoods)
         {
@@ -2538,14 +2538,16 @@ void CSE_HeuristicRL::SoftmaxPolicy()
 //    4. cse use count
 //    5. cse def count
 //    6. cse live across call (0/1)
-//    7. cse not live across call (0/1)
-//    8. cse is int (0/1)
-//    9. cse is float (0/1)
-//   10. cse is a constant, but not shared (0/1)
-//   11. cse is a shared const (0/1)
-//   12. cse is not a constant (0/1)
-//   13. cse costEx is <= MIN_CSE_COST (0/1)
-//   14. cse costEx is >  MIN_CSE_COST (0/1)
+//    7. cse is int (0/1)
+//    8. cse is a constant, but not shared (0/1)
+//    9. cse is a shared const (0/1)
+//   10. cse costEx is <= MIN_CSE_COST (0/1)
+//   11. cse is a constant and live across call (0/1)
+//   12. cse is a constant and min cost (0/1)
+//   13. cse is a constant and NOT min cost (0/1)
+//
+// All boolean features are scaled up by booleanScale so their
+// numeric range is similar to the non-boolean features
 //
 void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
 {
@@ -2562,7 +2564,9 @@ void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
         return;
     }
 
-    features[0] = cse->csdTree->GetCostEx();
+    const unsigned char costEx = cse->csdTree->GetCostEx();
+
+    features[0] = costEx;
 
     if (cse->csdUseWtCnt > 0)
     {
@@ -2578,22 +2582,29 @@ void CSE_HeuristicRL::GetFeatures(CSEdsc* cse, double* features)
     features[4] = cse->csdUseCount;
     features[5] = cse->csdDefCount;
 
-    // Boolean features get a "one-hot" encoding and get
-    // scaled up so their dynamic range is similar to the
-    // features above
+    // Boolean features get scaled up so their dynamic range
+    // is similar to the features above, roughly [0...5]
     //
-    features[6] = booleanScale * cse->csdLiveAcrossCall;
-    features[7] = booleanScale * !cse->csdLiveAcrossCall;
+    const bool isLiveAcrossCall = cse->csdLiveAcrossCall;
 
-    features[8] = booleanScale * varTypeUsesIntReg(cse->csdTree->TypeGet());
-    features[9] = booleanScale * varTypeUsesFloatReg(cse->csdTree->TypeGet());
+    features[6] = booleanScale * isLiveAcrossCall;
+    features[7] = booleanScale * varTypeUsesIntReg(cse->csdTree->TypeGet());
 
-    features[10] = booleanScale * cse->csdTree->OperIsConst();
-    features[11] = booleanScale * cse->csdIsSharedConst;
-    features[12] = booleanScale * !cse->csdTree->OperIsConst();
+    const bool isConstant       = cse->csdTree->OperIsConst();
+    const bool isSharedConstant = cse->csdIsSharedConst;
 
-    features[13] = booleanScale * (features[0] <= Compiler::MIN_CSE_COST);
-    features[14] = booleanScale * (features[0] > Compiler::MIN_CSE_COST);
+    features[8] = booleanScale * (isConstant & !isSharedConstant);
+    features[9] = booleanScale * isSharedConstant;
+
+    const bool isMinCost = (costEx == Compiler::MIN_CSE_COST);
+
+    features[10] = booleanScale * isMinCost;
+
+    // Joint features: constant / low cost CSEs seem to require extra scrutiny
+    //
+    features[11] = booleanScale * (isConstant & isLiveAcrossCall);
+    features[12] = booleanScale * (isConstant & isMinCost);
+    features[13] = booleanScale * (isConstant & !isMinCost);
 }
 
 //------------------------------------------------------------------------
@@ -3087,6 +3098,11 @@ void CSE_HeuristicRL::UpdateParametersStep(CSEdsc* dsc, ArrayStack<Choice>& choi
         // Todo: discount?
         //
         newDelta[i] = m_alpha * m_reward * gradient[i];
+    }
+
+    if (m_verbose && (newDelta[11] > 0))
+    {
+        printf("\n########### Param 11 will increase\n");
     }
 
     if (m_verbose)

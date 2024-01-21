@@ -1995,14 +1995,6 @@ void CodeGen::genEmitMachineCode()
     compiler->compCodeGenDone = true;
 #endif
 
-#if defined(DEBUG) || defined(LATE_DISASM)
-    // Add code size information into the Perf Score
-    // All compPerfScore calculations must be performed using doubles
-    compiler->info.compPerfScore += ((double)compiler->info.compTotalHotCodeSize * (double)PERFSCORE_CODESIZE_COST_HOT);
-    compiler->info.compPerfScore +=
-        ((double)compiler->info.compTotalColdCodeSize * (double)PERFSCORE_CODESIZE_COST_COLD);
-#endif // DEBUG || LATE_DISASM
-
     if (compiler->opts.disAsm && compiler->opts.disTesting)
     {
         printf("; END METHOD %s\n", compiler->eeGetMethodFullName(compiler->info.compMethodHnd));
@@ -2027,7 +2019,7 @@ void CodeGen::genEmitMachineCode()
 
         if (dspMetrics)
         {
-            printf(", num cse %d, num cand %d ", compiler->optCSEcount, compiler->optCSECandidateCount);
+            printf(", num cse %d num cand %d", compiler->optCSEcount, compiler->optCSECandidateCount);
 
             CSE_HeuristicCommon* const cseHeuristic = compiler->optGetCSEheuristic();
             if (cseHeuristic != nullptr)
@@ -2037,7 +2029,7 @@ void CodeGen::genEmitMachineCode()
 
             if (compiler->info.compMethodSuperPMIIndex >= 0)
             {
-                printf(", spmi index %d", compiler->info.compMethodSuperPMIIndex);
+                printf(" spmi index %d", compiler->info.compMethodSuperPMIIndex);
             }
         }
 

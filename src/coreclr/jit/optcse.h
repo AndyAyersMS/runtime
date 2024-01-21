@@ -47,6 +47,8 @@ public:
 
     virtual void Cleanup()
     {
+        // Add termination marker to cse sequence
+        INDEBUG(m_sequence->push_back(0));
     }
 
     // This currently mixes legality and profitability,
@@ -160,7 +162,7 @@ private:
 
     enum
     {
-        numParameters = 15,
+        numParameters = 14,
         booleanScale  = 5
     };
     double    m_parameters[numParameters];
