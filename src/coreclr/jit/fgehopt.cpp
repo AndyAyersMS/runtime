@@ -171,8 +171,9 @@ PhaseStatus Compiler::fgRemoveEmptyFinally()
                 currentBlock->RemoveFlags(BBF_RETLESS_CALL); // no longer a BBJ_CALLFINALLY
 
                 // Ref count updates.
-                fgAddRefPred(postTryFinallyBlock, currentBlock);
                 fgRemoveRefPred(firstBlock, currentBlock);
+                FlowEdge* const newEdge = fgAddRefPred(postTryFinallyBlock, currentBlock);
+                newEdge->setLikelihood(1.0);
 
                 // Cleanup the postTryFinallyBlock
                 fgCleanupContinuation(postTryFinallyBlock);
@@ -932,6 +933,10 @@ PhaseStatus Compiler::fgCloneFinally()
         // just outside the try region. We'd like our chosen
         // callfinally to come first after the try, so we can fall out of the try
         // into the clone.
+        //
+        // ISSUE-TODO: Once we are happy with our block ordering capabilities
+        // we should not need to do this reordering.
+        //
         BasicBlock* firstCallFinallyRangeBlock = nullptr;
         BasicBlock* lastCallFinallyRangeBlock  = nullptr;
         ehGetCallFinallyBlockRange(XTnum, &firstCallFinallyRangeBlock, &lastCallFinallyRangeBlock);
@@ -1096,12 +1101,13 @@ PhaseStatus Compiler::fgCloneFinally()
                 fgRemoveStmt(newBlock, finallyRet);
                 newBlock->SetKindAndTarget(BBJ_ALWAYS, normalCallFinallyReturn);
 
-                fgAddRefPred(normalCallFinallyReturn, newBlock);
+                FlowEdge* const newEdge = fgAddRefPred(normalCallFinallyReturn, newBlock);
+                newEdge->setLikelihood(1.0);
             }
             else
             {
                 newBlock->CopyTarget(this, block);
-                optRedirectBlock(newBlock, &blockMap, RedirectBlockOption::AddToPredLists);
+                optRedirectBlock(newBlock, &blockMap, block, RedirectBlockOption::AddToPredLists);
             }
         }
 
@@ -1142,8 +1148,9 @@ PhaseStatus Compiler::fgCloneFinally()
                     currentBlock->RemoveFlags(BBF_RETLESS_CALL); // no longer a BBJ_CALLFINALLY
 
                     // Ref count updates.
-                    fgAddRefPred(firstCloneBlock, currentBlock);
                     fgRemoveRefPred(firstBlock, currentBlock);
+                    FlowEdge* const newEdge = fgAddRefPred(firstCloneBlock, currentBlock);
+                    newEdge->setLikelihood(1.0);
 
                     // Make sure iteration isn't going off the deep end.
                     assert(leaveBlock != endCallFinallyRangeBlock);
@@ -1760,7 +1767,8 @@ bool Compiler::fgRetargetBranchesToCanonicalCallFinally(BasicBlock*      block,
             canonicalCallFinally->bbNum);
 
     block->SetTarget(canonicalCallFinally);
-    fgAddRefPred(canonicalCallFinally, block);
+    FlowEdge* const newEdge = fgAddRefPred(canonicalCallFinally, block);
+    newEdge->setLikelihood(1.0);
     assert(callFinally->bbRefs > 0);
     fgRemoveRefPred(callFinally, block);
 

@@ -559,21 +559,25 @@ void Compiler::optCheckPreds()
 // for `blk2->blk3` in `redirectMap`, change `blk` so that `blk3` is this branch successor.
 //
 // Arguments:
-//     blk          - block to redirect
-//     redirectMap  - block->block map specifying how the `blk` target will be redirected.
-//     predOption   - specifies how to update the pred lists
+//     block          - block to redirect
+//     redirectMap    - block->block map specifying how `block's` targets will be redirected.
+//     inspiringBlock - pre-image of block (block such that redirecdtMap[inspiringBlock] == block)
+//     predOption     - specifies how to update the pred lists
 //
 // Notes:
-//     Pred lists for successors of `blk` may be changed, depending on `predOption`.
+//     Pred lists for successors of `block` may be changed, depending on `predOption`.
 //
-void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap, RedirectBlockOption predOption)
+void Compiler::optRedirectBlock(BasicBlock*         block,
+                                BlockToBlockMap*    redirectMap,
+                                BasicBlock*         inspiringBlock,
+                                RedirectBlockOption predOption)
 {
     const bool updatePreds = (predOption == RedirectBlockOption::UpdatePredLists);
     const bool addPreds    = (predOption == RedirectBlockOption::AddToPredLists);
 
     BasicBlock* newJumpDest = nullptr;
 
-    switch (blk->GetKind())
+    switch (block->GetKind())
     {
         case BBJ_THROW:
         case BBJ_RETURN:
@@ -584,9 +588,11 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap, R
             break;
 
         case BBJ_CALLFINALLY:
-            if (addPreds && blk->bbFallsThrough())
+            if (addPreds && block->bbFallsThrough())
             {
-                fgAddRefPred(blk->Next(), blk);
+                assert(inspiringBlock->bbFallsThrough());
+                FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->Next(), inspiringBlock);
+                fgAddRefPred(block->Next(), block, inspiringEdge);
             }
 
             FALLTHROUGH;
@@ -594,66 +600,73 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap, R
         case BBJ_LEAVE:
         case BBJ_CALLFINALLYRET:
             // All of these have a single jump destination to update.
-            if (redirectMap->Lookup(blk->GetTarget(), &newJumpDest))
+            if (redirectMap->Lookup(block->GetTarget(), &newJumpDest))
             {
                 if (updatePreds)
                 {
-                    fgRemoveRefPred(blk->GetTarget(), blk);
+                    fgRemoveRefPred(block->GetTarget(), block);
                 }
-                blk->SetTarget(newJumpDest);
+                block->SetTarget(newJumpDest);
                 if (updatePreds || addPreds)
                 {
-                    fgAddRefPred(newJumpDest, blk);
+                    FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetTarget(), inspiringBlock);
+                    fgAddRefPred(newJumpDest, block, inspiringEdge);
                 }
             }
             else if (addPreds)
             {
-                fgAddRefPred(blk->GetTarget(), blk);
+                FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetTarget(), inspiringBlock);
+                fgAddRefPred(block->GetTarget(), block), inspiringEdge;
             }
             break;
 
         case BBJ_COND:
             // Update jump taken when condition is true
-            if (redirectMap->Lookup(blk->GetTrueTarget(), &newJumpDest))
+            if (redirectMap->Lookup(block->GetTrueTarget(), &newJumpDest))
             {
                 if (updatePreds)
                 {
-                    fgRemoveRefPred(blk->GetTrueTarget(), blk);
+                    fgRemoveRefPred(block->GetTrueTarget(), block);
                 }
-                blk->SetTrueTarget(newJumpDest);
+                block->SetTrueTarget(newJumpDest);
                 if (updatePreds || addPreds)
                 {
-                    fgAddRefPred(newJumpDest, blk);
+                    FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetTrueTarget(), inspiringBlock);
+                    fgAddRefPred(newJumpDest, block, inspiringEdge);
                 }
             }
             else if (addPreds)
             {
-                fgAddRefPred(blk->GetTrueTarget(), blk);
+                FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetTrueTarget(), inspiringBlock);
+                fgAddRefPred(block->GetTrueTarget(), block, inspiringEdge);
             }
 
             // Update jump taken when condition is false
-            if (redirectMap->Lookup(blk->GetFalseTarget(), &newJumpDest))
+            if (redirectMap->Lookup(block->GetFalseTarget(), &newJumpDest))
             {
                 if (updatePreds)
                 {
-                    fgRemoveRefPred(blk->GetFalseTarget(), blk);
+                    fgRemoveRefPred(block->GetFalseTarget(), block);
                 }
-                blk->SetFalseTarget(newJumpDest);
+                block->SetFalseTarget(newJumpDest);
                 if (updatePreds || addPreds)
                 {
-                    fgAddRefPred(newJumpDest, blk);
+                    FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetFalseTarget(), inspiringBlock);
+                    fgAddRefPred(newJumpDest, block, inspiringEdge);
                 }
             }
             else if (addPreds)
             {
-                fgAddRefPred(blk->GetFalseTarget(), blk);
+                FlowEdge* const inspiringEdge = fgGetPredForBlock(inspiringBlock->GetFalseTarget(), inspiringBlock);
+                fgAddRefPred(block->GetFalseTarget(), block, inspiringEdge);
             }
             break;
 
         case BBJ_EHFINALLYRET:
         {
-            BBehfDesc*  ehfDesc = blk->GetEhfTargets();
-            BasicBlock* newSucc = nullptr;
+            BBehfDesc* const ehfDesc     = block->GetEhfTargets();
+            BBehfDesc* const inspEhfDesc = inspiringBlock->GetEhfTargets();
+            BasicBlock*      newSucc     = nullptr;
             for (unsigned i = 0; i < ehfDesc->bbeCount; i++)
             {
                 BasicBlock* const succ = ehfDesc->bbeSuccs[i];
@@ -661,17 +674,19 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap, R
                 {
                     if (updatePreds)
                     {
-                        fgRemoveRefPred(succ, blk);
+                        fgRemoveRefPred(succ, block);
                     }
                     if (updatePreds || addPreds)
                     {
-                        fgAddRefPred(newSucc, blk);
+                        FlowEdge* const inspiringEdge = fgGetPredForBlock(inspEhfDesc->bbeSuccs[i], inspiringBlock);
+                        fgAddRefPred(newSucc, block, inspiringEdge);
                     }
                     ehfDesc->bbeSuccs[i] = newSucc;
                 }
                 else if (addPreds)
                 {
-                    fgAddRefPred(succ, blk);
+                    FlowEdge* const inspiringEdge = fgGetPredForBlock(inspEhfDesc->bbeSuccs[i], inspiringBlock);
+                    fgAddRefPred(succ, block, inspiringEdge);
                 }
             }
         }
@@ -679,36 +694,40 @@ void Compiler::optRedirectBlock(BasicBlock* blk, BlockToBlockMap* redirectMap, R
 
         case BBJ_SWITCH:
         {
-            bool redirected = false;
-            for (unsigned i = 0; i < blk->GetSwitchTargets()->bbsCount; i++)
+            bool             redirected  = false;
+            BBswtDesc* const swtDesc     = block->GetSwitchTargets();
+            BBswtDesc* const inspSwtDesc = inspiringBlock->GetSwitchTargets();
+            for (unsigned i = 0; i < swtDesc->bbsCount; i++)
             {
-                BasicBlock* const switchDest = blk->GetSwitchTargets()->bbsDstTab[i];
+                BasicBlock* const switchDest = swtDesc->bbsDstTab[i];
                 if (redirectMap->Lookup(switchDest, &newJumpDest))
                 {
                     if (updatePreds)
                     {
-                        fgRemoveRefPred(switchDest, blk);
+                        fgRemoveRefPred(switchDest, block);
                     }
                     if (updatePreds || addPreds)
                     {
-                        fgAddRefPred(newJumpDest, blk);
+                        FlowEdge* const inspiringEdge = fgGetPredForBlock(inspSwtDesc->bbsDstTab[i], inspiringBlock);
+                        fgAddRefPred(newJumpDest, block, inspiringEdge);
                     }
-                    blk->GetSwitchTargets()->bbsDstTab[i] = newJumpDest;
-                    redirected                            = true;
+                    block->GetSwitchTargets()->bbsDstTab[i] = newJumpDest;
+                    redirected                              = true;
                 }
                 else if (addPreds)
                 {
-                    fgAddRefPred(switchDest, blk);
+                    FlowEdge* const inspiringEdge = fgGetPredForBlock(inspSwtDesc->bbsDstTab[i], inspiringBlock);
+                    fgAddRefPred(switchDest, block, inspiringEdge);
                 }
             }
             // If any redirections happened, invalidate the switch table map for the switch.
             if (redirected)
             {
                 // Don't create a new map just to try to remove an entry.
-                BlockToSwitchDescMap* switchMap = GetSwitchDescMap(/* createIfNull */ false);
+                BlockToSwitchDescMap* const switchMap = GetSwitchDescMap(/* createIfNull */ false);
                 if (switchMap != nullptr)
                 {
-                    switchMap->Remove(blk);
+                    switchMap->Remove(block);
                 }
             }
         }
@@ -2233,9 +2252,10 @@ bool Compiler::optInvertWhileLoop(BasicBlock* block)
         }
 
         // Redirect the predecessor to the new block.
+        //
         JITDUMP("Redirecting non-loop " FMT_BB " -> " FMT_BB " to " FMT_BB " -> " FMT_BB "\n", predBlock->bbNum,
                 bTest->bbNum, predBlock->bbNum, bNewCond->bbNum);
-        optRedirectBlock(predBlock, &blockMap, RedirectBlockOption::UpdatePredLists);
+        optRedirectBlock(predBlock, &blockMap, predBlock, RedirectBlockOption::UpdatePredLists);
     }
 
     // If we have profile data for all blocks and we know that we are cloning the

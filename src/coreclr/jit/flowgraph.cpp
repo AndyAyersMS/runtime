@@ -5612,7 +5612,12 @@ void FlowGraphNaturalLoop::Duplicate(BasicBlock** insertAfter, BlockToBlockMap* 
         newBlk->CopyTarget(comp, blk);
 
         // Now redirect the new block according to "blockMap".
-        comp->optRedirectBlock(newBlk, map);
+        //
+        // Can this leverage RedirectBlockOption::AddToPredLists?
+        // Otherwise we're at a bit of a loss below figuring out
+        // new likelihoods.
+        //
+        comp->optRedirectBlock(newBlk, map, blk);
 
         // Add predecessor edges for the new successors, as well as the fall-through paths.
         switch (newBlk->GetKind())

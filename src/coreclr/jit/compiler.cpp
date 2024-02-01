@@ -4609,11 +4609,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     //
     DoPhase(this, PHASE_EMPTY_TRY, &Compiler::fgRemoveEmptyTry);
 
-    // Disable profile checks now.
-    // Over time we will move this further and further back in the phase list, as we fix issues.
-    //
-    activePhaseChecks &= ~PhaseChecks::CHECK_PROFILE;
-
     // Remove empty finally regions
     //
     DoPhase(this, PHASE_EMPTY_FINALLY, &Compiler::fgRemoveEmptyFinally);
@@ -4625,6 +4620,11 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     // Clone code in finallys to reduce overhead for non-exceptional paths
     //
     DoPhase(this, PHASE_CLONE_FINALLY, &Compiler::fgCloneFinally);
+
+    // Disable profile checks now.
+    // Over time we will move this further and further back in the phase list, as we fix issues.
+    //
+    activePhaseChecks &= ~PhaseChecks::CHECK_PROFILE;
 
 #if DEBUG
     if (lvaEnregEHVars)

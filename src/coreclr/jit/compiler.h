@@ -6833,8 +6833,9 @@ protected:
         AddToPredLists,       // only add to pred lists
     };
 
-    void optRedirectBlock(BasicBlock*      blk,
+    void optRedirectBlock(BasicBlock* newBlock,
                           BlockToBlockMap* redirectMap,
+                          BasicBlock* inspiringBlock,
                           const RedirectBlockOption = RedirectBlockOption::DoNotChangePredLists);
 
     // Marks the containsCall information to "loop" and any parent loops.
