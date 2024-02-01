@@ -620,14 +620,13 @@ void Compiler::fgReplaceJumpTarget(BasicBlock* block, BasicBlock* oldTarget, Bas
         case BBJ_EHCATCHRET:
         case BBJ_EHFILTERRET:
         case BBJ_LEAVE: // This function can be called before import, so we still have BBJ_LEAVE
-
-            if (block->TargetIs(oldTarget))
-            {
-                block->SetTarget(newTarget);
-                FlowEdge* const oldEdge = fgRemoveRefPred(oldTarget, block);
-                fgAddRefPred(newTarget, block, oldEdge);
-            }
+        {
+            assert(block->TargetIs(oldTarget));
+            block->SetTarget(newTarget);
+            FlowEdge* const oldEdge = fgRemoveRefPred(oldTarget, block);
+            fgAddRefPred(newTarget, block, oldEdge);
             break;
+        }
 
         case BBJ_COND:
 

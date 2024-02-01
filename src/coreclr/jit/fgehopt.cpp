@@ -525,7 +525,8 @@ PhaseStatus Compiler::fgRemoveEmptyTry()
                     assert(finallyRetExpr->gtOper == GT_RETFILT);
                     fgRemoveStmt(block, finallyRet);
                     block->SetKindAndTarget(BBJ_ALWAYS, continuation);
-                    fgAddRefPred(continuation, block);
+                    FlowEdge* const newEdge = fgAddRefPred(continuation, block);
+                    newEdge->setLikelihood(1.0);
                 }
             }
 
