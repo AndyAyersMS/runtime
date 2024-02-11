@@ -3005,13 +3005,13 @@ CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseGreedy(ArrayStack<Choice>& choic
 
     // Find the maximally preferred case.
     //
-    Choice& bestChoice = choices.TopRef(0);
-    int     choiceNum  = 0;
+    int bestChoiceNum = 0;
 
     for (int i = 1; i < choices.Height(); i++)
     {
-        Choice&      choice = choices.TopRef(i);
-        const double delta  = choice.m_preference - bestChoice.m_preference;
+        const Choice& bestChoice = choices.TopRef(bestChoiceNum);
+        const Choice& choice     = choices.TopRef(i);
+        const double  delta      = choice.m_preference - bestChoice.m_preference;
 
         bool update = false;
 
@@ -3033,18 +3033,17 @@ CSE_HeuristicRL::Choice& CSE_HeuristicRL::ChooseGreedy(ArrayStack<Choice>& choic
 
         if (update)
         {
-            bestChoice = choice;
-            choiceNum  = i;
+            bestChoiceNum = i;
         }
     }
 
     if (m_verbose)
     {
         printf("Greedy candidate evaluation\n");
-        DumpChoices(choices, choiceNum);
+        DumpChoices(choices, bestChoiceNum);
     }
 
-    return bestChoice;
+    return choices.TopRef(bestChoiceNum);
 }
 
 //------------------------------------------------------------------------
