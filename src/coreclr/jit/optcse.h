@@ -166,7 +166,8 @@ protected:
         maxSteps      = 65, // MAX_CSE_CNT + 1 (for stopping)
     };
 
-    static double           s_defaultParameters[numParameters];
+    static double           s_defaultSpeedParameters[numParameters];
+    static double           s_defaultSizeParameters[numParameters];
     double                  m_parameters[numParameters];
     unsigned                m_registerPressure;
     jitstd::vector<double>* m_localWeights;

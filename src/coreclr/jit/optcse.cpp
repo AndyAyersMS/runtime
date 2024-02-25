@@ -2305,11 +2305,18 @@ void CSE_HeuristicReplay::ConsiderCandidates()
 #endif // DEBUG
 
 // From PolicyGradient
-// Greedy/Base: 35483 methods, 8669 better, 23752 same, 3061 worse,  1.0041 geomean
+// Greedy/Base (score): 35483 methods, 8669 better, 23752 same, 3061 worse,  1.0041 geomean
 
-double CSE_HeuristicParameterized::s_defaultParameters[CSE_HeuristicParameterized::numParameters] =
+double CSE_HeuristicParameterized::s_defaultSpeedParameters[CSE_HeuristicParameterized::numParameters] =
     {0.2425,  0.2479, 0.1089,  -0.2363, 0.2472, -0.0559, -0.8418, -0.0585, -0.2773, 0.0000,  0.0213,  -0.4116, 0.0000,
      -0.0922, 0.2593, -0.0315, -0.0745, 0.2607, 0.3475,  -0.0590, -0.3177, -0.6883, -0.4998, -0.3220, -0.2268};
+
+// From PolicyGradient
+// Greedy/Base  (size): 38326 methods, 6916 better, 19768 same, 11641 worse,  0.9983 geomean
+
+double CSE_HeuristicParameterized::s_defaultSizeParameters[CSE_HeuristicParameterized::numParameters] =
+    {0.2727,  0.1103,  0.2026, 0.3253, -0.0784, -0.0035, -0.2051, 0.0566,  0.0070, 0.0000,  0.0070,  0.0006, 0.0000,
+     -0.0247, -0.0291, 0.0185, 0.0352, 0.0106,  0.0576,  0.1348,  -0.1609, 0.0447, -0.0305, -0.0603, -0.0129};
 
 //------------------------------------------------------------------------
 // CSE_HeuristicParameterized: CSE heuristic using parameterized, linear profitability model
@@ -2319,11 +2326,23 @@ double CSE_HeuristicParameterized::s_defaultParameters[CSE_HeuristicParameterize
 //
 CSE_HeuristicParameterized::CSE_HeuristicParameterized(Compiler* pCompiler) : CSE_HeuristicCommon(pCompiler)
 {
+    const bool optimizeForSize = (codeOptKind == Compiler::SMALL_CODE);
+
     // Default parameter values...
     //
-    for (unsigned i = 0; i < numParameters; i++)
+    if (optimizeForSize)
     {
-        m_parameters[i] = s_defaultParameters[i];
+        for (unsigned i = 0; i < numParameters; i++)
+        {
+            m_parameters[i] = s_defaultSizeParameters[i];
+        }
+    }
+    else
+    {
+        for (unsigned i = 0; i < numParameters; i++)
+        {
+            m_parameters[i] = s_defaultSpeedParameters[i];
+        }
     }
 
     // These get set during...
