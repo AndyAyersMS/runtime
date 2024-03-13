@@ -1931,12 +1931,13 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
     // Call `dspBlockNum()` to get the block number to print, and update `printedBlockWidth` with the width
     // of the generated string. Note that any computation using `printedBlockWidth` must be done after all
     // calls to this function.
-    auto dspBlockNum = [terseNext, nextBlock, &printedBlockWidth](const BasicBlock* b) -> const char* {
+    auto dspBlockNum = [terseNext, nextBlock, &printedBlockWidth](const FlowEdge* e) -> const char* {
         static char buffers[3][64]; // static array of 3 to allow 3 concurrent calls in one printf()
         static int  nextBufferIndex = 0;
 
         auto& buffer    = buffers[nextBufferIndex];
         nextBufferIndex = (nextBufferIndex + 1) % ArrLen(buffers);
+        BasicBlock* const b = (e == nullptr) ? nullptr : e->GetTargetEdge();
 
         if (b == nullptr)
         {
@@ -1954,6 +1955,19 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
             printedBlockWidth += 2 /* BB */ + max(CountDigits(b->bbNum), 2);
         }
 
+        if (e != nullptr)
+        {
+            if (e->hasLikelihood())
+            {
+                _snprintf_s(buffer, ArrLen(buffer), ArrLen(buffer), "\\.3f", edge->getLikelihood());
+                printedBlockWidth += 44;
+            }
+            else
+            {
+                _snprintf_s(buffer, ArrLen(buffer), ArrLen(buffer), "\\???", edge->getLikelihood());
+            }
+        }
+
         return buffer;
     };
 
@@ -1968,19 +1982,19 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
         {
             case BBJ_COND:
                 printedBlockWidth = 3 /* "-> " */ + 1 /* comma */ + 9 /* kind */;
-                printf("-> %s,%s", dspBlockNum(block->GetTrueTargetRaw()), dspBlockNum(block->GetFalseTargetRaw()));
+                printf("-> %s,%s", dspBlockNum(block->GetTrueEdge()), dspBlockNum(block->GetFalseEdge()));
                 printf("%*s ( cond )", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
             case BBJ_CALLFINALLY:
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetTargetRaw()));
+                printf("-> %s", dspBlockNum(block->GetTargetEdge()));
                 printf("%*s (callf )", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
             case BBJ_CALLFINALLYRET:
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetFinallyContinuation()));
+                printf("-> %s", dspBlockNum(block->GetTargetEdge()));
                 printf("%*s (callfr)", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
@@ -1988,13 +2002,13 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
                 const char* label;
                 label             = (flags & BBF_KEEP_BBJ_ALWAYS) ? "ALWAYS" : "always";
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetTargetRaw()));
+                printf("-> %s", dspBlockNum(block->GetTargeEdge()));
                 printf("%*s (%s)", blockTargetFieldWidth - printedBlockWidth, "", label);
                 break;
 
             case BBJ_LEAVE:
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetTargetRaw()));
+                printf("-> %s", dspBlockNum(block->GetTargeEdge()));
                 printf("%*s (leave )", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
@@ -2019,7 +2033,7 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
                     for (unsigned i = 0; i < jumpCnt; i++)
                     {
                         printedBlockWidth += 1 /* space/comma */;
-                        printf("%c%s", (i == 0) ? ' ' : ',', dspBlockNum(jumpTab[i]->getDestinationBlock()));
+                        printf("%c%s", (i == 0) ? ' ' : ',', dspBlockNum(jumpTab[i]));
                     }
                 }
 
@@ -2039,13 +2053,13 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
 
             case BBJ_EHFILTERRET:
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetTargetRaw()));
+                printf("-> %s", dspBlockNum(block->GetTargetEdge()));
                 printf("%*s (fltret)", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
             case BBJ_EHCATCHRET:
                 printedBlockWidth = 3 /* "-> " */ + 9 /* kind */;
-                printf("-> %s", dspBlockNum(block->GetTargetRaw()));
+                printf("-> %s", dspBlockNum(block->GetTargeEdge()));
                 printf("%*s ( cret )", blockTargetFieldWidth - printedBlockWidth, "");
                 break;
 
@@ -2071,7 +2085,7 @@ void Compiler::fgTableDispBasicBlock(const BasicBlock* block,
                 for (unsigned i = 0; i < jumpCnt; i++)
                 {
                     printedBlockWidth += 1 /* space/comma */;
-                    printf("%c%s", (i == 0) ? ' ' : ',', dspBlockNum(jumpTab[i]->getDestinationBlock()));
+                    printf("%c%s", (i == 0) ? ' ' : ',', dspBlockNum(jumpTab[i]));
 
                     const bool isDefault = jumpSwt->bbsHasDefault && (i == jumpCnt - 1);
                     if (isDefault)
@@ -2320,11 +2334,13 @@ void Compiler::fgDispBasicBlocks(BasicBlock* firstBlock, BasicBlock* lastBlock, 
     int      maxBlockNumWidth = CountDigits(bbNumMax);
     maxBlockNumWidth          = max(maxBlockNumWidth, 2);
     int padWidth              = maxBlockNumWidth - 2; // Account for functions with a large number of blocks.
+    int likelihoodWidth       = 5;
 
     // Calculate the field width allocated for the block target. The field width is allocated to allow for two blocks
     // for BBJ_COND. It does not include any extra space for variable-sized BBJ_EHFINALLYRET and BBJ_SWITCH.
-    int blockTargetFieldWidth = 3 /* "-> " */ + 2 /* BB */ + maxBlockNumWidth + 1 /* comma */ + 2 /* BB */ +
-                                maxBlockNumWidth + 1 /* space */ + 8 /* kind: "(xxxxxx)" */;
+    // "-> BB###\.nnn,BB###\.nnn (kind)
+    int blockTargetFieldWidth = 3 /* "-> " */ + 2 /* BB */ + maxBlockNumWidth + likelihoodWidth + 1 /* comma */ + 2 /* BB */ +
+        maxBlockNumWidth + likelihoodWidth + 1 /* space */ + 8 /* kind: "(xxxxxx)" */;
 
     // clang-format off
 
