@@ -1121,6 +1121,9 @@ private:
             // Remove everything related to inlining from the original call
             origCall->ClearInlineInfo();
 
+            elseLikelihood = 0.33;
+            printf("@@@ hacking weight for " FMT_BB" in %d\n", elseBlock->bbNum, compiler->info.compMethodSuperPMIIndex);
+
             elseBlock->inheritWeight(checkBlock);
             elseBlock->scaleBBWeight(elseLikelihood);
 

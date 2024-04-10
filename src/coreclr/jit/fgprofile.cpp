@@ -5525,6 +5525,8 @@ bool Compiler::fgDebugCheckIncomingProfileData(BasicBlock* block, ProfileChecks 
         return true;
     }
 
+    JITDUMP("incoming for " FMT_BB "\n", block->bbNum);
+
     weight_t const blockWeight          = block->bbWeight;
     weight_t       incomingWeightMin    = 0;
     weight_t       incomingWeightMax    = 0;
@@ -5618,6 +5620,8 @@ bool Compiler::fgDebugCheckIncomingProfileData(BasicBlock* block, ProfileChecks 
             }
         }
     }
+
+
 
     return classicWeightsValid && likelyWeightsValid;
 }

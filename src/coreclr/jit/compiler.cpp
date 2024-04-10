@@ -4660,14 +4660,14 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     //
     DoPhase(this, PHASE_PATCHPOINTS, &Compiler::fgTransformPatchpoints);
 
+    // Transform indirect calls that require control flow expansion.
+    //
+    DoPhase(this, PHASE_INDXCALL, &Compiler::fgTransformIndirectCalls);
+
     // Drop back to just checking profile likelihoods.
     //
     activePhaseChecks &= ~PhaseChecks::CHECK_PROFILE;
     activePhaseChecks |= PhaseChecks::CHECK_LIKELIHOODS;
-
-    // Transform indirect calls that require control flow expansion.
-    //
-    DoPhase(this, PHASE_INDXCALL, &Compiler::fgTransformIndirectCalls);
 
     // Cleanup un-imported BBs, cleanup un-imported or
     // partially imported try regions, add OSR step blocks.
