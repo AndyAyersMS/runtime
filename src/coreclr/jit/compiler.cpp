@@ -4632,11 +4632,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     //
     DoPhase(this, PHASE_IMPORTATION, &Compiler::fgImport);
 
-    // Drop back to just checking profile likelihoods.
-    //
-    activePhaseChecks &= ~PhaseChecks::CHECK_PROFILE;
-    activePhaseChecks |= PhaseChecks::CHECK_LIKELIHOODS;
-
     // If this is a failed inline attempt, we're done.
     //
     if (compIsForInlining() && compInlineResult->IsFailure())
@@ -4660,6 +4655,11 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     {
         DoPhase(this, PHASE_IBCINSTR, &Compiler::fgInstrumentMethod);
     }
+
+    // Drop back to just checking profile likelihoods.
+    //
+    activePhaseChecks &= ~PhaseChecks::CHECK_PROFILE;
+    activePhaseChecks |= PhaseChecks::CHECK_LIKELIHOODS;
 
     // Expand any patchpoints
     //
