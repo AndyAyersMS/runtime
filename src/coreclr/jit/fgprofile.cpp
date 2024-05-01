@@ -2887,6 +2887,15 @@ PhaseStatus Compiler::fgIncorporateProfileData()
             JITDUMP("BBOPT not set\n");
         }
 
+        // If this is an inlinee and the root method has profile weights, synthesize data.
+        // TODO: if this is a root and dynamic PGO is enabled, synthesize data.
+        //
+        if (compIsForInlining() && impInlineRoot()->fgHaveProfileWeights())
+        {
+            JITDUMP("\nRoot method has profile data; synthesizing an inlinee profile...\n");
+            ProfileSynthesis::Run(this, ProfileSynthesisOption::AssignLikelihoods);
+        }
+
         // Scale the "synthetic" block weights.
         //
         fgApplyProfileScale();
