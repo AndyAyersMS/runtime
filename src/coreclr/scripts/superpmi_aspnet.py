@@ -136,13 +136,15 @@ def build_and_run(coreclr_args):
         os.chdir(temp_location)
 
         # install dotnet 8.0
-        run_command([dotnet_install_script_path, "-Version", "8.0.0"], temp_location, _exit_on_fail=True)
-        os.environ['DOTNET_MULTILEVEL_LOOKUP'] = '0'
-        os.environ['DOTNET_SKIP_FIRST_TIME_EXPERIENCE'] = '1'
-        dotnet_path = path.join(source_directory, ".dotnet")
-        dotnet_exe = path.join(dotnet_path, "dotnet.exe") if is_windows else path.join(dotnet_path, "dotnet")
-        # run_command([dotnet_exe, "--info"], temp_location, _exit_on_fail=True)
-        os.environ['DOTNET_ROOT'] = dotnet_path
+
+        # run_command([dotnet_install_script_path, "-Version", "8.0.0"], temp_location, _exit_on_fail=True)
+        # os.environ['DOTNET_MULTILEVEL_LOOKUP'] = '0'
+        # os.environ['DOTNET_SKIP_FIRST_TIME_EXPERIENCE'] = '1'
+
+        # dotnet_path = path.join(source_directory, ".dotnet")
+        dotnet_exe = "dotnet.exe" if is_windows else "dotnet"
+        run_command([dotnet_exe, "--info"], temp_location, _exit_on_fail=True)
+        # os.environ['DOTNET_ROOT'] = temp_location
 
         ## install crank as local tool
         run_command(
@@ -182,7 +184,7 @@ def build_and_run(coreclr_args):
                                     ("efcore", "Funcletization")
                                     ]
 
-        # configname_scenario_list = [("quic", "read-write")]
+        # configname_scenario_list = [("platform", "plaintext")]
 
         # note tricks to get one element tuples
 
