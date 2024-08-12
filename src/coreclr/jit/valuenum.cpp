@@ -11138,11 +11138,11 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
 void Compiler::fgValueNumberPhiDef(GenTreeLclVar* newSsaDef, BasicBlock* blk, bool isUpdate)
 {
     ArrayStack<unsigned> phiArgSsaNums(getAllocator(CMK_ValueNumber));
+    GenTreePhi* const    phiNode = newSsaDef->AsLclVar()->Data()->AsPhi();
+    ValueNumPair         sameVNP;
 
-    GenTreePhi*  phiNode = newSsaDef->AsLclVar()->Data()->AsPhi();
-    ValueNumPair sameVNP;
-    VNSet        loopInvariantCache(getAllocator(CMK_ValueNumber));
-
+    // Walk each use...
+    //
     for (GenTreePhi::Use& use : phiNode->Uses())
     {
         GenTreePhiArg* phiArg = use.GetNode()->AsPhiArg();
@@ -11165,7 +11165,7 @@ void Compiler::fgValueNumberPhiDef(GenTreeLclVar* newSsaDef, BasicBlock* blk, bo
         if (isUpdate && (phiArgVNP != phiArg->gtVNPair))
         {
             FlowGraphNaturalLoop* const blockLoop = m_loops->GetLoopByHeader(blk);
-            bool const canUseNewVN = optVNIsLoopInvariant(phiArgVNP.GetConservative(), blockLoop, &loopInvariantCache);
+            bool const canUseNewVN = fgValueNumberCanRefinePhiArgVN(phiArgVNP.GetConservative(), blockLoop);
 
             if (canUseNewVN)
             {
@@ -11182,10 +11182,10 @@ void Compiler::fgValueNumberPhiDef(GenTreeLclVar* newSsaDef, BasicBlock* blk, bo
             }
             else
             {
-                JITDUMP("Can't update phi arg [%06u] with " FMT_VN " -- varies in " FMT_LP "\n", dspTreeID(phiArg),
-                        phiArgVNP.GetConservative(), blockLoop->GetIndex());
+                JITDUMP("Can't update phi arg [%06u] with " FMT_VN " -- memory variant in " FMT_LP "\n",
+                        dspTreeID(phiArg), phiArgVNP.GetConservative(), blockLoop->GetIndex());
 
-                // Code below uses phiArgVNP, reset to the old value
+                // Can't use new phiArgVNP, reset to the old value
                 //
                 phiArgVNP = phiArg->gtVNPair;
             }
@@ -11271,6 +11271,79 @@ void Compiler::fgValueNumberPhiDef(GenTreeLclVar* newSsaDef, BasicBlock* blk, bo
     newSsaDef->gtVNPair = vnStore->VNPForVoid();
 
     phiNode->gtVNPair = newSsaDefVNP;
+}
+
+//------------------------------------------------------------------------
+// fgValueNumberCanRefinePhiArgVN: See if a VN can be used for PhiArg refinement
+//
+// Arguments:
+//   vn   - vn in question
+//   loop - loop contianing the PhiArg we are looking to refine
+//
+// Returns:
+//   true if we can use this vn to refine
+//
+// Notes:
+//   Similar to optVNIsLoopInvariant, but allows PhiDefs.
+//
+bool Compiler::fgValueNumberCanRefinePhiArgVN(ValueNum vn, FlowGraphNaturalLoop* loop)
+{
+    // Helper method to walk a VN's graph to see if we can use it for phi refinement.
+    // We can, unless the VN is loop-variant based on memory.
+    // Returns VNVisit::Abort if unsuitable.
+    //
+    auto refinementVisitor = [this, loop](ValueNum vn) -> ValueNumStore::VNVisit {
+
+        JITDUMP("... visiting " FMT_VN "\n", vn);
+        if (vn == ValueNumStore::NoVN)
+        {
+            return ValueNumStore::VNVisit::Abort;
+        }
+
+        // Needs to walk args... and special case phi defs (watch for ones we're refining?)
+        //
+        VNFuncApp      funcApp;
+        VNMemoryPhiDef memoryPhiDef;
+        if (vnStore->GetVNFunc(vn, &funcApp))
+        {
+            unsigned loopIndex = ValueNumStore::NoLoop;
+
+            if (funcApp.m_func == VNF_MemOpaque)
+            {
+                loopIndex = (unsigned)funcApp.m_args[0];
+            }
+            else if (funcApp.m_func == VNF_MapStore)
+            {
+                loopIndex = (unsigned)funcApp.m_args[3];
+            }
+
+            if (loopIndex != ValueNumStore::NoLoop)
+            {
+                if (loopIndex == ValueNumStore::UnknownLoop)
+                {
+                    return ValueNumStore::VNVisit::Abort;
+                }
+
+                FlowGraphNaturalLoop* const memoryDefinitionLoop = m_loops->GetLoopByIndex(loopIndex);
+
+                if (loop->ContainsLoop(memoryDefinitionLoop))
+                {
+                    return ValueNumStore::VNVisit::Abort;
+                }
+            }
+        }
+        else if (vnStore->GetMemoryPhiDef(vn, &memoryPhiDef))
+        {
+            if (loop->ContainsBlock(memoryPhiDef.Block))
+            {
+                return ValueNumStore::VNVisit::Abort;
+            }
+        }
+
+        return ValueNumStore::VNVisit::Continue;
+    };
+
+    return vnStore->VNVisitReachingVNs(vn, refinementVisitor) == ValueNumStore::VNVisit::Continue;
 }
 
 ValueNum Compiler::fgMemoryVNForLoopSideEffects(MemoryKind            memoryKind,

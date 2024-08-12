@@ -5777,6 +5777,9 @@ public:
     // Value number a phi definition
     void fgValueNumberPhiDef(GenTreeLclVar* newSsaDef, BasicBlock* block, bool isUpdate = false);
 
+    // See if we can refine a phi arg value number
+    bool fgValueNumberCanRefinePhiArgVN(ValueNum vn, FlowGraphNaturalLoop* loop);
+
     // Requires that "entryBlock" is the header block of "loop" and that "loop" is the
     // innermost loop of which "entryBlock" is the entry.  Returns the value number that should be
     // assumed for the memoryKind at the start "entryBlk".

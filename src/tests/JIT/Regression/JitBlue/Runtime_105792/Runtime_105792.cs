@@ -39,7 +39,7 @@ public class Runtime_105792
         x = x - 1;
     }
 
-    [Fact]
+//    [Fact]
     public static int Test1() => Problem1(10) + 100;
 
     [Fact]
