@@ -3566,9 +3566,24 @@ void Compiler::fgFindBasicBlocks()
         compHndBBtabCount    = impInlineInfo->InlinerCompiler->compHndBBtabCount;
         info.compXcptnsCount = impInlineInfo->InlinerCompiler->info.compXcptnsCount;
 
+        // If we're inlining a special intrinsic we may know its exact return type.
+        //
+        CORINFO_CLASS_HANDLE retClassHnd = impInlineInfo->inlineCandidateInfo->methInfo.args.retTypeClass;
+        bool knowExactRetClass = false;
+        if ((impInlineInfo->iciCall->gtCallMoreFlags & GTF_CALL_M_SPECIAL_INTRINSIC) != 0)
+        {
+            CORINFO_CLASS_HANDLE exactRetClassHnd = impGetSpecialIntrinsicExactReturnType(impInlineInfo->iciCall);
+            if (exactRetClassHnd != NO_CLASS_HANDLE)
+            {
+                retClassHnd = exactRetClassHnd;
+                knowExactRetClass = true;
+            }
+        }
+
         // Use a spill temp for the return value if there are multiple return blocks,
-        // or if the inlinee has GC ref locals.
-        if ((info.compRetNativeType != TYP_VOID) && ((fgReturnCount > 1) || impInlineInfo->HasGcRefLocals()))
+        // or if the inlinee has GC ref locals, or if we know the exact return class.
+        //
+        if ((info.compRetNativeType != TYP_VOID) && ((fgReturnCount > 1) || impInlineInfo->HasGcRefLocals() || knowExactRetClass))
         {
             // If we've spilled the ret expr to a temp we can reuse the temp
             // as the inlinee return spill temp.
@@ -3618,13 +3633,9 @@ void Compiler::fgFindBasicBlocks()
                 // If the method returns a ref class, set the class of the spill temp
                 // to the method's return value. We may update this later if it turns
                 // out we can prove the method returns a more specific type.
-                if (info.compRetType == TYP_REF)
+                if ((info.compRetType == TYP_REF) && (retClassHnd != NO_CLASS_HANDLE))
                 {
-                    CORINFO_CLASS_HANDLE retClassHnd = impInlineInfo->inlineCandidateInfo->methInfo.args.retTypeClass;
-                    if (retClassHnd != nullptr)
-                    {
-                        lvaSetClass(lvaInlineeReturnSpillTemp, retClassHnd);
-                    }
+                    lvaSetClass(lvaInlineeReturnSpillTemp, retClassHnd);
                 }
             }
         }

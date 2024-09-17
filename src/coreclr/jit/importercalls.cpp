@@ -4671,6 +4671,13 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
                 break;
             }
 
+            case NI_System_SZArrayHelper_GetEnumerator:
+            {
+                // We may know the exact type this returns
+                isSpecial = true;
+                break;
+            }
+
             case NI_System_BitConverter_DoubleToInt64Bits:
             {
                 GenTree* op1 = impStackTop().val;
@@ -8739,6 +8746,43 @@ CORINFO_CLASS_HANDLE Compiler::impGetSpecialIntrinsicExactReturnType(GenTreeCall
             break;
         }
 
+        case NI_System_SZArrayHelper_GetEnumerator:
+        {
+            // Expect one method generic parameter; figure out which it is.
+            CORINFO_SIG_INFO sig;
+            info.compCompHnd->getMethodSig(methodHnd, &sig);
+            assert(sig.sigInst.methInstCount == 1);
+            assert(sig.sigInst.classInstCount == 0);
+
+            CORINFO_CLASS_HANDLE typeHnd = sig.sigInst.methInst[0];
+            assert(typeHnd != nullptr);
+
+            CallArg* instParam = call->gtArgs.FindWellKnownArg(WellKnownArg::InstParam);
+            if (instParam != nullptr)
+            {
+                assert(instParam->GetNext() == nullptr);
+                CORINFO_CLASS_HANDLE hClass = gtGetHelperArgClassHandle(instParam->GetNode());
+                if (hClass != NO_CLASS_HANDLE)
+                {
+                    typeHnd = getTypeInstantiationArgument(hClass, 0);
+                }
+            }
+
+            // result = info.compCompHnd->getSZArrayHelperEnumerator(typeHnd);
+
+            if (result != NO_CLASS_HANDLE)
+            {
+                JITDUMP("Special intrinsic for type %s: return type is %s\n", eeGetClassName(typeHnd),
+                        result != nullptr ? eeGetClassName(result) : "unknown");
+            }
+            else
+            {
+                JITDUMP("Special intrinsic for type %s: type undetermined, so deferring opt\n",
+                        eeGetClassName(typeHnd));
+            }
+            break;
+        }
+
         default:
         {
             JITDUMP("This special intrinsic not handled, sorry...\n");
@@ -10222,6 +10266,14 @@ NamedIntrinsic Compiler::lookupNamedIntrinsic(CORINFO_METHOD_HANDLE method)
                             result = NI_System_String_EndsWith;
                         }
                     }
+                    else if (strcmp(className, "SZArrayHelper") == 0)
+                    {
+                        if (strcmp(methodName, "GetEnumerator") == 0)
+                        {
+                            result = NI_System_SZArrayHelper_GetEnumerator;
+                        }
+                    }
+
                     break;
                 }
 

@@ -740,6 +740,7 @@ namespace System
             Debug.Fail("Hey! How'd I get here?");
         }
 
+        [Intrinsic]
         internal IEnumerator<T> GetEnumerator<T>()
         {
             // ! Warning: "this" is an array, not an SZArrayHelper. See comments above

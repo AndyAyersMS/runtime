@@ -11122,8 +11122,8 @@ bool Compiler::impReturnInstruction(int prefixFlags, OPCODE& opcode)
 
                 if (fgNeedReturnSpillTemp())
                 {
-                    assert(info.compRetNativeType != TYP_VOID &&
-                           (fgMoreThanOneReturnBlock() || impInlineInfo->HasGcRefLocals()));
+//                    assert(info.compRetNativeType != TYP_VOID &&
+//                           (fgMoreThanOneReturnBlock() || impInlineInfo->HasGcRefLocals()));
 
                     // If this method returns a ref type, track the actual types seen in the returns.
                     if (info.compRetType == TYP_REF)
