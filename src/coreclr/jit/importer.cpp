@@ -8957,6 +8957,19 @@ void Compiler::impImportBlockCode(BasicBlock* block)
                             return;
                         }
 
+                        // Flag if this allocation happens within a method that uses the static empty
+                        // pattern (if we stack allocate this object, we can optimize the empty side away)
+                        //
+                        if (lookupNamedIntrinsic(info.compMethodHnd) == NI_System_SZArrayHelper_GetEnumerator)
+                        {
+                            JITDUMP("Allocation is part of empty static pattern\n");
+                            op1->gtFlags |= GTF_ALLOCOBJ_EMPTY_STATIC;
+                        }
+                        else
+                        {
+                            JITDUMP("Allocation is NOT part of empty static pattern....\n");
+                        }
+
                         // Remember that this basic block contains 'new' of an object
                         block->SetFlags(BBF_HAS_NEWOBJ);
                         optMethodFlags |= OMF_HAS_NEWOBJ;
