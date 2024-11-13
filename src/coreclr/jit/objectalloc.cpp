@@ -557,6 +557,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     // We may need to make this more efficient. Also should probably abstract
     // it out somehow.
     //
+    unsigned tryIndexToClone = EHblkDsc::NO_ENCLOSING_INDEX;
     while (toVisitTryEntry.Height() > 0)
     {
         numberOfEHRegionsToClone++;
@@ -565,6 +566,11 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
         unsigned const tryIndex = block->getTryIndex();
         EHblkDsc*      ebd      = comp->ehGetDsc(tryIndex);
+
+        if (tryIndexToClone == EHblkDsc::NO_ENCLOSING_INDEX)
+        {
+            tryIndexToClone = tryIndex;
+        }
 
         JITDUMP(FMT_BB " is try region entry; walking full extent of EH#%02u\n", block->bbNum, tryIndex);
         BasicBlock* const firstTryBlock = ebd->ebdTryBeg;
@@ -714,6 +720,14 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     {
         JITDUMP("Too many EH regions to clone (%u)\n", numberOfEHRegionsToClone);
         return false;
+    }
+    else if (numberOfEHRegionsToClone == 1)
+    {
+        JITDUMP("Will need to clone EH#%02u\n", tryIndexToClone);
+    }
+    else
+    {
+        JITDUMP("No EH regions to clone..\n");
     }
 
     comp->Metrics.EnumeratorGDVCanCloneToEnsureNoEscape++;
