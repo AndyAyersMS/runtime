@@ -3004,7 +3004,7 @@ public:
 
     void fgRemoveEHTableEntry(unsigned XTnum);
 
-    EHblkDsc* fgAddEHTableEntry(unsigned XTnum);
+    EHblkDsc* fgAddEHTableEntries(unsigned XTnum, unsigned count = 1, bool deferAdding = false);
 
     void fgSortEHTable();
 
@@ -5380,6 +5380,21 @@ public:
     PhaseStatus fgMergeFinallyChains();
 
     PhaseStatus fgCloneFinally();
+
+    struct CloneTryInfo
+    {
+        CloneTryInfo(BitVecTraits& traits, BitVec& visited) : m_traits(traits), m_visited(visited) {}
+        BitVecTraits m_traits;
+        BitVec& m_visited;
+        BlockToBlockMap* m_map = nullptr;
+        bool m_addEdges = false;
+        weight_t m_profileScale = 0.0;
+        unsigned m_ehRegionShift = 0;
+    };
+
+    bool fgCanCloneTryRegion(BasicBlock* tryEntry);
+
+    BasicBlock* fgCloneTryRegion(BasicBlock* tryEntry, CloneTryInfo& info, BasicBlock** insertAfter = nullptr);
 
     void fgCleanupContinuation(BasicBlock* continuation);
 
@@ -12276,6 +12291,13 @@ class EHClauses
 public:
     EHClauses(Compiler* comp)
         : m_begin(comp->compHndBBtab)
+        , m_end(comp->compHndBBtab + comp->compHndBBtabCount)
+    {
+        assert((m_begin != nullptr) || (m_begin == m_end));
+    }
+
+    EHClauses(Compiler* comp, EHblkDsc* begin)
+        : m_begin(begin)
         , m_end(comp->compHndBBtab + comp->compHndBBtabCount)
     {
         assert((m_begin != nullptr) || (m_begin == m_end));
