@@ -785,7 +785,20 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
 
     ReplaceVisitor visitor(comp, info.m_local, newEnumeratorLocal);
 
-    // Rewrite enumerator var uses
+    // Rewrite enumerator var uses in the cloned blocks to reference
+    // the new enumerator local.
+    //
+    // Specialize GDV tests in the cloned code to always return true.
+    //
+    // Note we'd figure this out eventually anyways (since the test var
+    // has the exact type, but we want to accerate thsi so that our new
+    // enumerator var does not appear to escape or be exposed.
+    //
+    // Specialize GDV tests in the cloned code to always return true.
+    //
+    // We would not figure this out eventually anyways, as the unknown
+    // enumerator may well have the right type. The main goal here is
+    // to block GDV-inspired cloning of the "slow" loop.
     //
     for (EnumeratorVarAppearance& a : *info.m_appearances)
     {
@@ -814,21 +827,60 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
 
             clonedStmt = clonedStmt->GetNextStmt();
         }
+
+        if (a.m_isGuard)
+        {
+            // Slow path -- gdv will always fail
+            //
+            Statement* const slowLastStmt = a.m_block->lastStmt();
+            GuardInfo        slowGuardInfo;
+            GenTree* const   slowGuardRelop = IsGuard(a.m_block->lastStmt(), &slowGuardInfo);
+            assert(slowGuardRelop != nullptr);
+            // more asserts...
+
+            if (slowGuardRelop->OperIs(GT_NE))
+            {
+                // branch if enum.type NE info.m_type
+                //
+                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
+            }
+            else
+            {
+                // branch if enum.type EQ info.m_type
+                //
+                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
+            }
+
+            // Fast path -- gdv will always succeed
+            //
+            Statement* const fastLastStmt = newBlock->lastStmt();
+            GuardInfo        fastGuardInfo;
+            GenTree* const   fastGuardRelop = IsGuard(fastLastStmt, &fastGuardInfo);
+            assert(fastGuardRelop != nullptr);
+            // more asserts...
+
+            if (fastGuardRelop->OperIs(GT_NE))
+            {
+                // branch if enum.type NE info.m_type
+                //
+                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
+            }
+            else
+            {
+                // branch if enum.type EQ info.m_type
+                //
+                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
+            }
+        }
     }
 
-    // Specialize GDV tests in the cloned code (track these...)?
+    // Modify allocation block to branch to clone.
     //
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
-    {
-    }
-
-    // Specialize GCV tests in the non-cloned code
-    //
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
-    {
-    }
-
-    // Modify allocation block to branch to clone...
+    BasicBlock* const firstBlock       = (*info.m_blocksToClone)[0];
+    BasicBlock*       firstClonedBlock = nullptr;
+    bool const        firstFound       = map.Lookup(firstBlock, &firstClonedBlock);
+    assert(firstFound);
+    comp->fgRedirectTargetEdge(info.m_allocBlock, firstClonedBlock);
 }
 
 //------------------------------------------------------------------------------
