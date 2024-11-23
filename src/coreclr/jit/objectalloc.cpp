@@ -16,6 +16,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #endif
 
 #include "gentree.h"
+#include "jitstd/algorithm.h"
 
 //------------------------------------------------------------------------
 // DoPhase: Run analysis (if object stack allocation is enabled) and then
@@ -210,7 +211,7 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
         }
 
         // We require that one idomBlock successor *not* dominate.
-        // (otherwise idomBlock this could be the top of a diamond where both outcomes reach block).
+        // (otherwise idomBlock could be the top of a diamond where both outcomes reach block).
         //
         const bool trueSuccessorDominates  = comp->m_domTree->Dominates(idomBlock->GetTrueTarget(), block);
         const bool falseSuccessorDominates = comp->m_domTree->Dominates(idomBlock->GetFalseTarget(), block);
@@ -223,81 +224,16 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
 
         assert(trueSuccessorDominates || falseSuccessorDominates);
 
-        // Now examine the condition
-        //
-        Statement* const stmt = idomBlock->lastStmt();
+        Statement* const lastStmt      = block->lastStmt();
+        GenTree* const   guardingRelop = IsGuard(lastStmt, info);
 
-        if (stmt == nullptr)
+        if (guardingRelop == nullptr)
         {
-            JITDUMP("... no last stmt\n");
-            return false;
-        }
-
-        GenTree* const jumpTree = stmt->GetRootNode();
-
-        if (!jumpTree->OperIs(GT_JTRUE))
-        {
-            JITDUMP("... no JTRUE\n");
-            return false;
-        }
-
-        GenTree* const tree = jumpTree->AsOp()->gtOp1;
-
-        // Must be an equality or inequality
-        //
-        if (!tree->OperIs(GT_NE, GT_EQ))
-        {
-            JITDUMP("... not NE/EQ\n");
             continue;
         }
 
-        GenTree* op1     = tree->AsOp()->gtOp1;
-        GenTree* op2     = tree->AsOp()->gtOp2;
-        bool     swapped = false;
-
-        // gdv creates NE(hnd, indir(locl))
-        // but let's not rely on that
-        //
-        if (!op1->OperIs(GT_IND))
-        {
-            swapped = true;
-            std::swap(op1, op2);
-        }
-
-        if (!op1->OperIs(GT_IND))
-        {
-            JITDUMP("... no JTRUE(cmp(ind, ...))\n");
-            continue;
-        }
-
-        if (!op1->TypeIs(TYP_I_IMPL))
-        {
-            JITDUMP("... no JTRUE(cmp(ind:int, ...))\n");
-            continue;
-        }
-
-        GenTree* const addr = op1->AsIndir()->Addr();
-
-        if (!addr->TypeIs(TYP_REF))
-        {
-            JITDUMP("... no JTRUE(cmp(ind:int(*:ref), ...))\n");
-            continue;
-        }
-
-        if (!addr->OperIs(GT_LCL_VAR))
-        {
-            JITDUMP("... no JTRUE(cmp(ind:int(lcl:ref), ...))\n");
-            continue;
-        }
-
-        if (!op2->IsIconHandle(GTF_ICON_CLASS_HDL))
-        {
-            JITDUMP("... no JTRUE(cmp(ind:int(lcl:ref), clsHnd))\n");
-            continue;
-        }
-
-        bool isReachableOnGDVFailure =
-            (trueSuccessorDominates && tree->OperIs(GT_NE)) || (falseSuccessorDominates && tree->OperIs(GT_EQ));
+        bool isReachableOnGDVFailure = (trueSuccessorDominates && guardingRelop->OperIs(GT_NE)) ||
+                                       (falseSuccessorDominates && guardingRelop->OperIs(GT_EQ));
 
         if (!isReachableOnGDVFailure)
         {
@@ -305,21 +241,104 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
             continue;
         }
 
-        // Passed the checks... fill in the info.
-        //
-        info->m_local  = addr->AsLclVar()->GetLclNum();
-        bool isNonNull = false;
-        bool isExact   = false;
-        info->m_type   = (CORINFO_CLASS_HANDLE)op2->AsIntCon()->gtIconVal;
-
-        JITDUMP("... under guard V%02u\n", info->m_local);
-
         return true;
     }
 
     JITDUMP("... no more doms\n");
-
     return false;
+}
+
+//------------------------------------------------------------------------------
+// IsGuard: does stmt look like a GDV guard
+//
+// Arguments:
+//   stmt -- stmt in question (must be last stmt of block)
+//   info -- [out] guard info
+//
+// Returns:
+//   Comparison tree if this is a guard, or nullptr
+//
+GenTree* ObjectAllocator::IsGuard(Statement* stmt, GuardInfo* info)
+{
+    if (stmt == nullptr)
+    {
+        JITDUMP("... no stmt\n");
+        return nullptr;
+    }
+
+    GenTree* const jumpTree = stmt->GetRootNode();
+
+    if (!jumpTree->OperIs(GT_JTRUE))
+    {
+        JITDUMP("... no JTRUE\n");
+        return nullptr;
+    }
+
+    GenTree* const tree = jumpTree->AsOp()->gtOp1;
+
+    // Must be an equality or inequality
+    //
+    if (!tree->OperIs(GT_NE, GT_EQ))
+    {
+        JITDUMP("... not NE/EQ\n");
+        return nullptr;
+    }
+
+    GenTree* op1     = tree->AsOp()->gtOp1;
+    GenTree* op2     = tree->AsOp()->gtOp2;
+    bool     swapped = false;
+
+    // gdv creates NE(hnd, indir(locl))
+    // but let's not rely on that
+    //
+    if (!op1->OperIs(GT_IND))
+    {
+        swapped = true;
+        std::swap(op1, op2);
+    }
+
+    if (!op1->OperIs(GT_IND))
+    {
+        JITDUMP("... no JTRUE(cmp(ind, ...))\n");
+        return nullptr;
+    }
+
+    if (!op1->TypeIs(TYP_I_IMPL))
+    {
+        JITDUMP("... no JTRUE(cmp(ind:int, ...))\n");
+        return nullptr;
+    }
+
+    GenTree* const addr = op1->AsIndir()->Addr();
+
+    if (!addr->TypeIs(TYP_REF))
+    {
+        JITDUMP("... no JTRUE(cmp(ind:int(*:ref), ...))\n");
+        return nullptr;
+    }
+
+    if (!addr->OperIs(GT_LCL_VAR))
+    {
+        JITDUMP("... no JTRUE(cmp(ind:int(lcl:ref), ...))\n");
+        return nullptr;
+    }
+
+    if (!op2->IsIconHandle(GTF_ICON_CLASS_HDL))
+    {
+        JITDUMP("... no JTRUE(cmp(ind:int(lcl:ref), clsHnd))\n");
+        return nullptr;
+    }
+
+    // Passed the checks... fill in the info.
+    //
+    info->m_local  = addr->AsLclVar()->GetLclNum();
+    bool isNonNull = false;
+    bool isExact   = false;
+    info->m_type   = (CORINFO_CLASS_HANDLE)op2->AsIntCon()->gtIconVal;
+
+    JITDUMP("... under guard V%02u\n", info->m_local);
+
+    return tree;
 }
 
 //------------------------------------------------------------------------------
@@ -397,6 +416,23 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
     JITDUMP("V%02u has single def in " FMT_BB "\n", info.m_local, defBlock->bbNum);
 
+    // Heuristic: if def block was not profiled, or is hit less than 10% of
+    // the time, bail... (note we should really look at weight of uses).
+    //
+    if (!defBlock->hasProfileWeight())
+    {
+        JITDUMP("def block " FMT_BB " was not profiled\n", defBlock->bbNum);
+        return false;
+    }
+
+    const weight_t thinProfile = 0.1;
+
+    if (defBlock->getBBWeight(comp) < thinProfile)
+    {
+        JITDUMP("def block " FMT_BB " profile weight too low\n", defBlock->bbNum);
+        return false;
+    }
+
     // The definition block must dominate all the uses.
     //
     for (EnumeratorVarAppearance& a : *info.m_appearances)
@@ -411,6 +447,15 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
             JITDUMP("V%02u use in " FMT_BB " not dominated by def " FMT_BB "\n", info.m_local, a.m_block->bbNum,
                     defBlock->bbNum);
             return false;
+        }
+
+        // While we're here, see if this is a guard appearance.
+        //
+        if (a.m_block->KindIs(BBJ_COND) && (a.m_stmt == a.m_block->lastStmt()))
+        {
+            GuardInfo      tempInfo;
+            GenTree* const guardingRelop = IsGuard(a.m_stmt, &tempInfo);
+            a.m_isGuard                  = (guardingRelop != nullptr);
         }
     }
 
@@ -440,9 +485,10 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     // visited: block we will need to clone
     // toVisitTryEntry: subset of above that are try entries.
     //
-    ArrayStack<BasicBlock*> toVisit(comp->getAllocator(CMK_ObjectAllocator));
-    ArrayStack<BasicBlock*> visited(comp->getAllocator(CMK_ObjectAllocator));
-    ArrayStack<BasicBlock*> toVisitTryEntry(comp->getAllocator(CMK_ObjectAllocator));
+    CompAllocator                alloc(comp->getAllocator(CMK_ObjectAllocator));
+    ArrayStack<BasicBlock*>      toVisit(alloc);
+    jitstd::vector<BasicBlock*>* visited = new (alloc) jitstd::vector<BasicBlock*>(alloc);
+    ArrayStack<BasicBlock*>      toVisitTryEntry(alloc);
 
     BitVecTraits traits(comp->compBasicBlockID, comp);
     BitVec       visitedBlocks(BitVecOps::MakeEmpty(&traits));
@@ -455,7 +501,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
         {
             continue;
         }
-        visited.Push(visitBlock);
+        visited->push_back(visitBlock);
 
         if (comp->bbIsTryBeg(visitBlock))
         {
@@ -487,7 +533,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
     // -1 here since we won't need to clone the allocation site itself.
     //
-    JITDUMP("allocation side cloning: %u blocks\n", visited.Height() - 1);
+    JITDUMP("allocation side cloning: %u blocks\n", visited->size() - 1);
 
     // Determine the initial extent of the cloned region dominated by
     // the def block.
@@ -514,7 +560,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
         {
             continue;
         }
-        visited.Push(visitBlock);
+        visited->push_back(visitBlock);
 
         if (comp->bbIsTryBeg(visitBlock))
         {
@@ -540,14 +586,16 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
         }
     }
 
-    JITDUMP("total cloning including all enumerator uses: %u blocks\n", visited.Height() - 1);
+    JITDUMP("total cloning including all enumerator uses: %u blocks\n", visited->size() - 1);
     unsigned numberOfEHRegionsToClone = 0;
 
     // Now expand the clone block set to include any try regions that need cloning.
     //
-    BitVec                 tryVisitedBlocks = BitVecOps::MakeEmpty(&traits);
-    Compiler::CloneTryInfo cloneInfo(traits, tryVisitedBlocks);
-    unsigned               numberOfTryRegionsToClone = 0;
+    BitVec                      tryVisitedBlocks = BitVecOps::MakeEmpty(&traits);
+    Compiler::CloneTryInfo      cloneInfo(traits, tryVisitedBlocks);
+    jitstd::vector<BasicBlock*> tryBlocks(alloc);
+    cloneInfo.m_blocksToClone          = &tryBlocks;
+    unsigned numberOfTryRegionsToClone = 0;
     while (toVisitTryEntry.Height() > 0)
     {
         BasicBlock* const block = toVisitTryEntry.Pop();
@@ -559,6 +607,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
         // This will not clone, but will check if cloning is possible
         //
+        cloneInfo.m_blocksToClone->clear();
         BasicBlock* const result = comp->fgCloneTryRegion(block, cloneInfo);
 
         if (result == nullptr)
@@ -566,22 +615,220 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
             return false;
         }
 
+        // Merge tryBlocks into blocks...
+
         numberOfTryRegionsToClone++;
     }
 
-    // Todo -- would be nice to capture the order here too....
+    // Merge visited and clone info visited
     //
-    BitVecOps::UnionD(&traits, visitedBlocks, tryVisitedBlocks);
+    for (BasicBlock* const block : tryBlocks)
+    {
+        if (BitVecOps::TryAddElemD(&traits, visitedBlocks, block->bbNum))
+        {
+            visited->push_back(block);
+        }
+    }
+
+    // assert(BitVecOps::SetDifference...) ...sigh...
+    //
+
+    // Sort blocks to visit in RPO
+    //
+    struct bbRpoCmp
+    {
+        bool operator()(const BasicBlock* bb1, const BasicBlock* bb2)
+        {
+            return bb1->bbPostorderNum > bb2->bbPostorderNum;
+        }
+    };
+
+    jitstd::sort(visited->begin(), visited->end(), bbRpoCmp());
+
+    assert(defBlock->hasProfileWeight());
+
+    // Determine the profile scale factor.
+    //
+    weight_t weightForClone = 0.0;
+
+    for (FlowEdge* const predEdge : defBlock->PredEdges())
+    {
+        if (BitVecOps::IsMember(&traits, visitedBlocks, predEdge->getSourceBlock()->bbNum))
+        {
+            weightForClone += predEdge->getLikelyWeight();
+        }
+    }
+
+    weight_t scaleFactor = max(1.0, weightForClone / defBlock->bbWeight);
+    info.m_profileScale  = scaleFactor;
+    JITDUMP("Profile weight for clone " FMT_WT " overall " FMT_WT ", will scale clone at " FMT_WT "\n", weightForClone,
+            defBlock->bbWeight, scaleFactor);
+
+    // Save of blocks that we need to clone
+    //
+    info.m_blocksToClone = visited;
+
     JITDUMP("total cloning including all uses and subsequent EH: %u blocks\n",
             BitVecOps::Count(&traits, visitedBlocks));
 
     comp->Metrics.EnumeratorGDVCanCloneToEnsureNoEscape++;
 
-    // Transfer the extent info to the guard info object...
-    // Set of blocks to clone
-    // EH region to clone (if any)
-
     return false;
+}
+
+//------------------------------------------------------------------------------
+// CloneAndSpecialize: clone and specialize blocks and statements so that
+//   an enumerator allocation does not escape
+//
+// Arguments:
+//   info -- info about the cloning opportunity
+//
+//
+void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
+{
+    // Clone blocks in RPO order, but if we find a try entry, clone that as a whole.
+    //
+    BlockToBlockMap map(comp->getAllocator(CMK_ObjectAllocator));
+
+    // Insert blocks just after the allocation site
+    //
+    BasicBlock** insertAfter = &info.m_allocBlock;
+
+    // Keep track of which blocks were handled by try region cloning
+    //
+    BitVecTraits traits(comp->compBasicBlockID, comp);
+    BitVec       visited(BitVecOps::MakeEmpty(&traits));
+
+    for (BasicBlock* const block : *info.m_blocksToClone)
+    {
+        BasicBlock* newBlock = nullptr;
+        const bool  isCloned = map.Lookup(block, &newBlock);
+
+        if (isCloned)
+        {
+            assert(newBlock != nullptr);
+            continue;
+        }
+
+        if (comp->bbIsTryBeg(block))
+        {
+            Compiler::CloneTryInfo cloneTryInfo(traits, visited);
+            cloneTryInfo.m_map          = &map;
+            cloneTryInfo.m_addEdges     = false;
+            cloneTryInfo.m_profileScale = info.m_profileScale;
+            comp->fgCloneTryRegion(block, cloneTryInfo, insertAfter);
+            continue;
+        }
+
+        newBlock = comp->fgNewBBafter(BBJ_ALWAYS, *insertAfter, /* extendRegion */ false);
+        JITDUMP("Adding " FMT_BB " (copy of " FMT_BB ") after " FMT_BB "\n", newBlock->bbNum, block->bbNum,
+                (*insertAfter)->bbNum);
+        BasicBlock::CloneBlockState(comp, newBlock, block);
+
+        assert(newBlock->bbRefs == 0);
+        newBlock->scaleBBWeight(info.m_profileScale);
+        map.Set(block, newBlock, BlockToBlockMap::Overwrite);
+        *insertAfter = newBlock;
+    }
+
+    // Fix up flow..
+    //
+    for (BasicBlock* const block : *info.m_blocksToClone)
+    {
+        BasicBlock* newBlock = nullptr;
+        const bool  isCloned = map.Lookup(block, &newBlock);
+        assert(isCloned && (newBlock != nullptr));
+        assert(!newBlock->HasInitializedTarget());
+        JITDUMP("Updating targets: " FMT_BB " mapped to " FMT_BB "\n", block->bbNum, newBlock->bbNum);
+        comp->optSetMappedBlockTargets(block, newBlock, &map);
+    }
+
+    // Create a new local for the enumerator uses in the cloned code
+    //
+    unsigned const newEnumeratorLocal =
+        comp->lvaGrabTemp(/* shortLifetime */ false DEBUGARG("specialized enumerator local"));
+    comp->lvaSetClass(newEnumeratorLocal, info.m_type, /* isExact */ true);
+
+    class ReplaceVisitor final : public GenTreeVisitor<ReplaceVisitor>
+    {
+        unsigned m_oldLclNum;
+        unsigned m_newLclNum;
+
+    public:
+        enum
+        {
+            DoPreOrder    = true,
+            DoLclVarsOnly = true,
+        };
+
+        bool MadeChanges = false;
+
+        ReplaceVisitor(Compiler* comp, unsigned oldLclNum, unsigned newLclNum)
+            : GenTreeVisitor(comp)
+            , m_oldLclNum(oldLclNum)
+            , m_newLclNum(newLclNum)
+        {
+        }
+
+        fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
+        {
+            GenTreeLclVarCommon* const node = (*use)->AsLclVarCommon();
+            if (node->OperIs(GT_LCL_VAR) && (node->GetLclNum() == m_oldLclNum))
+            {
+                node->SetLclNum(m_newLclNum);
+                MadeChanges = true;
+            }
+
+            return fgWalkResult::WALK_CONTINUE;
+        }
+    };
+
+    ReplaceVisitor visitor(comp, info.m_local, newEnumeratorLocal);
+
+    // Rewrite enumerator var uses
+    //
+    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    {
+        BasicBlock* newBlock = nullptr;
+        const bool  isCloned = map.Lookup(a.m_block, &newBlock);
+        assert(isCloned && (newBlock != nullptr));
+
+        JITDUMP("Updating V%02 use in " FMT_BB "(image of " FMT_BB ") to V%02u\n", info.m_local, newBlock->bbNum,
+                a.m_block->bbNum, newEnumeratorLocal);
+
+        // Find matching stmt/tree...
+        //
+        Statement* clonedStmt = newBlock->firstStmt();
+        for (Statement* const stmt : a.m_block->Statements())
+        {
+            if (stmt == a.m_stmt)
+            {
+                assert(GenTree::Compare(stmt->GetRootNode(), clonedStmt->GetRootNode()));
+
+                // walk and replace
+                visitor.MadeChanges = false;
+                visitor.WalkTree(clonedStmt->GetRootNodePointer(), nullptr);
+                assert(visitor.MadeChanges);
+                break;
+            }
+
+            clonedStmt = clonedStmt->GetNextStmt();
+        }
+    }
+
+    // Specialize GDV tests in the cloned code (track these...)?
+    //
+    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    {
+    }
+
+    // Specialize GCV tests in the non-cloned code
+    //
+    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    {
+    }
+
+    // Modify allocation block to branch to clone...
 }
 
 //------------------------------------------------------------------------------

@@ -36,16 +36,19 @@ struct EnumeratorVarAppearance
     Statement*  m_stmt;
     GenTree**   m_use;
     bool        m_isDef;
+    bool        m_isGuard;
 };
 
-// Describes a GDV check of the form m_local.GetType() == m_type
+// Describes a guarded enumerator cloning candidate
 //
 struct GuardInfo
 {
-    unsigned                                 m_local;
-    CORINFO_CLASS_HANDLE                     m_type;
-    jitstd::vector<EnumeratorVarAppearance>* m_appearances;
-    BasicBlock*                              m_allocBlock;
+    unsigned                                 m_local         = BAD_VAR_NUM;
+    CORINFO_CLASS_HANDLE                     m_type          = NO_CLASS_HANDLE;
+    jitstd::vector<EnumeratorVarAppearance>* m_appearances   = nullptr;
+    BasicBlock*                              m_allocBlock    = nullptr;
+    jitstd::vector<BasicBlock*>*             m_blocksToClone = nullptr;
+    weight_t                                 m_profileScale  = 0.0;
 };
 
 typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GuardInfo> GuardMap;
@@ -108,6 +111,7 @@ private:
     bool     CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum, BasicBlock* block);
     void     UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info);
+    GenTree* IsGuard(Statement* stmt, GuardInfo* info);
     unsigned NewPseudoLocal();
     bool     CanHavePseudoLocals()
     {
@@ -115,6 +119,7 @@ private:
     }
     void RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use, bool isDef);
     bool CanClone(GuardInfo& info);
+    void CloneAndSpecialize(GuardInfo& info);
     static const unsigned int s_StackAllocMaxSize = 0x2000U;
 };
 
