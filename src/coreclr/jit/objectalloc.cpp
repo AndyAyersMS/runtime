@@ -444,14 +444,14 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     ArrayStack<BasicBlock*> visited(comp->getAllocator(CMK_ObjectAllocator));
     ArrayStack<BasicBlock*> toVisitTryEntry(comp->getAllocator(CMK_ObjectAllocator));
 
-    comp->EnsureBasicBlockEpoch();
-    BlockSet visitedBlocks(BlockSetOps::MakeEmpty(comp));
+    BitVecTraits traits(comp->compBasicBlockID, comp);
+    BitVec       visitedBlocks(BitVecOps::MakeEmpty(&traits));
     toVisit.Push(info.m_allocBlock);
 
     while (toVisit.Height() > 0)
     {
         BasicBlock* const visitBlock = toVisit.Pop();
-        if (!BlockSetOps::TryAddElemD(comp, visitedBlocks, visitBlock->bbNum))
+        if (!BitVecOps::TryAddElemD(&traits, visitedBlocks, visitBlock->bbNum))
         {
             continue;
         }
@@ -474,7 +474,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
         //
         for (BasicBlock* const succ : visitBlock->Succs())
         {
-            if (BlockSetOps::IsMember(comp, visitedBlocks, succ->bbNum))
+            if (BitVecOps::IsMember(&traits, visitedBlocks, succ->bbNum))
             {
                 continue;
             }
@@ -510,7 +510,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     while (toVisit.Height() > 0)
     {
         BasicBlock* const visitBlock = toVisit.Pop();
-        if (!BlockSetOps::TryAddElemD(comp, visitedBlocks, visitBlock->bbNum))
+        if (!BitVecOps::TryAddElemD(&traits, visitedBlocks, visitBlock->bbNum))
         {
             continue;
         }
@@ -532,7 +532,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
             // (consider eh paths?)
             //
             assert(comp->m_domTree->Dominates(defBlock, predBlock));
-            if (BlockSetOps::IsMember(comp, visitedBlocks, predBlock->bbNum))
+            if (BitVecOps::IsMember(&traits, visitedBlocks, predBlock->bbNum))
             {
                 continue;
             }
@@ -543,192 +543,37 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     JITDUMP("total cloning including all enumerator uses: %u blocks\n", visited.Height() - 1);
     unsigned numberOfEHRegionsToClone = 0;
 
-    // Now we need to check if the entire cloning extent is within the
-    // same try region, or crosses into a try somewhere.
+    // Now expand the clone block set to include any try regions that need cloning.
     //
-    // If the set of blocks to clone crosses into a try we need to
-    // expand the set of blocks to clone to the entire try plus any
-    // enclosed regions, plus the associated handler / filter and any
-    // regions they enclose, plus any callfinallies that follow.
-    //
-    // This is necessary because try regions can't have multiple entries, or
-    // share parts in any meaningful way.
-    //
-    // We may need to make this more efficient. Also should probably abstract
-    // it out somehow.
-    //
-    unsigned tryIndexToClone = EHblkDsc::NO_ENCLOSING_INDEX;
+    BitVec                 tryVisitedBlocks = BitVecOps::MakeEmpty(&traits);
+    Compiler::CloneTryInfo cloneInfo(traits, tryVisitedBlocks);
+    unsigned               numberOfTryRegionsToClone = 0;
     while (toVisitTryEntry.Height() > 0)
     {
-        numberOfEHRegionsToClone++;
         BasicBlock* const block = toVisitTryEntry.Pop();
-        assert(comp->bbIsTryBeg(block));
-
-        unsigned const tryIndex = block->getTryIndex();
-        EHblkDsc*      ebd      = comp->ehGetDsc(tryIndex);
-
-        if (tryIndexToClone == EHblkDsc::NO_ENCLOSING_INDEX)
+        if (BitVecOps::IsMember(&traits, tryVisitedBlocks, block->bbNum))
         {
-            tryIndexToClone = tryIndex;
+            // nested region
+            continue;
         }
 
-        JITDUMP(FMT_BB " is try region entry; walking full extent of EH#%02u\n", block->bbNum, tryIndex);
-        BasicBlock* const firstTryBlock = ebd->ebdTryBeg;
-        BasicBlock* const lastTryBlock  = ebd->ebdTryLast;
-
-        assert(firstTryBlock == block);
-
-        JITDUMP("Walking try region for EH#%02u\n", tryIndex);
-        for (BasicBlock* const block : comp->Blocks(firstTryBlock, lastTryBlock))
-        {
-            // assert...?
-            if (!comp->bbInTryRegions(tryIndex, block))
-            {
-                continue;
-            }
-
-            if (BlockSetOps::TryAddElemD(comp, visitedBlocks, block->bbNum))
-            {
-                JITDUMP("adding try region block " FMT_BB "\n", block->bbNum);
-                visited.Push(block);
-            }
-        }
-
-        // Walk handler for this region and any enclosing mutual-protect regions.
+        // This will not clone, but will check if cloning is possible
         //
-        unsigned index = tryIndex;
-        while (index != EHblkDsc::NO_ENCLOSING_INDEX)
+        BasicBlock* const result = comp->fgCloneTryRegion(block, cloneInfo);
+
+        if (result == nullptr)
         {
-            EHblkDsc* const enclosingEbd = comp->ehGetDsc(index);
-
-            // Stop when we find a region with a different try entry block.
-            //
-            if (!EHblkDsc::ebdIsSameILTry(ebd, enclosingEbd))
-            {
-                assert(ebd->ebdTryBeg != block);
-                break;
-            }
-            else
-            {
-                assert(ebd->ebdTryBeg == block);
-            }
-
-            if (index != tryIndex)
-            {
-                JITDUMP("Found enclosing mutual-protect try EH#%02u\n", index);
-            }
-
-            BasicBlock* const firstHndBlock = enclosingEbd->ebdHndBeg;
-            BasicBlock* const lastHndBlock  = enclosingEbd->ebdHndLast;
-
-            JITDUMP("walking handler region for EH#%02u [" FMT_BB " ... " FMT_BB "]\n", index, firstHndBlock->bbNum,
-                    lastHndBlock->bbNum);
-
-            for (BasicBlock* const block : comp->Blocks(firstHndBlock, lastHndBlock))
-            {
-                // assert..?
-                if (!comp->bbInHandlerRegions(tryIndex, block))
-                {
-                    continue;
-                }
-
-                if (BlockSetOps::TryAddElemD(comp, visitedBlocks, block->bbNum))
-                {
-                    if (comp->bbIsTryBeg(block))
-                    {
-                        JITDUMP("found try nested in handler at " FMT_BB "\n", block->bbNum);
-                        toVisitTryEntry.Push(block);
-                    }
-
-                    JITDUMP("adding handler region block " FMT_BB "\n", block->bbNum);
-                    visited.Push(block);
-                }
-            }
-
-            // Walk filter, if any
-            //
-            if (enclosingEbd->HasFilter())
-            {
-                BasicBlock* const firstFltBlock = enclosingEbd->ebdFilter;
-                BasicBlock* const lastFltBlock  = enclosingEbd->BBFilterLast();
-
-                JITDUMP("walking filter region for EH#%02u\n", index);
-
-                for (BasicBlock* const block : comp->Blocks(firstFltBlock, lastFltBlock))
-                {
-                    if (BlockSetOps::TryAddElemD(comp, visitedBlocks, block->bbNum))
-                    {
-                        JITDUMP("adding filter region block " FMT_BB "\n", block->bbNum);
-                        visited.Push(block);
-                    }
-                }
-            }
-
-            // Advance to enclosing region
-            //
-            index = enclosingEbd->ebdEnclosingTryIndex;
+            return false;
         }
 
-        // Walk the callfinally region for the try, if it has any.
-        //
-        if (ebd->HasFinallyHandler())
-        {
-            BasicBlock* firstCallFinallyRangeBlock = nullptr;
-            BasicBlock* lastCallFinallyRangeBlock  = nullptr;
-            comp->ehGetCallFinallyBlockRange(tryIndex, &firstCallFinallyRangeBlock, &lastCallFinallyRangeBlock);
-
-            // Note this range is potentially quite broad, and needs filtering...
-            // Instead perhaps just walk preds of the handler?
-            //
-            JITDUMP("walking callfinally region for EH#%02u [" FMT_BB " ... " FMT_BB "]\n", tryIndex,
-                    firstCallFinallyRangeBlock->bbNum, lastCallFinallyRangeBlock->bbNum);
-
-            for (BasicBlock* const block : comp->Blocks(firstCallFinallyRangeBlock, lastCallFinallyRangeBlock))
-            {
-                if (block->KindIs(BBJ_CALLFINALLY) && block->TargetIs(ebd->ebdHndBeg))
-                {
-                    if (BlockSetOps::TryAddElemD(comp, visitedBlocks, block->bbNum))
-                    {
-                        JITDUMP("adding callfinally block " FMT_BB "\n", block->bbNum);
-                        visited.Push(block);
-                        continue;
-                    }
-                }
-
-                if (block->KindIs(BBJ_CALLFINALLYRET) && block->Prev()->TargetIs(ebd->ebdHndBeg))
-                {
-                    JITDUMP("found callfinally tail block with right target " FMT_BB "\n", block->bbNum);
-                    if (BlockSetOps::TryAddElemD(comp, visitedBlocks, block->bbNum))
-                    {
-                        JITDUMP("adding callfinally tail block " FMT_BB "\n", block->bbNum);
-                        visited.Push(block);
-                        continue;
-                    }
-                }
-            }
-        }
+        numberOfTryRegionsToClone++;
     }
 
-    JITDUMP("total cloning including all uses and subsequent EH: %u blocks\n", visited.Height() - 1);
-
-    // Todo: some kind of costing to decide if this amount of cloning is worth the trouble.
+    // Todo -- would be nice to capture the order here too....
     //
-    // We generally expect that if we need to clone multiple EH regions, there is one region
-    // that encloses the others. For now we'll simply check that we only need to clone one EH region.
-
-    if (numberOfEHRegionsToClone > 1)
-    {
-        JITDUMP("Too many EH regions to clone (%u)\n", numberOfEHRegionsToClone);
-        return false;
-    }
-    else if (numberOfEHRegionsToClone == 1)
-    {
-        JITDUMP("Will need to clone EH#%02u\n", tryIndexToClone);
-    }
-    else
-    {
-        JITDUMP("No EH regions to clone..\n");
-    }
+    BitVecOps::UnionD(&traits, visitedBlocks, tryVisitedBlocks);
+    JITDUMP("total cloning including all uses and subsequent EH: %u blocks\n",
+            BitVecOps::Count(&traits, visitedBlocks));
 
     comp->Metrics.EnumeratorGDVCanCloneToEnsureNoEscape++;
 
@@ -838,7 +683,8 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
                         CORINFO_CLASS_HANDLE clsHnd = data->AsAllocObj()->gtAllocObjClsHnd;
                         const char*          reason = nullptr;
 
-                        if (m_allocator->CanAllocateLclVarOnStack(enumeratorLocal, clsHnd, &reason))
+                        if (m_allocator->CanAllocateLclVarOnStack(enumeratorLocal, clsHnd, &reason,
+                                                                  /* preliminaryCheck */ true))
                         {
                             // We are going to conditionally track accesses to this local via a pseudo local.
                             // We should have been able to predict in advance how many we'll need.

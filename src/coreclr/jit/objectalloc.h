@@ -79,7 +79,10 @@ public:
     ObjectAllocator(Compiler* comp);
     bool IsObjectStackAllocationEnabled() const;
     void EnableObjectStackAllocation();
-    bool CanAllocateLclVarOnStack(unsigned int lclNum, CORINFO_CLASS_HANDLE clsHnd, const char** reason);
+    bool CanAllocateLclVarOnStack(unsigned int         lclNum,
+                                  CORINFO_CLASS_HANDLE clsHnd,
+                                  const char**         reason,
+                                  bool                 preliminaryCheck = false);
 
 protected:
     virtual PhaseStatus DoPhase() override;
@@ -172,16 +175,19 @@ inline void ObjectAllocator::EnableObjectStackAllocation()
 // Arguments:
 //    lclNum   - Local variable number
 //    clsHnd   - Class/struct handle of the variable class
-//    reason  - [out, required] if result is false, reason why
+//    reason   - [out, required] if result is false, reason why
+//    preliminaryCheck - if true, allow checking before analysis is done
+//                 (for things that inherently disqualify the local)
 //
 // Return Value:
 //    Returns true iff local variable can be allocated on the stack.
 //
 inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int         lclNum,
                                                       CORINFO_CLASS_HANDLE clsHnd,
-                                                      const char**         reason)
+                                                      const char**         reason,
+                                                      bool                 preliminaryCheck)
 {
-    assert(m_AnalysisDone);
+    assert(preliminaryCheck || m_AnalysisDone);
 
     bool enableBoxedValueClasses = true;
     bool enableRefClasses        = true;
@@ -231,6 +237,11 @@ inline bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int         lclNu
     {
         *reason = "[too large]";
         return false;
+    }
+
+    if (preliminaryCheck)
+    {
+        return true;
     }
 
     const bool escapes = CanLclVarEscape(lclNum);
