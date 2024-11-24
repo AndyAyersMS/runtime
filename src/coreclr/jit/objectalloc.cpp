@@ -58,6 +58,10 @@ PhaseStatus ObjectAllocator::DoPhase()
     {
         JITDUMP("enabled, analyzing...\n");
         DoAnalysis();
+
+        // If we have to clone some code to guarantee non-escape, do it now.
+        //
+        CloneAndSpecialize();
     }
     else
     {
@@ -199,14 +203,17 @@ unsigned ObjectAllocator::NewPseudoLocal()
 //
 bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info)
 {
+    JITDUMP("Checking if [%06u] in " FMT_BB " executes under a failing GDV test\n", comp->dspTreeID(tree),
+            block->bbNum);
+
     // Walk up the dominator tree....
     //
     for (BasicBlock* idomBlock = block->bbIDom; idomBlock != nullptr; idomBlock = idomBlock->bbIDom)
     {
-        JITDUMP("... checking " FMT_BB, idomBlock->bbNum);
+        JITDUMP("... examining dominator " FMT_BB "\n", idomBlock->bbNum);
         if (!idomBlock->KindIs(BBJ_COND))
         {
-            JITDUMP("... not cond\n");
+            JITDUMP("... not BBJ_COND\n");
             continue;
         }
 
@@ -224,7 +231,7 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
 
         assert(trueSuccessorDominates || falseSuccessorDominates);
 
-        Statement* const lastStmt      = block->lastStmt();
+        Statement* const lastStmt      = idomBlock->lastStmt();
         GenTree* const   guardingRelop = IsGuard(lastStmt, info);
 
         if (guardingRelop == nullptr)
@@ -359,14 +366,14 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
         return;
     }
 
-    GuardInfo info;
+    GuardInfo* info;
     if (!m_GuardMap.Lookup(pseudoLocal, &info))
     {
         return;
     }
 
     EnumeratorVarAppearance e(block, stmt, use, isDef);
-    info.m_appearances->push_back(e);
+    info->m_appearances->push_back(e);
 }
 
 //------------------------------------------------------------------------------
@@ -374,13 +381,13 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
 //   is a reasonble thing to do
 //
 // Arguments:
-//   info -- info about the cloning opportunity
+//   info -- [in, out] info about the cloning opportunity
 //
 // Returns:
 //   true if cloning can remove all escaping references
 //   and if cloning is likely to be a good perf/size tradeoff
 //
-bool ObjectAllocator::CanClone(GuardInfo& info)
+bool ObjectAllocator::CanClone(GuardInfo* info)
 {
     // The allocation site must not be in a loop (stack allocation limitation)
     //
@@ -388,16 +395,16 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     // able to light up an "object is thread exclusive" mode and effectively
     // promote the fields anyways.
     //
-    if (info.m_allocBlock->HasFlag(BBF_BACKWARD_JUMP))
+    if (info->m_allocBlock->HasFlag(BBF_BACKWARD_JUMP))
     {
-        JITDUMP("allocation block " FMT_BB " is (possibly) in a loop\n", info.m_allocBlock->bbNum);
+        JITDUMP("allocation block " FMT_BB " is (possibly) in a loop\n", info->m_allocBlock->bbNum);
         return false;
     }
 
     // The guard variable needs to have at most one definition.
     //
     BasicBlock* defBlock = nullptr;
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         if (!a.m_isDef)
         {
@@ -406,7 +413,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
         if (defBlock != nullptr)
         {
-            JITDUMP("V%02u multiply defined: " FMT_BB " and " FMT_BB "\n", info.m_local, defBlock->bbNum,
+            JITDUMP("V%02u multiply defined: " FMT_BB " and " FMT_BB "\n", info->m_local, defBlock->bbNum,
                     a.m_block->bbNum);
             return false;
         }
@@ -414,7 +421,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
         defBlock = a.m_block;
     }
 
-    JITDUMP("V%02u has single def in " FMT_BB "\n", info.m_local, defBlock->bbNum);
+    JITDUMP("V%02u has single def in " FMT_BB "\n", info->m_local, defBlock->bbNum);
 
     // Heuristic: if def block was not profiled, or is hit less than 10% of
     // the time, bail... (note we should really look at weight of uses).
@@ -435,7 +442,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
     // The definition block must dominate all the uses.
     //
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         if (a.m_isDef)
         {
@@ -444,7 +451,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
         if (!comp->m_domTree->Dominates(defBlock, a.m_block))
         {
-            JITDUMP("V%02u use in " FMT_BB " not dominated by def " FMT_BB "\n", info.m_local, a.m_block->bbNum,
+            JITDUMP("V%02u use in " FMT_BB " not dominated by def " FMT_BB "\n", info->m_local, a.m_block->bbNum,
                     defBlock->bbNum);
             return false;
         }
@@ -466,9 +473,9 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     // (if it does, our optimization does not require cloning as
     // there should be only one reaching def...)
     //
-    if (comp->m_domTree->Dominates(info.m_allocBlock, defBlock))
+    if (comp->m_domTree->Dominates(info->m_allocBlock, defBlock))
     {
-        JITDUMP("Unexpected, alloc site " FMT_BB " dominates def block " FMT_BB "\n", info.m_allocBlock->bbNum,
+        JITDUMP("Unexpected, alloc site " FMT_BB " dominates def block " FMT_BB "\n", info->m_allocBlock->bbNum,
                 defBlock->bbNum);
 
         return false;
@@ -492,7 +499,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 
     BitVecTraits traits(comp->compBasicBlockID, comp);
     BitVec       visitedBlocks(BitVecOps::MakeEmpty(&traits));
-    toVisit.Push(info.m_allocBlock);
+    toVisit.Push(info->m_allocBlock);
 
     while (toVisit.Height() > 0)
     {
@@ -529,7 +536,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     }
 
     JITDUMP("def block " FMT_BB " post-dominates allocation site " FMT_BB "\n", defBlock->bbNum,
-            info.m_allocBlock->bbNum);
+            info->m_allocBlock->bbNum);
 
     // -1 here since we won't need to clone the allocation site itself.
     //
@@ -543,7 +550,7 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     // We should also be able to walk forward from defBlock to all the uses,
     // skipping any successors that are failed GDVs.
     //
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         if (a.m_isDef)
         {
@@ -660,20 +667,20 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
     }
 
     weight_t scaleFactor = max(1.0, weightForClone / defBlock->bbWeight);
-    info.m_profileScale  = scaleFactor;
+    info->m_profileScale = scaleFactor;
     JITDUMP("Profile weight for clone " FMT_WT " overall " FMT_WT ", will scale clone at " FMT_WT "\n", weightForClone,
             defBlock->bbWeight, scaleFactor);
 
     // Save of blocks that we need to clone
     //
-    info.m_blocksToClone = visited;
+    info->m_blocksToClone = visited;
+    info->m_canClone      = true;
 
     JITDUMP("total cloning including all uses and subsequent EH: %u blocks\n",
             BitVecOps::Count(&traits, visitedBlocks));
 
     comp->Metrics.EnumeratorGDVCanCloneToEnsureNoEscape++;
-
-    return false;
+    return true;
 }
 
 //------------------------------------------------------------------------------
@@ -684,22 +691,28 @@ bool ObjectAllocator::CanClone(GuardInfo& info)
 //   info -- info about the cloning opportunity
 //
 //
-void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
+void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 {
-    // Clone blocks in RPO order, but if we find a try entry, clone that as a whole.
+    JITDUMP("\nCloning to ensure allocation at [%06u] does not escape\n", info->m_allocBlock->bbNum);
+
+    // Clone blocks in RPO order. If we find a try entry, clone that as a whole,
+    // and skip over those blocks subsequently.
     //
     BlockToBlockMap map(comp->getAllocator(CMK_ObjectAllocator));
 
     // Insert blocks just after the allocation site
     //
-    BasicBlock** insertAfter = &info.m_allocBlock;
+    BasicBlock** insertAfter = &info->m_allocBlock;
 
     // Keep track of which blocks were handled by try region cloning
     //
     BitVecTraits traits(comp->compBasicBlockID, comp);
     BitVec       visited(BitVecOps::MakeEmpty(&traits));
 
-    for (BasicBlock* const block : *info.m_blocksToClone)
+    // Seems like if the region exits the try the RPO could mix
+    // try and non-try blocks... hmm.
+    //
+    for (BasicBlock* const block : *info->m_blocksToClone)
     {
         BasicBlock* newBlock = nullptr;
         const bool  isCloned = map.Lookup(block, &newBlock);
@@ -715,7 +728,7 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
             Compiler::CloneTryInfo cloneTryInfo(traits, visited);
             cloneTryInfo.m_map          = &map;
             cloneTryInfo.m_addEdges     = false;
-            cloneTryInfo.m_profileScale = info.m_profileScale;
+            cloneTryInfo.m_profileScale = info->m_profileScale;
             comp->fgCloneTryRegion(block, cloneTryInfo, insertAfter);
             continue;
         }
@@ -726,14 +739,14 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
         BasicBlock::CloneBlockState(comp, newBlock, block);
 
         assert(newBlock->bbRefs == 0);
-        newBlock->scaleBBWeight(info.m_profileScale);
+        newBlock->scaleBBWeight(info->m_profileScale);
         map.Set(block, newBlock, BlockToBlockMap::Overwrite);
         *insertAfter = newBlock;
     }
 
     // Fix up flow..
     //
-    for (BasicBlock* const block : *info.m_blocksToClone)
+    for (BasicBlock* const block : *info->m_blocksToClone)
     {
         BasicBlock* newBlock = nullptr;
         const bool  isCloned = map.Lookup(block, &newBlock);
@@ -747,7 +760,10 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
     //
     unsigned const newEnumeratorLocal =
         comp->lvaGrabTemp(/* shortLifetime */ false DEBUGARG("specialized enumerator local"));
-    comp->lvaSetClass(newEnumeratorLocal, info.m_type, /* isExact */ true);
+
+    comp->lvaTable[newEnumeratorLocal].lvType      = TYP_REF;
+    comp->lvaTable[newEnumeratorLocal].lvSingleDef = 1;
+    comp->lvaSetClass(newEnumeratorLocal, info->m_type, /* isExact */ true);
 
     class ReplaceVisitor final : public GenTreeVisitor<ReplaceVisitor>
     {
@@ -773,7 +789,7 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
         fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
         {
             GenTreeLclVarCommon* const node = (*use)->AsLclVarCommon();
-            if (node->OperIs(GT_LCL_VAR) && (node->GetLclNum() == m_oldLclNum))
+            if (node->OperIs(GT_LCL_VAR, GT_STORE_LCL_VAR) && (node->GetLclNum() == m_oldLclNum))
             {
                 node->SetLclNum(m_newLclNum);
                 MadeChanges = true;
@@ -783,7 +799,7 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
         }
     };
 
-    ReplaceVisitor visitor(comp, info.m_local, newEnumeratorLocal);
+    ReplaceVisitor visitor(comp, info->m_local, newEnumeratorLocal);
 
     // Rewrite enumerator var uses in the cloned blocks to reference
     // the new enumerator local.
@@ -800,13 +816,13 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
     // enumerator may well have the right type. The main goal here is
     // to block GDV-inspired cloning of the "slow" loop.
     //
-    for (EnumeratorVarAppearance& a : *info.m_appearances)
+    for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         BasicBlock* newBlock = nullptr;
         const bool  isCloned = map.Lookup(a.m_block, &newBlock);
         assert(isCloned && (newBlock != nullptr));
 
-        JITDUMP("Updating V%02 use in " FMT_BB "(image of " FMT_BB ") to V%02u\n", info.m_local, newBlock->bbNum,
+        JITDUMP("Updating V%02u use in " FMT_BB " (clone of " FMT_BB ") to V%02u\n", info->m_local, newBlock->bbNum,
                 a.m_block->bbNum, newEnumeratorLocal);
 
         // Find matching stmt/tree...
@@ -818,9 +834,16 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
             {
                 assert(GenTree::Compare(stmt->GetRootNode(), clonedStmt->GetRootNode()));
 
+                JITDUMP("Before\n");
+                DISPTREE(clonedStmt->GetRootNode());
+
                 // walk and replace
                 visitor.MadeChanges = false;
                 visitor.WalkTree(clonedStmt->GetRootNodePointer(), nullptr);
+
+                JITDUMP("After\n");
+                DISPTREE(clonedStmt->GetRootNode());
+
                 assert(visitor.MadeChanges);
                 break;
             }
@@ -840,13 +863,13 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
 
             if (slowGuardRelop->OperIs(GT_NE))
             {
-                // branch if enum.type NE info.m_type
+                // branch if enum.type NE info->m_type
                 //
                 a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
             }
             else
             {
-                // branch if enum.type EQ info.m_type
+                // branch if enum.type EQ info->m_type
                 //
                 a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
             }
@@ -861,13 +884,13 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
 
             if (fastGuardRelop->OperIs(GT_NE))
             {
-                // branch if enum.type NE info.m_type
+                // branch if enum.type NE info->m_type
                 //
                 newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
             }
             else
             {
-                // branch if enum.type EQ info.m_type
+                // branch if enum.type EQ info->m_type
                 //
                 newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
             }
@@ -876,11 +899,33 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo& info)
 
     // Modify allocation block to branch to clone.
     //
-    BasicBlock* const firstBlock       = (*info.m_blocksToClone)[0];
+    BasicBlock* const firstBlock       = (*info->m_blocksToClone)[0];
     BasicBlock*       firstClonedBlock = nullptr;
     bool const        firstFound       = map.Lookup(firstBlock, &firstClonedBlock);
     assert(firstFound);
-    comp->fgRedirectTargetEdge(info.m_allocBlock, firstClonedBlock);
+    comp->fgRedirectTargetEdge(info->m_allocBlock, firstClonedBlock);
+}
+
+//------------------------------------------------------------------------------
+// CloneAndSpecializeAll: clone and specialize any regions needed to guarantee
+//   objects don't escape
+//
+void ObjectAllocator::CloneAndSpecialize()
+{
+    unsigned numberOfClonedRegions = 0;
+
+    for (GuardInfo* const g : GuardMap::ValueIteration(&m_GuardMap))
+    {
+        if (!g->m_canClone)
+        {
+            continue;
+        }
+
+        CloneAndSpecialize(g);
+        numberOfClonedRegions++;
+    }
+
+    assert(numberOfClonedRegions == m_regionsToClone);
 }
 
 //------------------------------------------------------------------------------
@@ -999,11 +1044,11 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
                             // under the same type guard.
                             //
                             CompAllocator alloc(m_compiler->getAllocator(CMK_ObjectAllocator));
-                            GuardInfo     info;
-                            info.m_local       = enumeratorLocal;
-                            info.m_type        = clsHnd;
-                            info.m_appearances = new (alloc) jitstd::vector<EnumeratorVarAppearance>(alloc);
-                            info.m_allocBlock  = m_block;
+                            GuardInfo*    info  = new (alloc) GuardInfo();
+                            info->m_local       = enumeratorLocal;
+                            info->m_type        = clsHnd;
+                            info->m_appearances = new (alloc) jitstd::vector<EnumeratorVarAppearance>(alloc);
+                            info->m_allocBlock  = m_block;
                             m_allocator->m_GuardMap.Set(pseudoLocal, info);
 
                             JITDUMP(
@@ -1166,15 +1211,15 @@ void ObjectAllocator::ComputeEscapingNodes(BitVecTraits* bitVecTraits, BitVec& e
                 continue;
             }
 
-            GuardInfo  info;
+            GuardInfo* info;
             const bool hasInfo  = m_GuardMap.Lookup(pseudoLocal, &info);
             bool       canClone = false;
 
             if (hasInfo)
             {
                 JITDUMP("   P%02u is guarding the escape of V%02u\n", pseudoLocal, lclNum);
-                JITDUMP("   Escapes only when V%02u.Type NE %s\n", info.m_local, comp->eeGetClassName(info.m_type));
-                JITDUMP("   V%02u has %u appearances\n", info.m_local, info.m_appearances->size());
+                JITDUMP("   Escapes only when V%02u.Type NE %s\n", info->m_local, comp->eeGetClassName(info->m_type));
+                JITDUMP("   V%02u has %u appearances\n", info->m_local, info->m_appearances->size());
 
                 // We may be able to clone and specialize the enumerator uses to ensure
                 // that the allocated enumerator does not escape.
@@ -1184,6 +1229,9 @@ void ObjectAllocator::ComputeEscapingNodes(BitVecTraits* bitVecTraits, BitVec& e
                 // See if cloning is viable...
                 //
                 canClone = CanClone(info);
+
+                // Todo: if there are multiple cloning opportunities make sure
+                // they don't overlap somehow, and we're willing to pay for all of them.
             }
 
             if (!canClone)
@@ -1191,6 +1239,10 @@ void ObjectAllocator::ComputeEscapingNodes(BitVecTraits* bitVecTraits, BitVec& e
                 JITDUMP("   not optimizing, so will mark P%02u as escaping\n", pseudoLocal);
                 MarkLclVarAsEscaping(pseudoLocal);
                 BitVecOps::AddElemD(bitVecTraits, escapingNodesToProcess, pseudoLocal);
+            }
+            else
+            {
+                m_regionsToClone++;
             }
         }
     }
@@ -1705,21 +1757,22 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
                     unsigned pseudoLocal = BAD_VAR_NUM;
                     if (m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
                     {
-                        // Verify that this call is made under the set of conditions tracked by the
-                        // pseudo local...
+                        // Verify that this call is made under the GDV conditions tracked by pseudoLocal.
                         //
                         GuardInfo info;
                         if (IsGuarded(block, asCall, &info))
                         {
-                            GuardInfo pseudoInfo;
-                            if (m_GuardMap.Lookup(pseudoLocal, &pseudoInfo))
+                            GuardInfo* pseudoGuardInfo;
+                            if (m_GuardMap.Lookup(pseudoLocal, &pseudoGuardInfo))
                             {
-                                if ((info.m_local == lclNum && pseudoInfo.m_local == lclNum) &&
-                                    (info.m_type == pseudoInfo.m_type))
+                                if ((info.m_local == lclNum) && (pseudoGuardInfo->m_local == lclNum) &&
+                                    (info.m_type == pseudoGuardInfo->m_type))
                                 {
-                                    // If so, track this as an assignment PseudoLocal = ...
+                                    // If so, track this as an assignment pseudoLocal = ...
+                                    //
                                     // Later if we don't clone and split off the failing GDV paths,
-                                    // we will mark PseudoLocal as escaped.
+                                    // we will mark pseudoLocal as escaped, and that will lead
+                                    // to lclNum escaping as well.
                                     //
                                     JITDUMP("... under GDV; tracking via pseudo-local P%02u\n", pseudoLocal);
                                     AddConnGraphEdge(pseudoLocal, lclNum);

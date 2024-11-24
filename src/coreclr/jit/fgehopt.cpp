@@ -2140,8 +2140,8 @@ BasicBlock* Compiler::fgCloneTryRegion(BasicBlock* tryEntry, CloneTryInfo& info,
     assert(bbIsTryBeg(tryEntry));
     bool const deferCloning = (insertAfter == nullptr);
     assert(deferCloning || ((*insertAfter != nullptr) && (info.m_map != nullptr)));
-    INDEBUG(const char* msg = deferCloning ? "Checking if it is possible" : "Attempting";)
-    JITDUMP("%s to clone the try region EH#%02u headed by " FMT_BB "\n", msg, tryEntry->getTryIndex(), tryEntry->bbNum);
+    INDEBUG(const char* msg = deferCloning ? "Checking if it is possible to clone" : "Cloning";)
+    JITDUMP("%s the try region EH#%02u headed by " FMT_BB "\n", msg, tryEntry->getTryIndex(), tryEntry->bbNum);
 
     // Determine the extent of cloning.
     //

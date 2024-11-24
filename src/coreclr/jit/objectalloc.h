@@ -49,9 +49,10 @@ struct GuardInfo
     BasicBlock*                              m_allocBlock    = nullptr;
     jitstd::vector<BasicBlock*>*             m_blocksToClone = nullptr;
     weight_t                                 m_profileScale  = 0.0;
+    bool                                     m_canClone      = false;
 };
 
-typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GuardInfo> GuardMap;
+typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GuardInfo*> GuardMap;
 
 class ObjectAllocator final : public Phase
 {
@@ -75,6 +76,7 @@ class ObjectAllocator final : public Phase
     GuardMap        m_GuardMap;
     unsigned        m_maxPseudoLocals;
     unsigned        m_numPseudoLocals;
+    unsigned        m_regionsToClone;
 
     //===============================================================================
     // Methods
@@ -118,8 +120,9 @@ private:
         return m_maxPseudoLocals > 0;
     }
     void RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use, bool isDef);
-    bool CanClone(GuardInfo& info);
-    void CloneAndSpecialize(GuardInfo& info);
+    bool CanClone(GuardInfo* info);
+    void CloneAndSpecialize(GuardInfo* info);
+    void CloneAndSpecialize();
     static const unsigned int s_StackAllocMaxSize = 0x2000U;
 };
 
@@ -135,6 +138,7 @@ inline ObjectAllocator::ObjectAllocator(Compiler* comp)
     , m_GuardMap(comp->getAllocator(CMK_ObjectAllocator))
     , m_maxPseudoLocals(0)
     , m_numPseudoLocals(0)
+    , m_regionsToClone(0)
 
 {
     // If we are going to do any conditional escape analysis, allocate
