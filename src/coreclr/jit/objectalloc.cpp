@@ -1332,7 +1332,7 @@ bool ObjectAllocator::AnalyzeIfCloningCanPreventEscape(BitVecTraits* bitVecTrait
         //
         if (canClone)
         {
-            canClone = CloneOverlaps(info);
+            canClone = !CloneOverlaps(info);
         }
 
         if (!canClone)
