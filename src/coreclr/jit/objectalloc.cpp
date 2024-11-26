@@ -184,15 +184,17 @@ unsigned ObjectAllocator::NewPseudoLocal()
 }
 
 //------------------------------------------------------------------------------
-// IsGuarded: does evaluation of `tree` depend on a failed GDV check?
+// IsGuarded: does evaluation of `tree` depend on a GDV type test?
 //
 // Arguments:
-//   tree -- tree in question
-//   info -- [out] closest enclosing guard info, if method returns true
+//   block        -- block containing tree
+//   tree         -- tree in question
+//   info         -- [out] closest enclosing guard info, if method returns true
+//   testOutcome  -- outcome of GDV test (true ==> type matches the specific one in the test)
 //
 // Returns:
-//   true if tree is only evaluated if a GDV check fails. Returns the closest
-//   such check (in terms of dominators), along with info on the check.
+//   true if tree is only evaluated under a GDV check, where the check result is testOutcome.
+//   Returns closest such check (in terms of dominators), along with info on the check.
 //
 // Notes:
 //   * There may be other checks higher in the tree, consider returning all
@@ -201,10 +203,10 @@ unsigned ObjectAllocator::NewPseudoLocal()
 //   * Consider bailing out at some point, for deep dominator trees.
 //   * R2R/NAOT cases where compile time and runtime handles diverge
 //
-bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info)
+bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info, bool testOutcome)
 {
-    JITDUMP("Checking if [%06u] in " FMT_BB " executes under a failing GDV test\n", comp->dspTreeID(tree),
-            block->bbNum);
+    JITDUMP("Checking if [%06u] in " FMT_BB " executes under a %s GDV type test\n", comp->dspTreeID(tree), block->bbNum,
+            testOutcome ? "successful" : "failing");
 
     // Walk up the dominator tree....
     //
@@ -236,15 +238,31 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
             continue;
         }
 
-        bool isReachableOnGDVFailure = (trueSuccessorDominates && guardingRelop->OperIs(GT_NE)) ||
-                                       (falseSuccessorDominates && guardingRelop->OperIs(GT_EQ));
-        if (!isReachableOnGDVFailure)
+        // We found a dominating GDV test, see if the condition is the one we're looking for.
+        //
+        if (testOutcome)
         {
+            bool const isReachableOnGDVSuccess = (trueSuccessorDominates && guardingRelop->OperIs(GT_EQ)) ||
+                                                 (falseSuccessorDominates && guardingRelop->OperIs(GT_NE));
+            if (isReachableOnGDVSuccess)
+            {
+                return true;
+            }
+
+            JITDUMP("... guarded by failing GDV\n");
+            continue;
+        }
+        else
+        {
+            bool const isReachableOnGDVFailure = (trueSuccessorDominates && guardingRelop->OperIs(GT_NE)) ||
+                                                 (falseSuccessorDominates && guardingRelop->OperIs(GT_EQ));
+            if (isReachableOnGDVFailure)
+            {
+                return true;
+            }
             JITDUMP("... guarded by successful GDV\n");
             continue;
         }
-
-        return true;
     }
 
     JITDUMP("... no more doms\n");
@@ -1087,11 +1105,17 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
 {
     assert(tree->OperIsLocalStore());
 
-    if (!comp->hasImpEnumeratorGdvLocalMap())
+    if (!CanHavePseudoLocals())
     {
         // We didn't flag any allocations of interest during importation,
         // so there is nothing to do here.
+        return;
     }
+
+    // If we did flag allocations, we should have built dominators
+    // (needed by calls to IsGuarded, below).
+    //
+    assert(comp->m_domTree != nullptr);
 
     GenTree* const data = tree->AsLclVarCommon()->Data();
 
@@ -1102,10 +1126,10 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
     //
     if (data->OperIs(GT_ALLOCOBJ))
     {
-        // See if this store is under a GDV test.
+        // See if this store is made under a successful GDV test.
         //
         GuardInfo controllingGDV;
-        if (IsGuarded(block, tree, &controllingGDV))
+        if (IsGuarded(block, tree, &controllingGDV, /* testOutcome */ true))
         {
             // This is the allocation of concrete class under GDV.
             //
@@ -1170,11 +1194,15 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
             else
             {
                 // This allocation is not currently of interest
+                //
+                JITDUMP("Allocation [%06u] was not flagged for conditional escape tracking\n", comp->dspTreeID(data));
             }
         }
         else
         {
             // This allocation was not done under a GDV guard
+            //
+            JITDUMP("Allocation [%06u] is not under a GDV guard\n", comp->dspTreeID(data));
         }
 
         return;
@@ -1807,10 +1835,11 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
                     unsigned pseudoLocal = BAD_VAR_NUM;
                     if (m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
                     {
-                        // Verify that this call is made under the GDV conditions tracked by pseudoLocal.
+                        // Verify that this call is made under a failing GDV test with the same conditions tracked by
+                        // pseudoLocal.
                         //
                         GuardInfo info;
-                        if (IsGuarded(block, asCall, &info))
+                        if (IsGuarded(block, asCall, &info, /* testOutcome */ false))
                         {
                             GuardInfo* pseudoGuardInfo;
                             if (m_GuardMap.Lookup(pseudoLocal, &pseudoGuardInfo))
