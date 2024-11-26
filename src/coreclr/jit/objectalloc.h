@@ -121,6 +121,7 @@ private:
     // Conditionally escaping allocation support
     //
     void     CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum);
+    bool     CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsigned lclNum);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info, bool testOutcome);
     GenTree* IsGuard(BasicBlock* block, GuardInfo* info);
     unsigned NewPseudoLocal();

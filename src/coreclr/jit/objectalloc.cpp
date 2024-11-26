@@ -858,8 +858,8 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
                         !Compiler::s_helperCallProperties.IsNoEscape(comp->eeGetHelperNum(asCall->gtCallMethHnd));
                 }
 
-                // Note there is nothing special here about this user being a call. We could move all this processing up
-                // to the caller and handle any sort of tree that could lead to escapes this way.
+                // Note there is nothing special here about the parent being a call. We could move all this processing
+                // up to the caller and handle any sort of tree that could lead to escapes this way.
                 //
                 // We have it this way because we currently don't expect to see other escaping references on failed
                 // GDV paths, though perhaps with multi-guess GDV that might change?
@@ -872,53 +872,7 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
                 if (isEnumeratorLocal)
                 {
                     JITDUMP("Enumerator V%02u passed to call...\n", lclNum);
-
-                    // Find pseudo local...
-                    //
-                    unsigned pseudoLocal = BAD_VAR_NUM;
-                    if (m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
-                    {
-                        // Verify that this call is made under a failing GDV test with the same conditions tracked by
-                        // pseudoLocal.
-                        //
-                        GuardInfo info;
-                        if (IsGuarded(block, asCall, &info, /* testOutcome */ false))
-                        {
-                            GuardInfo* pseudoGuardInfo;
-                            if (m_GuardMap.Lookup(pseudoLocal, &pseudoGuardInfo))
-                            {
-                                if ((info.m_local == lclNum) && (pseudoGuardInfo->m_local == lclNum) &&
-                                    (info.m_type == pseudoGuardInfo->m_type))
-                                {
-                                    // If so, track this as an assignment pseudoLocal = ...
-                                    //
-                                    // Later if we don't clone and split off the failing GDV paths,
-                                    // we will mark pseudoLocal as escaped, and that will lead
-                                    // to lclNum escaping as well.
-                                    //
-                                    JITDUMP("... under GDV; tracking via pseudo-local P%02u\n", pseudoLocal);
-                                    AddConnGraphEdge(pseudoLocal, lclNum);
-                                    canLclVarEscapeViaParentStack = false;
-                                }
-                                else
-                                {
-                                    JITDUMP("... under different guard?\n");
-                                }
-                            }
-                            else
-                            {
-                                JITDUMP("... under non-gdv guard?\n");
-                            }
-                        }
-                        else
-                        {
-                            JITDUMP("... not guarded?\n");
-                        }
-                    }
-                    else
-                    {
-                        JITDUMP("... no pseudo local?\n");
-                    }
+                    canLclVarEscapeViaParentStack = !CheckForGuardedUse(block, parent, lclNum);
                 }
                 break;
             }
@@ -1551,6 +1505,72 @@ GenTree* ObjectAllocator::IsGuard(BasicBlock* block, GuardInfo* info)
 
     JITDUMP("... " FMT_BB " is guard for V%02u\n", block->bbNum, info->m_local);
     return tree;
+}
+
+//------------------------------------------------------------------------------
+// CheckForGuardedUse - see if this use of lclNum is controlled by a failing
+//    GDV check that we're tracking as part of conditional escape.
+//
+// Arguments:
+//    block  - block containing tree
+//    tree   - parent tree using the local
+//    lclNum - local being read
+//
+// Returns:
+//    true if this use is a conditionally escaping use.
+//
+bool ObjectAllocator::CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsigned lclNum)
+{
+    bool isGuardedUse = false;
+
+    // Find pseudo local...
+    //
+    unsigned pseudoLocal = BAD_VAR_NUM;
+    if (m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
+    {
+        // Verify that this call is made under a **failing** GDV test under the same
+        // conditions tracked by pseudoLocal.
+        //
+        GuardInfo info;
+        if (IsGuarded(block, tree, &info, /* testOutcome */ false))
+        {
+            GuardInfo* pseudoGuardInfo;
+            if (m_GuardMap.Lookup(pseudoLocal, &pseudoGuardInfo))
+            {
+                if ((info.m_local == lclNum) && (pseudoGuardInfo->m_local == lclNum) &&
+                    (info.m_type == pseudoGuardInfo->m_type))
+                {
+                    // If so, track this as an assignment pseudoLocal = ...
+                    //
+                    // Later if we don't clone and split off the failing GDV paths,
+                    // we will mark pseudoLocal as escaped, and that will lead
+                    // to lclNum escaping as well.
+                    //
+                    JITDUMP("... under GDV; tracking via pseudo-local P%02u\n", pseudoLocal);
+                    AddConnGraphEdge(pseudoLocal, lclNum);
+                    isGuardedUse = true;
+                }
+                else
+                {
+                    JITDUMP("... under different guard?\n");
+                }
+            }
+            else
+            {
+                JITDUMP("... under non-gdv guard?\n");
+            }
+        }
+        else
+        {
+            JITDUMP("... not guarded?\n");
+        }
+    }
+    else
+    {
+        JITDUMP("... no pseudo local?\n");
+    }
+
+    return isGuardedUse;
 }
 
 //------------------------------------------------------------------------------
