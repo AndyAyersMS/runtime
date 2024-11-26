@@ -1976,6 +1976,10 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
     BitVecTraits traits(comp->compBasicBlockID, comp);
     BitVec       visited(BitVecOps::MakeEmpty(&traits));
 
+    // Compute profile scale for the original blocks.
+    //
+    weight_t originalScale = max(0.0, 1.0 - info->m_profileScale);
+
     // Seems like if the region exits the try the RPO could mix
     // try and non-try blocks... hmm.
     //
@@ -1993,9 +1997,10 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
         if (comp->bbIsTryBeg(block))
         {
             Compiler::CloneTryInfo cloneTryInfo(traits, visited);
-            cloneTryInfo.m_map          = &map;
-            cloneTryInfo.m_addEdges     = false;
-            cloneTryInfo.m_profileScale = info->m_profileScale;
+            cloneTryInfo.m_map           = &map;
+            cloneTryInfo.m_addEdges      = false;
+            cloneTryInfo.m_profileScale  = info->m_profileScale;
+            cloneTryInfo.m_scaleOriginal = true;
             comp->fgCloneTryRegion(block, cloneTryInfo, insertAfter);
             continue;
         }
@@ -2007,6 +2012,7 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 
         assert(newBlock->bbRefs == 0);
         newBlock->scaleBBWeight(info->m_profileScale);
+        block->scaleBBWeight(originalScale);
         map.Set(block, newBlock, BlockToBlockMap::Overwrite);
         *insertAfter = newBlock;
     }
