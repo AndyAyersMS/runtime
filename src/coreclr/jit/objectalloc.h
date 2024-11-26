@@ -29,6 +29,7 @@ struct EnumeratorVarAppearance
         , m_stmt(stmt)
         , m_use(use)
         , m_isDef(isDef)
+        , m_isGuard(false)
     {
     }
 
@@ -113,7 +114,7 @@ private:
     bool     CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum, BasicBlock* block);
     void     UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info);
-    GenTree* IsGuard(Statement* stmt, GuardInfo* info);
+    GenTree* IsGuard(BasicBlock* block, GuardInfo* info);
     unsigned NewPseudoLocal();
     bool     CanHavePseudoLocals()
     {

@@ -228,12 +228,9 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
             JITDUMP("... both successors dominate\n");
             continue;
         }
-
         assert(trueSuccessorDominates || falseSuccessorDominates);
 
-        Statement* const lastStmt      = idomBlock->lastStmt();
-        GenTree* const   guardingRelop = IsGuard(lastStmt, info);
-
+        GenTree* const guardingRelop = IsGuard(idomBlock, info);
         if (guardingRelop == nullptr)
         {
             continue;
@@ -241,7 +238,6 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
 
         bool isReachableOnGDVFailure = (trueSuccessorDominates && guardingRelop->OperIs(GT_NE)) ||
                                        (falseSuccessorDominates && guardingRelop->OperIs(GT_EQ));
-
         if (!isReachableOnGDVFailure)
         {
             JITDUMP("... guarded by successful GDV\n");
@@ -256,17 +252,24 @@ bool ObjectAllocator::IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* inf
 }
 
 //------------------------------------------------------------------------------
-// IsGuard: does stmt look like a GDV guard
+// IsGuard: does block look like a GDV guard
 //
 // Arguments:
-//   stmt -- stmt in question (must be last stmt of block)
+//   block -- block in question
 //   info -- [out] guard info
 //
 // Returns:
 //   Comparison tree if this is a guard, or nullptr
 //
-GenTree* ObjectAllocator::IsGuard(Statement* stmt, GuardInfo* info)
+GenTree* ObjectAllocator::IsGuard(BasicBlock* block, GuardInfo* info)
 {
+    if (!block->KindIs(BBJ_COND))
+    {
+        JITDUMP("... not BBJ_COND\n");
+        return nullptr;
+    }
+
+    Statement* const stmt = block->lastStmt();
     if (stmt == nullptr)
     {
         JITDUMP("... no stmt\n");
@@ -274,7 +277,6 @@ GenTree* ObjectAllocator::IsGuard(Statement* stmt, GuardInfo* info)
     }
 
     GenTree* const jumpTree = stmt->GetRootNode();
-
     if (!jumpTree->OperIs(GT_JTRUE))
     {
         JITDUMP("... no JTRUE\n");
@@ -343,8 +345,7 @@ GenTree* ObjectAllocator::IsGuard(Statement* stmt, GuardInfo* info)
     bool isExact   = false;
     info->m_type   = (CORINFO_CLASS_HANDLE)op2->AsIntCon()->gtIconVal;
 
-    JITDUMP("... under guard V%02u\n", info->m_local);
-
+    JITDUMP("... " FMT_BB " is guard for V%02u\n", block->bbNum, info->m_local);
     return tree;
 }
 
@@ -461,7 +462,7 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
         if (a.m_block->KindIs(BBJ_COND) && (a.m_stmt == a.m_block->lastStmt()))
         {
             GuardInfo      tempInfo;
-            GenTree* const guardingRelop = IsGuard(a.m_stmt, &tempInfo);
+            GenTree* const guardingRelop = IsGuard(a.m_block, &tempInfo);
             a.m_isGuard                  = (guardingRelop != nullptr);
         }
     }
@@ -508,7 +509,11 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
         {
             continue;
         }
-        visited->push_back(visitBlock);
+
+        if (visitBlock != info->m_allocBlock)
+        {
+            visited->push_back(visitBlock);
+        }
 
         if (comp->bbIsTryBeg(visitBlock))
         {
@@ -693,7 +698,7 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
 //
 void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 {
-    JITDUMP("\nCloning to ensure allocation at [%06u] does not escape\n", info->m_allocBlock->bbNum);
+    JITDUMP("\nCloning to ensure allocation at " FMT_BB " does not escape\n", info->m_allocBlock->bbNum);
 
     // Clone blocks in RPO order. If we find a try entry, clone that as a whole,
     // and skip over those blocks subsequently.
@@ -702,7 +707,8 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 
     // Insert blocks just after the allocation site
     //
-    BasicBlock** insertAfter = &info->m_allocBlock;
+    BasicBlock*  insertionPoint = info->m_allocBlock;
+    BasicBlock** insertAfter    = &insertionPoint;
 
     // Keep track of which blocks were handled by try region cloning
     //
@@ -851,48 +857,43 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
             clonedStmt = clonedStmt->GetNextStmt();
         }
 
+        // todo -- pgo updates
+
         if (a.m_isGuard)
         {
-            // Slow path -- gdv will always fail
-            //
-            Statement* const slowLastStmt = a.m_block->lastStmt();
-            GuardInfo        slowGuardInfo;
-            GenTree* const   slowGuardRelop = IsGuard(a.m_block->lastStmt(), &slowGuardInfo);
-            assert(slowGuardRelop != nullptr);
-            // more asserts...
+            {
+                // Fast path -- gdv will always succeed
+                //
+                GuardInfo      fastGuardInfo;
+                GenTree* const fastGuardRelop = IsGuard(a.m_block, &fastGuardInfo);
+                assert(fastGuardRelop != nullptr);
+                bool const      keepTrueEdge = fastGuardRelop->OperIs(GT_EQ);
+                FlowEdge* const retainedEdge = keepTrueEdge ? a.m_block->GetTrueEdge() : a.m_block->GetFalseEdge();
+                FlowEdge* const removedEdge  = keepTrueEdge ? a.m_block->GetFalseEdge() : a.m_block->GetTrueEdge();
 
-            if (slowGuardRelop->OperIs(GT_NE))
-            {
-                // branch if enum.type NE info->m_type
-                //
-                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
-            }
-            else
-            {
-                // branch if enum.type EQ info->m_type
-                //
-                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
-            }
+                JITDUMP("Modifying fast path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", a.m_block->bbNum,
+                        retainedEdge->getDestinationBlock()->bbNum);
+                comp->fgRemoveRefPred(removedEdge);
+                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
 
-            // Fast path -- gdv will always succeed
-            //
-            Statement* const fastLastStmt = newBlock->lastStmt();
-            GuardInfo        fastGuardInfo;
-            GenTree* const   fastGuardRelop = IsGuard(fastLastStmt, &fastGuardInfo);
-            assert(fastGuardRelop != nullptr);
-            // more asserts...
-
-            if (fastGuardRelop->OperIs(GT_NE))
-            {
-                // branch if enum.type NE info->m_type
-                //
-                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetFalseEdge());
+                // could extract SE's
+                a.m_block->lastStmt()->SetRootNode(fastGuardRelop);
             }
-            else
             {
-                // branch if enum.type EQ info->m_type
+                // Slow path -- gdv will always fail
                 //
-                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, a.m_block->GetTrueEdge());
+                GuardInfo      slowGuardInfo;
+                GenTree* const slowGuardRelop = IsGuard(newBlock, &slowGuardInfo);
+                assert(slowGuardRelop != nullptr);
+                bool const      keepTrueEdge = slowGuardRelop->OperIs(GT_NE);
+                FlowEdge* const retainedEdge = keepTrueEdge ? newBlock->GetTrueEdge() : newBlock->GetFalseEdge();
+                FlowEdge* const removedEdge  = keepTrueEdge ? newBlock->GetFalseEdge() : newBlock->GetTrueEdge();
+
+                JITDUMP("Modifying slow path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", newBlock->bbNum,
+                        retainedEdge->getDestinationBlock()->bbNum);
+                comp->fgRemoveRefPred(removedEdge);
+                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
+                newBlock->lastStmt()->SetRootNode(slowGuardRelop);
             }
         }
     }
