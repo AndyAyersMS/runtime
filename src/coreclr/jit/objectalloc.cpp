@@ -696,6 +696,13 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
 //   info -- info about the cloning opportunity
 //
 //
+// Notes:
+//   The cloned blocks become the "fast path" where the enumerator object allocated
+//   in info.m_allocBlock is used. The original blocks are the slow path where it
+//   is unclear which object (and which type of object) is used.
+//
+//   In the cloned blocks, the enumerator local is updated to a new local.
+//
 void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 {
     JITDUMP("\nCloning to ensure allocation at " FMT_BB " does not escape\n", info->m_allocBlock->bbNum);
@@ -764,8 +771,7 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 
     // Create a new local for the enumerator uses in the cloned code
     //
-    unsigned const newEnumeratorLocal =
-        comp->lvaGrabTemp(/* shortLifetime */ false DEBUGARG("specialized enumerator local"));
+    unsigned const newEnumeratorLocal = comp->lvaGrabTemp(/* shortLifetime */ false DEBUGARG("fast-path enumerator"));
 
     comp->lvaTable[newEnumeratorLocal].lvType      = TYP_REF;
     comp->lvaTable[newEnumeratorLocal].lvSingleDef = 1;
@@ -807,16 +813,16 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 
     ReplaceVisitor visitor(comp, info->m_local, newEnumeratorLocal);
 
-    // Rewrite enumerator var uses in the cloned blocks to reference
+    // Rewrite enumerator var uses in the cloned (fast) blocks to reference
     // the new enumerator local.
     //
-    // Specialize GDV tests in the cloned code to always return true.
+    // Specialize GDV tests in the cloned blocks to always return true.
     //
-    // Note we'd figure this out eventually anyways (since the test var
-    // has the exact type, but we want to accerate thsi so that our new
-    // enumerator var does not appear to escape or be exposed.
+    // Note we'd figure this out eventually anyways (since the new enumerator
+    // var has an the exact type, but we want to accerate this so that our new
+    // enumerator var does not appear to be exposed.
     //
-    // Specialize GDV tests in the cloned code to always return true.
+    // Specialize GDV tests in the original code to always return false.
     //
     // We would not figure this out eventually anyways, as the unknown
     // enumerator may well have the right type. The main goal here is
@@ -857,48 +863,50 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
             clonedStmt = clonedStmt->GetNextStmt();
         }
 
-        // todo -- pgo updates
-
-        if (a.m_isGuard)
+        if (!a.m_isGuard)
         {
-            {
-                // Fast path -- gdv will always succeed
-                //
-                GuardInfo      fastGuardInfo;
-                GenTree* const fastGuardRelop = IsGuard(a.m_block, &fastGuardInfo);
-                assert(fastGuardRelop != nullptr);
-                bool const      keepTrueEdge = fastGuardRelop->OperIs(GT_EQ);
-                FlowEdge* const retainedEdge = keepTrueEdge ? a.m_block->GetTrueEdge() : a.m_block->GetFalseEdge();
-                FlowEdge* const removedEdge  = keepTrueEdge ? a.m_block->GetFalseEdge() : a.m_block->GetTrueEdge();
+            continue;
+        }
 
-                JITDUMP("Modifying fast path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", a.m_block->bbNum,
-                        retainedEdge->getDestinationBlock()->bbNum);
-                comp->fgRemoveRefPred(removedEdge);
-                a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
+        // todo -- pgo updates
+        {
+            // Original/Slow path -- gdv will always fail
+            //
+            GuardInfo      slowGuardInfo;
+            GenTree* const slowGuardRelop = IsGuard(a.m_block, &slowGuardInfo);
+            assert(slowGuardRelop != nullptr);
+            bool const      keepTrueEdge = slowGuardRelop->OperIs(GT_NE);
+            FlowEdge* const retainedEdge = keepTrueEdge ? a.m_block->GetTrueEdge() : a.m_block->GetFalseEdge();
+            FlowEdge* const removedEdge  = keepTrueEdge ? a.m_block->GetFalseEdge() : a.m_block->GetTrueEdge();
 
-                // could extract SE's
-                a.m_block->lastStmt()->SetRootNode(fastGuardRelop);
-            }
-            {
-                // Slow path -- gdv will always fail
-                //
-                GuardInfo      slowGuardInfo;
-                GenTree* const slowGuardRelop = IsGuard(newBlock, &slowGuardInfo);
-                assert(slowGuardRelop != nullptr);
-                bool const      keepTrueEdge = slowGuardRelop->OperIs(GT_NE);
-                FlowEdge* const retainedEdge = keepTrueEdge ? newBlock->GetTrueEdge() : newBlock->GetFalseEdge();
-                FlowEdge* const removedEdge  = keepTrueEdge ? newBlock->GetFalseEdge() : newBlock->GetTrueEdge();
+            JITDUMP("Modifying slow path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", a.m_block->bbNum,
+                    retainedEdge->getDestinationBlock()->bbNum);
+            comp->fgRemoveRefPred(removedEdge);
+            a.m_block->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
+            a.m_block->lastStmt()->SetRootNode(slowGuardRelop);
+        }
 
-                JITDUMP("Modifying slow path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", newBlock->bbNum,
-                        retainedEdge->getDestinationBlock()->bbNum);
-                comp->fgRemoveRefPred(removedEdge);
-                newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
-                newBlock->lastStmt()->SetRootNode(slowGuardRelop);
-            }
+        {
+            // Cloned/Fast path -- gdv will always succeed
+            //
+            GuardInfo      fastGuardInfo;
+            GenTree* const fastGuardRelop = IsGuard(newBlock, &fastGuardInfo);
+            assert(fastGuardRelop != nullptr);
+            bool const      keepTrueEdge = fastGuardRelop->OperIs(GT_EQ);
+            FlowEdge* const retainedEdge = keepTrueEdge ? newBlock->GetTrueEdge() : newBlock->GetFalseEdge();
+            FlowEdge* const removedEdge  = keepTrueEdge ? newBlock->GetFalseEdge() : newBlock->GetTrueEdge();
+
+            JITDUMP("Modifying fast path GDV guard " FMT_BB " to always branch to " FMT_BB "\n", newBlock->bbNum,
+                    retainedEdge->getDestinationBlock()->bbNum);
+            comp->fgRemoveRefPred(removedEdge);
+            newBlock->SetKindAndTargetEdge(BBJ_ALWAYS, retainedEdge);
+
+            // could extract SE's
+            newBlock->lastStmt()->SetRootNode(fastGuardRelop);
         }
     }
 
-    // Modify allocation block to branch to clone.
+    // Modify the allocation block to branch to the start of the fast path
     //
     BasicBlock* const firstBlock       = (*info->m_blocksToClone)[0];
     BasicBlock*       firstClonedBlock = nullptr;
@@ -994,77 +1002,7 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
             if (tree->OperIsLocalStore())
             {
                 lclEscapes = false;
-
-                // See if this is enumeratorLocal = ALLOCOBJ
-                // If so we will set up a pseudo-var for tracking conditional escapes.
-                //
-                // Since we are running in RPO, this allocation site will be seen before
-                // any guarded uses.
-                //
-                GenTree* const data = tree->AsLclVarCommon()->Data();
-
-                // Note this may be a conditional allocation. We will try and track the conditions
-                // under which it escapes. GDVs are a nice subset because the conditions are stylized,
-                // and the condition analysis seems tractable, and we expect the un-inlined failed
-                // GDVs to be the main causes of escapes.
-                //
-                // TODO (perhaps): check this allocation is guarded (though we likely want success, not failure)
-                //
-                if (data->OperIs(GT_ALLOCOBJ) && m_compiler->hasImpEnumeratorGdvLocalMap())
-                {
-                    // This is the allocation of concrete enumerator under GDV.
-                    // Find the local that will represent its uses (we have kept track of this during
-                    // importation and GDV expansion). Note it is usually *not* lclNum.
-                    //
-                    // We will keep special track of all accesses to this local.
-                    //
-                    Compiler::NodeToUnsignedMap* const map             = m_compiler->getImpEnumeratorGdvLocalMap();
-                    unsigned                           enumeratorLocal = BAD_VAR_NUM;
-                    if (map->Lookup(data, &enumeratorLocal))
-                    {
-                        // If it turns out we can't stack allocate this object even if it does not escape
-                        // then don't bother setting up tracking.
-                        //
-                        CORINFO_CLASS_HANDLE clsHnd = data->AsAllocObj()->gtAllocObjClsHnd;
-                        const char*          reason = nullptr;
-
-                        if (m_allocator->CanAllocateLclVarOnStack(enumeratorLocal, clsHnd, &reason,
-                                                                  /* preliminaryCheck */ true))
-                        {
-                            // We are going to conditionally track accesses to this local via a pseudo local.
-                            // We should have been able to predict in advance how many we'll need.
-                            //
-                            const unsigned pseudoLocal = m_allocator->NewPseudoLocal();
-                            assert(pseudoLocal != BAD_VAR_NUM);
-                            bool added = m_allocator->m_EnumeratorLocalToPseudoLocalMap.AddOrUpdate(enumeratorLocal,
-                                                                                                    pseudoLocal);
-                            assert(added);
-
-                            // We will query this info if we see CALL(enumeratorLocal)
-                            // during subsequent analysis, to verify that access is
-                            // under the same type guard.
-                            //
-                            CompAllocator alloc(m_compiler->getAllocator(CMK_ObjectAllocator));
-                            GuardInfo*    info  = new (alloc) GuardInfo();
-                            info->m_local       = enumeratorLocal;
-                            info->m_type        = clsHnd;
-                            info->m_appearances = new (alloc) jitstd::vector<EnumeratorVarAppearance>(alloc);
-                            info->m_allocBlock  = m_block;
-                            m_allocator->m_GuardMap.Set(pseudoLocal, info);
-
-                            JITDUMP(
-                                "Enumerator allocation [%06u]: will track accesses to V%02u guarded by type %s via P%02u\n",
-                                m_compiler->dspTreeID(data), enumeratorLocal, m_compiler->eeGetClassName(clsHnd),
-                                pseudoLocal);
-                        }
-                        else
-                        {
-                            JITDUMP(
-                                "Enumerator allocation [%06u]: enumerator type %s cannot be stack allocated, so not tracking enumerator local V%02u\n",
-                                m_compiler->dspTreeID(data), m_compiler->eeGetClassName(clsHnd), enumeratorLocal);
-                        }
-                    }
-                }
+                m_allocator->CheckForGuardedAllocation(m_block, tree, lclNum);
             }
             else if (tree->OperIs(GT_LCL_VAR) && tree->TypeIs(TYP_REF, TYP_BYREF, TYP_I_IMPL))
             {
@@ -1129,6 +1067,117 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
             BuildConnGraphVisitor buildConnGraphVisitor(this, block, stmt);
             buildConnGraphVisitor.WalkTree(stmt->GetRootNodePointer(), nullptr);
         }
+    }
+}
+
+//------------------------------------------------------------------------------
+// CheckForGuardedAllocation - see if this store is guarded by GDV and is
+//    the store of a newly allocated object
+//
+// Arguments:
+//    block  - block containing tree
+//    tree   - local store node
+//    lclNum - local being stored to
+//
+// Notes:
+//    Also keeps track of temporaries that convey the new object to its
+//    final GDV "destination" local.
+//
+void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum)
+{
+    assert(tree->OperIsLocalStore());
+
+    if (!comp->hasImpEnumeratorGdvLocalMap())
+    {
+        // We didn't flag any allocations of interest during importation,
+        // so there is nothing to do here.
+    }
+
+    GenTree* const data = tree->AsLclVarCommon()->Data();
+
+    // This may be a conditional allocation. We will try and track the conditions
+    // under which it escapes. GDVs are a nice subset because the conditions are stylized,
+    // and the condition analysis seems tractable, and we expect the un-inlined failed
+    // GDVs to be the main causes of escapes.
+    //
+    if (data->OperIs(GT_ALLOCOBJ))
+    {
+        // See if this store is under a GDV test.
+        //
+        GuardInfo controllingGDV;
+        if (IsGuarded(block, tree, &controllingGDV))
+        {
+            // This is the allocation of concrete class under GDV.
+            //
+            // Find the local that will ultimately represent its uses (we have kept track of
+            // this during importation and GDV expansion). Note it is usually *not* lclNum.
+            //
+            // We will keep special track of all accesses to this local.
+            //
+            Compiler::NodeToUnsignedMap* const map             = comp->getImpEnumeratorGdvLocalMap();
+            unsigned                           enumeratorLocal = BAD_VAR_NUM;
+            if (map->Lookup(data, &enumeratorLocal))
+            {
+                // If it turns out we can't stack allocate this new object even if it does not escape,
+                // then don't bother setting up tracking.
+                //
+                CORINFO_CLASS_HANDLE clsHnd = data->AsAllocObj()->gtAllocObjClsHnd;
+                const char*          reason = nullptr;
+
+                if (CanAllocateLclVarOnStack(enumeratorLocal, clsHnd, &reason,
+                                             /* preliminaryCheck */ true))
+                {
+                    // We are going to conditionally track accesses to the enumerator local via a pseudo local.
+                    //
+                    const unsigned pseudoLocal = NewPseudoLocal();
+                    assert(pseudoLocal != BAD_VAR_NUM);
+                    bool added = m_EnumeratorLocalToPseudoLocalMap.AddOrUpdate(enumeratorLocal, pseudoLocal);
+                    assert(added);
+
+                    // We will query this info if we see CALL(enumeratorLocal)
+                    // during subsequent analysis, to verify that access is
+                    // under the same guard conditions.
+                    //
+                    CompAllocator alloc(comp->getAllocator(CMK_ObjectAllocator));
+                    GuardInfo*    info  = new (alloc) GuardInfo();
+                    info->m_local       = enumeratorLocal;
+                    info->m_type        = clsHnd;
+                    info->m_appearances = new (alloc) jitstd::vector<EnumeratorVarAppearance>(alloc);
+                    info->m_allocBlock  = block;
+                    info->m_allocTree   = data;
+                    m_GuardMap.Set(pseudoLocal, info);
+
+                    // If this is not a direct assignment to the enumerator var we also need to
+                    // track the temps that will appear in between. Later we will rewrite these
+                    // to a fresh set of temps.
+                    //
+                    if (lclNum != enumeratorLocal)
+                    {
+                        info->m_allocTemps = new (alloc) jitstd::vector<unsigned>(alloc);
+                        info->m_allocTemps->push_back(lclNum);
+                    }
+
+                    JITDUMP("Enumerator allocation [%06u]: will track accesses to V%02u guarded by type %s via P%02u\n",
+                            comp->dspTreeID(data), enumeratorLocal, comp->eeGetClassName(clsHnd), pseudoLocal);
+                }
+                else
+                {
+                    JITDUMP(
+                        "Enumerator allocation [%06u]: enumerator type %s cannot be stack allocated, so not tracking enumerator local V%02u\n",
+                        comp->dspTreeID(data), comp->eeGetClassName(clsHnd), enumeratorLocal);
+                }
+            }
+            else
+            {
+                // This allocation is not currently of interest
+            }
+        }
+        else
+        {
+            // This allocation was not done under a GDV guard
+        }
+
+        return;
     }
 }
 

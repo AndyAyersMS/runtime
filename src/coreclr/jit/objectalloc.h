@@ -47,7 +47,9 @@ struct GuardInfo
     unsigned                                 m_local         = BAD_VAR_NUM;
     CORINFO_CLASS_HANDLE                     m_type          = NO_CLASS_HANDLE;
     jitstd::vector<EnumeratorVarAppearance>* m_appearances   = nullptr;
+    GenTree*                                 m_allocTree     = nullptr;
     BasicBlock*                              m_allocBlock    = nullptr;
+    jitstd::vector<unsigned>*                m_allocTemps    = nullptr;
     jitstd::vector<BasicBlock*>*             m_blocksToClone = nullptr;
     weight_t                                 m_profileScale  = 0.0;
     bool                                     m_canClone      = false;
@@ -111,8 +113,12 @@ private:
     unsigned int MorphAllocObjNodeIntoStackAlloc(
         GenTreeAllocObj* allocObj, CORINFO_CLASS_HANDLE clsHnd, bool isValueClass, BasicBlock* block, Statement* stmt);
     struct BuildConnGraphVisitorCallbackData;
-    bool     CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum, BasicBlock* block);
-    void     UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
+    bool CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum, BasicBlock* block);
+    void UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
+
+    // Conditional allocation support
+    //
+    void     CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info);
     GenTree* IsGuard(BasicBlock* block, GuardInfo* info);
     unsigned NewPseudoLocal();
@@ -124,6 +130,7 @@ private:
     bool CanClone(GuardInfo* info);
     void CloneAndSpecialize(GuardInfo* info);
     void CloneAndSpecialize();
+
     static const unsigned int s_StackAllocMaxSize = 0x2000U;
 };
 
