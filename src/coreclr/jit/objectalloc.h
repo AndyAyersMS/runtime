@@ -44,15 +44,17 @@ struct EnumeratorVarAppearance
 //
 struct GuardInfo
 {
-    unsigned                                 m_local         = BAD_VAR_NUM;
-    CORINFO_CLASS_HANDLE                     m_type          = NO_CLASS_HANDLE;
-    jitstd::vector<EnumeratorVarAppearance>* m_appearances   = nullptr;
-    GenTree*                                 m_allocTree     = nullptr;
-    BasicBlock*                              m_allocBlock    = nullptr;
-    jitstd::vector<unsigned>*                m_allocTemps    = nullptr;
-    jitstd::vector<BasicBlock*>*             m_blocksToClone = nullptr;
-    weight_t                                 m_profileScale  = 0.0;
-    bool                                     m_canClone      = false;
+    unsigned                                 m_local           = BAD_VAR_NUM;
+    CORINFO_CLASS_HANDLE                     m_type            = NO_CLASS_HANDLE;
+    jitstd::vector<EnumeratorVarAppearance>* m_appearances     = nullptr;
+    GenTree*                                 m_allocTree       = nullptr;
+    BasicBlock*                              m_allocBlock      = nullptr;
+    jitstd::vector<unsigned>*                m_allocTemps      = nullptr;
+    jitstd::vector<BasicBlock*>*             m_blocksToClone   = nullptr;
+    weight_t                                 m_profileScale    = 0.0;
+    bool                                     m_checkedCanClone = false;
+    bool                                     m_canClone        = false;
+    bool                                     m_willClone       = false;
 };
 
 typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GuardInfo*> GuardMap;
@@ -116,7 +118,7 @@ private:
     bool CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum, BasicBlock* block);
     void UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
 
-    // Conditional allocation support
+    // Conditionally escaping allocation support
     //
     void     CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info, bool testOutcome);
@@ -127,7 +129,13 @@ private:
         return m_maxPseudoLocals > 0;
     }
     void RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use, bool isDef);
+    bool AnalyzeIfCloningCanPreventEscape(BitVecTraits* bitVecTraits,
+                                          BitVec&       escapingNodes,
+                                          BitVec&       escapingNodesToProcess);
     bool CanClone(GuardInfo* info);
+    bool CheckCanClone(GuardInfo* info);
+    bool CloneOverlaps(GuardInfo* info);
+    bool ShouldClone(GuardInfo* info);
     void CloneAndSpecialize(GuardInfo* info);
     void CloneAndSpecialize();
 

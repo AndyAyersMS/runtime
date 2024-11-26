@@ -309,7 +309,7 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
 
 void ObjectAllocator::ComputeEscapingNodes(BitVecTraits* bitVecTraits, BitVec& escapingNodes)
 {
-    BitSetShortLongRep escapingNodesToProcess = BitVecOps::MakeCopy(bitVecTraits, escapingNodes);
+    BitVec escapingNodesToProcess = BitVecOps::MakeCopy(bitVecTraits, escapingNodes);
 
     auto computeClosure = [&]() {
         JITDUMP("\nComputing escape closure\n\n");
@@ -361,61 +361,14 @@ void ObjectAllocator::ComputeEscapingNodes(BitVecTraits* bitVecTraits, BitVec& e
 
     computeClosure();
 
-    // See if any enumerator locals are currently unescaping and also assigned
-    // to a pseudolocal... if so, by suitable cloning and rewriting, we can make
-    // sure those locals do not actually escape.
-    //
-    for (unsigned p = 0; p < m_numPseudoLocals; p++)
+    if (m_numPseudoLocals > 0)
     {
-        unsigned const  pseudoLocal            = p + comp->lvaCount;
-        unsigned        lclNum                 = BAD_VAR_NUM;
-        BitVec          pseudoLocalAdjacencies = m_ConnGraphAdjacencyMatrix[pseudoLocal];
-        BitVecOps::Iter iterator(bitVecTraits, pseudoLocalAdjacencies);
-        while (iterator.NextElem(&lclNum))
+        bool newEscapes = AnalyzeIfCloningCanPreventEscape(bitVecTraits, escapingNodes, escapingNodesToProcess);
+        if (newEscapes)
         {
-            if (BitVecOps::IsMember(bitVecTraits, escapingNodes, lclNum))
-            {
-                JITDUMP("   V%02u escapes independently of P%02u\n", lclNum, pseudoLocal);
-                continue;
-            }
-
-            GuardInfo* info;
-            const bool hasInfo  = m_GuardMap.Lookup(pseudoLocal, &info);
-            bool       canClone = false;
-
-            if (hasInfo)
-            {
-                JITDUMP("   P%02u is guarding the escape of V%02u\n", pseudoLocal, lclNum);
-                JITDUMP("   Escapes only when V%02u.Type NE %s\n", info->m_local, comp->eeGetClassName(info->m_type));
-                JITDUMP("   V%02u has %u appearances\n", info->m_local, info->m_appearances->size());
-
-                // We may be able to clone and specialize the enumerator uses to ensure
-                // that the allocated enumerator does not escape.
-                //
-                comp->Metrics.EnumeratorGDVProvisionalNoEscape++;
-
-                // See if cloning is viable...
-                //
-                canClone = CanClone(info);
-
-                // Todo: if there are multiple cloning opportunities make sure
-                // they don't overlap somehow, and we're willing to pay for all of them.
-            }
-
-            if (!canClone)
-            {
-                JITDUMP("   not optimizing, so will mark P%02u as escaping\n", pseudoLocal);
-                MarkLclVarAsEscaping(pseudoLocal);
-                BitVecOps::AddElemD(bitVecTraits, escapingNodesToProcess, pseudoLocal);
-            }
-            else
-            {
-                m_regionsToClone++;
-            }
+            computeClosure();
         }
     }
-
-    computeClosure();
 }
 
 //------------------------------------------------------------------------------
@@ -1282,6 +1235,124 @@ void ObjectAllocator::RewriteUses()
 }
 
 //------------------------------------------------------------------------------
+// AnalyzeIfCloningCanPreventEscape: see if by cloning we can ensure an object
+//    does not escape.
+//
+// Arguments:
+//   bitVecTraits                       - Bit vector traits
+//   escapingNodes               [in]   - current set of escaping nodes
+//   escapingNodesToProcess  [in/out]   - set of newly escaping nodes
+//
+// Returns:
+//   true, if there are any newly escaping nodes
+//
+// Notes:
+//   During our analysis we have may have noted conditionally escaping objects
+//   and var references and connected them to a pseduolocal, along with information
+//   about how we could clone blocks to ensure that the object could be stack allocated.
+//
+//   The current assumption is that these nodes do not escape, but to ensure
+//   that we must be able to clone the code and remove the potential for escape
+//
+//   So, we  verify for each case that we can clone; if not, mark we the pseudolocal
+//   as escaping. If any pseudlocal now escapes, we return true so that the main
+//   analysis can update its closure.
+//
+//   We may choose not to clone a candiate for several reasons:
+//   * too much EH already in the method, or some other reason cloning is infeasible
+//   * two different candidates have overlapping clone regions
+//   * the cost/benefit analysis does not look favorable
+//
+bool ObjectAllocator::AnalyzeIfCloningCanPreventEscape(BitVecTraits* bitVecTraits,
+                                                       BitVec&       escapingNodes,
+                                                       BitVec&       escapingNodesToProcess)
+{
+    bool newEscapes = false;
+
+    for (unsigned p = 0; p < m_numPseudoLocals; p++)
+    {
+        unsigned const pseudoLocal = p + comp->lvaCount;
+        bool           canClone    = true;
+        GuardInfo*     info        = nullptr;
+
+        if (canClone)
+        {
+            const bool hasInfo = m_GuardMap.Lookup(pseudoLocal, &info);
+            if (!hasInfo)
+            {
+                // We never found any conditional allocation attached to this pseudoLocal.
+                //
+                JITDUMP("   P%02u has no guard info\n", pseudoLocal);
+                canClone = false;
+            }
+        }
+
+        unsigned        lclNum                 = BAD_VAR_NUM;
+        BitVec          pseudoLocalAdjacencies = m_ConnGraphAdjacencyMatrix[pseudoLocal];
+        BitVecOps::Iter iterator(bitVecTraits, pseudoLocalAdjacencies);
+        while (canClone && iterator.NextElem(&lclNum))
+        {
+            if (BitVecOps::IsMember(bitVecTraits, escapingNodes, lclNum))
+            {
+                // The enmerator var or a related var had escaping uses somewhere in the method,
+                // not under a failing GDV or any GDV.
+                //
+                JITDUMP("   V%02u escapes independently of P%02u\n", lclNum, pseudoLocal);
+                canClone = false;
+                break;
+            }
+
+            // We may be able to clone and specialize the enumerator uses to ensure
+            // that the allocated enumerator does not escape.
+            //
+            JITDUMP("   P%02u is guarding the escape of V%02u\n", pseudoLocal, lclNum);
+            JITDUMP("   Escapes only when V%02u.Type NE %s\n", info->m_local, comp->eeGetClassName(info->m_type));
+            JITDUMP("   V%02u has %u appearances\n", info->m_local, info->m_appearances->size());
+
+            comp->Metrics.EnumeratorGDVProvisionalNoEscape++;
+
+            // See if cloning is viable.
+            //
+            if (!CanClone(info))
+            {
+                canClone = false;
+                break;
+            }
+
+            // See if this region is profitable to clone
+            //
+            if (!ShouldClone(info))
+            {
+                canClone = false;
+                break;
+            }
+        }
+
+        // See if this region overlaps with other regions we've already decided to clone
+        //
+        if (canClone)
+        {
+            canClone = CloneOverlaps(info);
+        }
+
+        if (!canClone)
+        {
+            JITDUMP("   not optimizing, so will mark P%02u as escaping\n", pseudoLocal);
+            MarkLclVarAsEscaping(pseudoLocal);
+            BitVecOps::AddElemD(bitVecTraits, escapingNodesToProcess, pseudoLocal);
+            newEscapes = true;
+        }
+        else
+        {
+            info->m_willClone = true;
+            m_regionsToClone++;
+        }
+    }
+
+    return newEscapes;
+}
+
+//------------------------------------------------------------------------------
 // NewPseudoLocal: return index of a new pseudo local.
 //
 // Returns:
@@ -1632,6 +1703,36 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
 }
 
 //------------------------------------------------------------------------------
+// CloneOverlaps: check if this cloning would overlap with other clonings
+//
+// Arguments:
+//   info -- [in, out] info about the cloning opportunity
+//
+// Returns:
+//   true if cloning overlaps with some other cloning
+//
+bool ObjectAllocator::CloneOverlaps(GuardInfo* info)
+{
+    // tbd
+    return false;
+}
+
+//------------------------------------------------------------------------------
+// ShouldClone: check if this cloning looks profitable
+//
+// Arguments:
+//   info -- info about the cloning opportunity
+//
+// Returns:
+//   true if cloning looks profitable
+//
+bool ObjectAllocator::ShouldClone(GuardInfo* info)
+{
+    // tbd
+    return true;
+}
+
+//------------------------------------------------------------------------------
 // CanClone: check that cloning can remove all escaping references and
 //   is a reasonble thing to do
 //
@@ -1640,10 +1741,35 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
 //
 // Returns:
 //   true if cloning can remove all escaping references
-//   and if cloning is likely to be a good perf/size tradeoff
 //
 bool ObjectAllocator::CanClone(GuardInfo* info)
 {
+    // If we already analyzed this case, return what we learned before.
+    //
+    if (!info->m_checkedCanClone)
+    {
+        CheckCanClone(info);
+        info->m_checkedCanClone = true;
+    }
+
+    return info->m_canClone;
+}
+
+//------------------------------------------------------------------------------
+// CheckCanClone: check that cloning can remove all escaping references and
+//   is a reasonble thing to do
+//
+// Arguments:
+//   info -- [in, out] info about the cloning opportunity
+//
+// Returns:
+//   true if cloning can remove all escaping references
+//
+//
+bool ObjectAllocator::CheckCanClone(GuardInfo* info)
+{
+    assert(!info->m_checkedCanClone);
+
     // The allocation site must not be in a loop (stack allocation limitation)
     //
     // Note if we can prove non-escape but can't stack allocate, we might be
@@ -1930,7 +2056,7 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
     JITDUMP("Profile weight for clone " FMT_WT " overall " FMT_WT ", will scale clone at " FMT_WT "\n", weightForClone,
             defBlock->bbWeight, scaleFactor);
 
-    // Save of blocks that we need to clone
+    // Save off blocks that we need to clone
     //
     info->m_blocksToClone = visited;
     info->m_canClone      = true;
@@ -1959,6 +2085,8 @@ bool ObjectAllocator::CanClone(GuardInfo* info)
 //
 void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
 {
+    assert(info->m_canClone);
+    assert(info->m_willClone);
     JITDUMP("\nCloning to ensure allocation at " FMT_BB " does not escape\n", info->m_allocBlock->bbNum);
 
     // Clone blocks in RPO order. If we find a try entry, clone that as a whole,
@@ -2185,7 +2313,7 @@ void ObjectAllocator::CloneAndSpecialize()
 
     for (GuardInfo* const g : GuardMap::ValueIteration(&m_GuardMap))
     {
-        if (!g->m_canClone)
+        if (!g->m_willClone)
         {
             continue;
         }
