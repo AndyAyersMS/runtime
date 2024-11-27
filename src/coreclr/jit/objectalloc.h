@@ -42,21 +42,41 @@ struct EnumeratorVarAppearance
     bool        m_isGuard;
 };
 
+// Information about def and uses of enumerator vars, plus...
+//
+struct EnumeratorVar
+{
+    EnumeratorVarAppearance*                  m_def                = nullptr;
+    jitstd::vector<EnumeratorVarAppearance*>* m_uses               = nullptr;
+    unsigned                                  m_cloneLcl           = BAD_VAR_NUM;
+    bool                                      m_hasMultipleDefs    = false;
+    bool                                      m_isAllocTemp        = false;
+    bool                                      m_isInitialAllocTemp = false;
+    bool                                      m_isFinalAllocTemp   = false;
+    bool                                      m_isUseTemp          = false;
+};
+
+typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, EnumeratorVar*> EnumeratorVarMap;
+
 // Describes a guarded enumerator cloning candidate
+// (also descrbes a random GDV guard, we should split that off).
 //
 struct GuardInfo
 {
-    unsigned                                 m_local           = BAD_VAR_NUM;
-    CORINFO_CLASS_HANDLE                     m_type            = NO_CLASS_HANDLE;
-    jitstd::vector<EnumeratorVarAppearance>* m_appearances     = nullptr;
-    GenTree*                                 m_allocTree       = nullptr;
-    BasicBlock*                              m_allocBlock      = nullptr;
-    jitstd::vector<unsigned>*                m_allocTemps      = nullptr;
-    jitstd::vector<BasicBlock*>*             m_blocksToClone   = nullptr;
-    weight_t                                 m_profileScale    = 0.0;
-    bool                                     m_checkedCanClone = false;
-    bool                                     m_canClone        = false;
-    bool                                     m_willClone       = false;
+    unsigned             m_local = BAD_VAR_NUM;
+    CORINFO_CLASS_HANDLE m_type  = NO_CLASS_HANDLE;
+    // jitstd::vector<EnumeratorVarAppearance>* m_appearances     = nullptr;
+    EnumeratorVarMap*            m_appearanceMap   = nullptr;
+    unsigned                     m_appearanceCount = 0;
+    GenTree*                     m_allocTree       = nullptr;
+    BasicBlock*                  m_allocBlock      = nullptr;
+    Statement*                   m_allocStmt       = nullptr;
+    jitstd::vector<unsigned>*    m_allocTemps      = nullptr;
+    jitstd::vector<BasicBlock*>* m_blocksToClone   = nullptr;
+    weight_t                     m_profileScale    = 0.0;
+    bool                         m_checkedCanClone = false;
+    bool                         m_canClone        = false;
+    bool                         m_willClone       = false;
 };
 
 typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, GuardInfo*> GuardMap;
