@@ -24,10 +24,11 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 //
 struct EnumeratorVarAppearance
 {
-    EnumeratorVarAppearance(BasicBlock* block, Statement* stmt, GenTree** use, bool isDef)
+    EnumeratorVarAppearance(BasicBlock* block, Statement* stmt, GenTree** use, unsigned lclNum, bool isDef)
         : m_block(block)
         , m_stmt(stmt)
         , m_use(use)
+        , m_lclNum(lclNum)
         , m_isDef(isDef)
         , m_isGuard(false)
     {
@@ -36,6 +37,7 @@ struct EnumeratorVarAppearance
     BasicBlock* m_block;
     Statement*  m_stmt;
     GenTree**   m_use;
+    unsigned    m_lclNum;
     bool        m_isDef;
     bool        m_isGuard;
 };
@@ -120,8 +122,9 @@ private:
 
     // Conditionally escaping allocation support
     //
-    void     CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum);
+    void     CheckForGuardedAllocationOrCopy(BasicBlock* block, Statement* stmt, GenTree* tree, unsigned lclNum);
     bool     CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsigned lclNum);
+    bool     CheckForEnumeratorUse(unsigned lclNum, unsigned dstLclNum);
     bool     IsGuarded(BasicBlock* block, GenTree* tree, GuardInfo* info, bool testOutcome);
     GenTree* IsGuard(BasicBlock* block, GuardInfo* info);
     unsigned NewPseudoLocal();
@@ -129,7 +132,7 @@ private:
     {
         return m_maxPseudoLocals > 0;
     }
-    void RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use, bool isDef);
+    void RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use);
     bool AnalyzeIfCloningCanPreventEscape(BitVecTraits* bitVecTraits,
                                           BitVec&       escapingNodes,
                                           BitVec&       escapingNodesToProcess);

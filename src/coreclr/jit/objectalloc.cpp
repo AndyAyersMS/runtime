@@ -212,13 +212,6 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
             unsigned const   lclNum = tree->AsLclVarCommon()->GetLclNum();
             LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
 
-            if (varDsc->lvIsEnumerator)
-            {
-                JITDUMP("Found enumerator V%02u %s at [%06u]\n", lclNum, tree->OperIsLocalStore() ? "def" : "use",
-                        m_compiler->dspTreeID(tree));
-                m_allocator->RecordAppearance(lclNum, m_block, m_stmt, use, tree->OperIsLocalStore());
-            }
-
             // If this local already escapes, no need to look further.
             //
             if (m_allocator->CanLclVarEscape(lclNum))
@@ -231,7 +224,7 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
             if (tree->OperIsLocalStore())
             {
                 lclEscapes = false;
-                m_allocator->CheckForGuardedAllocation(m_block, tree, lclNum);
+                m_allocator->CheckForGuardedAllocationOrCopy(m_block, m_stmt, tree, lclNum);
             }
             else if (tree->OperIs(GT_LCL_VAR) && tree->TypeIs(TYP_REF, TYP_BYREF, TYP_I_IMPL))
             {
@@ -249,6 +242,13 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
                     JITDUMP("V%02u first escapes via [%06u]\n", lclNum, m_compiler->dspTreeID(tree));
                 }
                 m_allocator->MarkLclVarAsEscaping(lclNum);
+            }
+            else
+            {
+                // Note uses or or defs of variables of interest to
+                // conditional escape analysis.
+                //
+                m_allocator->RecordAppearance(lclNum, m_block, m_stmt, use);
             }
 
             return Compiler::fgWalkResult::WALK_CONTINUE;
@@ -807,6 +807,11 @@ bool ObjectAllocator::CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parent
 
                 AddConnGraphEdge(dstLclNum, srcLclNum);
                 canLclVarEscapeViaParentStack = false;
+
+                // If the source of this store is an enumerator local,
+                // then the dest also becomes an enumerator local.
+                //
+                CheckForEnumeratorUse(srcLclNum, dstLclNum);
             }
             break;
 
@@ -1260,8 +1265,17 @@ bool ObjectAllocator::AnalyzeIfCloningCanPreventEscape(BitVecTraits* bitVecTrait
             // that the allocated enumerator does not escape.
             //
             JITDUMP("   P%02u is guarding the escape of V%02u\n", pseudoLocal, lclNum);
-            JITDUMP("   Escapes only when V%02u.Type NE %s\n", info->m_local, comp->eeGetClassName(info->m_type));
-            JITDUMP("   V%02u has %u appearances\n", info->m_local, info->m_appearances->size());
+            if (info->m_allocTemps != nullptr)
+            {
+                JITDUMP("   along with ");
+                for (unsigned v : *(info->m_allocTemps))
+                {
+                    JITDUMP("V%02u ", v);
+                }
+                JITDUMP("\n");
+            }
+            JITDUMP("   they escape only when V%02u.Type NE %s\n", info->m_local, comp->eeGetClassName(info->m_type));
+            JITDUMP("   V%02u + secondary vars have %u appearances\n", info->m_local, info->m_appearances->size());
 
             comp->Metrics.EnumeratorGDVProvisionalNoEscape++;
 
@@ -1574,11 +1588,13 @@ bool ObjectAllocator::CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsig
 }
 
 //------------------------------------------------------------------------------
-// CheckForGuardedAllocation - see if this store is guarded by GDV and is
-//    the store of a newly allocated object
+// CheckForGuardedAllocationOrCopy - see if this store is guarded by GDV and is
+//    the store of a newly allocated object, or a copy of a local known to hold
+//    references to such an object
 //
 // Arguments:
 //    block  - block containing tree
+//    stmt   - statement containing tree
 //    tree   - local store node
 //    lclNum - local being stored to
 //
@@ -1586,7 +1602,10 @@ bool ObjectAllocator::CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsig
 //    Also keeps track of temporaries that convey the new object to its
 //    final GDV "destination" local.
 //
-void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree, unsigned lclNum)
+void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
+                                                      Statement*  stmt,
+                                                      GenTree*    tree,
+                                                      unsigned    lclNum)
 {
     assert(tree->OperIsLocalStore());
 
@@ -1601,8 +1620,7 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
     // (needed by calls to IsGuarded, below).
     //
     assert(comp->m_domTree != nullptr);
-
-    GenTree* const data = tree->AsLclVarCommon()->Data();
+    GenTree*& data = tree->AsLclVarCommon()->Data();
 
     // This may be a conditional allocation. We will try and track the conditions
     // under which it escapes. GDVs are a nice subset because the conditions are stylized,
@@ -1656,18 +1674,17 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
                     info->m_allocTree   = data;
                     m_GuardMap.Set(pseudoLocal, info);
 
+                    JITDUMP("Enumerator allocation [%06u]: will track accesses to V%02u guarded by type %s via P%02u\n",
+                            comp->dspTreeID(data), enumeratorLocal, comp->eeGetClassName(clsHnd), pseudoLocal);
+
                     // If this is not a direct assignment to the enumerator var we also need to
                     // track the temps that will appear in between. Later we will rewrite these
                     // to a fresh set of temps.
                     //
                     if (lclNum != enumeratorLocal)
                     {
-                        info->m_allocTemps = new (alloc) jitstd::vector<unsigned>(alloc);
-                        info->m_allocTemps->push_back(lclNum);
+                        CheckForEnumeratorUse(enumeratorLocal, lclNum);
                     }
-
-                    JITDUMP("Enumerator allocation [%06u]: will track accesses to V%02u guarded by type %s via P%02u\n",
-                            comp->dspTreeID(data), enumeratorLocal, comp->eeGetClassName(clsHnd), pseudoLocal);
                 }
                 else
                 {
@@ -1689,9 +1706,75 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
             //
             JITDUMP("Allocation [%06u] is not under a GDV guard\n", comp->dspTreeID(data));
         }
-
-        return;
     }
+    else if (data->OperIs(GT_LCL_VAR))
+    {
+        // See if we are copying from one enumerator-referring local to another.
+        // This need not be under any guard.
+        //
+        unsigned const srcLclNum       = data->AsLclVarCommon()->GetLclNum();
+        const bool     isEnumeratorUse = CheckForEnumeratorUse(srcLclNum, lclNum);
+        if (isEnumeratorUse)
+        {
+            RecordAppearance(lclNum, block, stmt, &data);
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+// CheckForEnumeratorUse - see if this is a use of an enumerator var that is
+//    copied to another var.
+//
+// Arguments:
+//    lclNum - source of the copy
+//    dstLclNum - destination of the copy
+//
+// Returns:
+//    true if this is a copy
+//
+bool ObjectAllocator::CheckForEnumeratorUse(unsigned lclNum, unsigned dstLclNum)
+{
+    unsigned pseudoLocal = BAD_VAR_NUM;
+
+    if (m_EnumeratorLocalToPseudoLocalMap.TryGetValue(dstLclNum, &pseudoLocal))
+    {
+        // We already knew dstLclNum was a potential copy
+        //
+        return true;
+    }
+
+    if (!m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
+    {
+        // lclNum is not a potential source
+        //
+        return false;
+    }
+
+    GuardInfo* info = nullptr;
+    if (!m_GuardMap.Lookup(pseudoLocal, &info))
+    {
+        // We aren't interested in locals under this guard
+        //
+        return false;
+    }
+
+    // lclNum is an interesting enumerator var, so now so is dstLclNum.
+    //
+    const bool added = m_EnumeratorLocalToPseudoLocalMap.AddOrUpdate(dstLclNum, pseudoLocal);
+
+    assert(added);
+
+    JITDUMP("Enumerator allocation: will also track accesses to V%02u via P%02u\n", dstLclNum, pseudoLocal);
+
+    if (info->m_allocTemps == nullptr)
+    {
+        CompAllocator alloc(comp->getAllocator(CMK_ObjectAllocator));
+        info->m_allocTemps = new (alloc) jitstd::vector<unsigned>(alloc);
+    }
+
+    info->m_allocTemps->push_back(dstLclNum);
+
+    return true;
 }
 
 //------------------------------------------------------------------------------
@@ -1702,9 +1785,8 @@ void ObjectAllocator::CheckForGuardedAllocation(BasicBlock* block, GenTree* tree
 //   block  -- block holding the stmt
 //   stmt   -- stmt holding the use
 //   use    -- local var reference
-//   isDef  -- true if this is a def
 //
-void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use, bool isDef)
+void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, Statement* stmt, GenTree** use)
 {
     unsigned pseudoLocal = BAD_VAR_NUM;
     if (!m_EnumeratorLocalToPseudoLocalMap.TryGetValue(lclNum, &pseudoLocal))
@@ -1718,7 +1800,12 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
         return;
     }
 
-    EnumeratorVarAppearance e(block, stmt, use, isDef);
+    GenTree* const tree  = *use;
+    bool const     isDef = tree->OperIsLocalStore();
+
+    JITDUMP("Found enumerator V%02u %s at [%06u]\n", lclNum, isDef ? "def" : "use", comp->dspTreeID(tree));
+
+    EnumeratorVarAppearance e(block, stmt, use, lclNum, isDef);
     info->m_appearances->push_back(e);
 }
 
@@ -1812,6 +1899,13 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
             continue;
         }
 
+        // Todo -- what about "secondary" enumerator vars?
+        //
+        if (a.m_lclNum != info->m_local)
+        {
+            continue;
+        }
+
         if (defBlock != nullptr)
         {
             JITDUMP("V%02u multiply defined: " FMT_BB " and " FMT_BB "\n", info->m_local, defBlock->bbNum,
@@ -1846,6 +1940,13 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
     for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         if (a.m_isDef)
+        {
+            continue;
+        }
+
+        // Todo -- what about "secondary" enumerator vars?
+        //
+        if (a.m_lclNum != info->m_local)
         {
             continue;
         }
@@ -1958,6 +2059,13 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
     for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
         if (a.m_isDef)
+        {
+            continue;
+        }
+
+        // Todo -- what about "secondary" enumerator vars?
+        //
+        if (a.m_lclNum != info->m_local)
         {
             continue;
         }
@@ -2238,12 +2346,23 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
     //
     for (EnumeratorVarAppearance& a : *(info->m_appearances))
     {
+        // Todo -- what about "secondary" enumerator vars?
+        // Note those in the "preamble" may not need rewriting...?
+        // (or, we didn't clone the alloc block, so we need to special case that here and hack the one and only.
+        //
+        if (a.m_lclNum != info->m_local)
+        {
+            JITDUMP("NOT YET Updating V%02u use in " FMT_BB " (clone of " FMT_BB ") to V??\n", a.m_lclNum,
+                    a.m_block->bbNum, a.m_block->bbNum);
+            continue;
+        }
+
         BasicBlock* newBlock = nullptr;
         const bool  isCloned = map.Lookup(a.m_block, &newBlock);
         assert(isCloned && (newBlock != nullptr));
 
-        JITDUMP("Updating V%02u use in " FMT_BB " (clone of " FMT_BB ") to V%02u\n", info->m_local, newBlock->bbNum,
-                a.m_block->bbNum, newEnumeratorLocal);
+        JITDUMP("Updating V%02u %s in " FMT_BB " (clone of " FMT_BB ") to V%02u\n", a.m_lclNum,
+                a.m_isDef ? "def" : "use", newBlock->bbNum, a.m_block->bbNum, newEnumeratorLocal);
 
         // Find matching stmt/tree...
         //
@@ -2252,7 +2371,9 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
         {
             if (stmt == a.m_stmt)
             {
-                assert(GenTree::Compare(stmt->GetRootNode(), clonedStmt->GetRootNode()));
+                // This is only true if we haven't yet substituted into the clone
+                //
+                // assert(GenTree::Compare(stmt->GetRootNode(), clonedStmt->GetRootNode()));
 
                 JITDUMP("Before\n");
                 DISPTREE(clonedStmt->GetRootNode());
