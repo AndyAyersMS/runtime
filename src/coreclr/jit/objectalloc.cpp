@@ -224,7 +224,7 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
             if (tree->OperIsLocalStore())
             {
                 lclEscapes = false;
-                m_allocator->CheckForGuardedAllocationOrCopy(m_block, m_stmt, tree, lclNum);
+                m_allocator->CheckForGuardedAllocationOrCopy(m_block, m_stmt, use, lclNum);
             }
             else if (tree->OperIs(GT_LCL_VAR) && tree->TypeIs(TYP_REF, TYP_BYREF, TYP_I_IMPL))
             {
@@ -243,10 +243,9 @@ void ObjectAllocator::MarkEscapingVarsAndBuildConnGraph()
                 }
                 m_allocator->MarkLclVarAsEscaping(lclNum);
             }
-            else
+            else if (!tree->OperIsLocalStore())
             {
-                // Note uses or or defs of variables of interest to
-                // conditional escape analysis.
+                // Note uses of variables of interest to conditional escape analysis.
                 //
                 m_allocator->RecordAppearance(lclNum, m_block, m_stmt, use);
             }
@@ -1595,7 +1594,7 @@ bool ObjectAllocator::CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsig
 // Arguments:
 //    block  - block containing tree
 //    stmt   - statement containing tree
-//    tree   - local store node
+//    use    - pointer to local store node
 //    lclNum - local being stored to
 //
 // Notes:
@@ -1604,9 +1603,10 @@ bool ObjectAllocator::CheckForGuardedUse(BasicBlock* block, GenTree* tree, unsig
 //
 void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
                                                       Statement*  stmt,
-                                                      GenTree*    tree,
+                                                      GenTree**   use,
                                                       unsigned    lclNum)
 {
+    GenTree* const tree = *use;
     assert(tree->OperIsLocalStore());
 
     if (!CanHavePseudoLocals())
@@ -1620,7 +1620,7 @@ void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
     // (needed by calls to IsGuarded, below).
     //
     assert(comp->m_domTree != nullptr);
-    GenTree*& data = tree->AsLclVarCommon()->Data();
+    GenTree* const data = tree->AsLclVarCommon()->Data();
 
     // This may be a conditional allocation. We will try and track the conditions
     // under which it escapes. GDVs are a nice subset because the conditions are stylized,
@@ -1716,7 +1716,7 @@ void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
         const bool     isEnumeratorUse = CheckForEnumeratorUse(srcLclNum, lclNum);
         if (isEnumeratorUse)
         {
-            RecordAppearance(lclNum, block, stmt, &data);
+            RecordAppearance(lclNum, block, stmt, use);
         }
     }
 }
