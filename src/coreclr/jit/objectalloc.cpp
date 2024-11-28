@@ -1685,6 +1685,7 @@ void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
                     if (lclNum != enumeratorLocal)
                     {
                         CheckForEnumeratorUse(enumeratorLocal, lclNum);
+                        RecordAppearance(lclNum, block, stmt, use);
                     }
                 }
                 else
@@ -1813,7 +1814,8 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
     EnumeratorVar* v = nullptr;
     if (!varMap->Lookup(lclNum, &v))
     {
-        v = new (alloc) EnumeratorVar();
+        v                = new (alloc) EnumeratorVar();
+        v->m_appearances = new (alloc) jitstd::vector<EnumeratorVarAppearance*>(alloc);
         varMap->Set(lclNum, v);
     }
 
@@ -1833,11 +1835,14 @@ void ObjectAllocator::RecordAppearance(unsigned lclNum, BasicBlock* block, State
         {
             v->m_def = a;
         }
+
+        if (stmt == info->m_allocStmt)
+        {
+            v->m_isInitialAllocTemp = true;
+        }
     }
-    else
-    {
-        v->m_uses->push_back(a);
-    }
+
+    v->m_appearances->push_back(a);
 
     info->m_appearanceCount++;
 }
@@ -2000,7 +2005,7 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
     BasicBlock* const defBlock = v->m_def->m_block;
     Statement* const  defStmt  = v->m_def->m_stmt;
 
-    JITDUMP("V%02u has single def in " FMT_BB "at [%06u]\n", info->m_local, defBlock->bbNum,
+    JITDUMP("V%02u has single def in " FMT_BB " at [%06u]\n", info->m_local, defBlock->bbNum,
             comp->dspTreeID(defStmt->GetRootNode()));
 
     // We expect to be able to follow all paths from alloc block to defBlock
@@ -2116,9 +2121,11 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
         info->m_appearanceMap->Lookup(lclNum, &ev);
         assert(ev != nullptr);
 
-        for (EnumeratorVarAppearance* const a : *(ev->m_uses))
+        for (EnumeratorVarAppearance* const a : *(ev->m_appearances))
         {
-            if (a->m_stmt == a->m_block->lastStmt())
+            // If this is a use, see if it's part of a GDV guard.
+            //
+            if (!a->m_isDef && (a->m_stmt == a->m_block->lastStmt()))
             {
                 GuardInfo      tempInfo;
                 GenTree* const guardingRelop = IsGuard(a->m_block, &tempInfo);
@@ -2132,16 +2139,11 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
                 continue;
             }
 
-            // since defBlock postdominates all Ts and dominates all Us,
-            // we can use dfs numbers to sort which are Ts and which are Us.
+            // Since defBlock postdominates all Ts and dominates all Us,
+            // we can use dfs numbers to sort which temps are Ts and which are Us.
             //
             if (defBlock->bbPostorderNum < a->m_block->bbPostorderNum)
             {
-                if (defStmt == info->m_allocStmt)
-                {
-                    ev->m_isInitialAllocTemp = true;
-                }
-
                 ev->m_isAllocTemp = true;
             }
             else if (defBlock->bbPostorderNum == a->m_block->bbPostorderNum)
@@ -2165,18 +2167,13 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
                 ev->m_isUseTemp = true;
             }
 
-            // We don't expect to see these temps in guards
+            // We don't expect to see allocTemps or useTemps in guards
             //
-            if (a->m_block->KindIs(BBJ_COND) && (a->m_stmt == a->m_block->lastStmt()))
+            if (a->m_isGuard)
             {
-                GuardInfo      tempInfo;
-                GenTree* const guardingRelop = IsGuard(a->m_block, &tempInfo);
-                if (guardingRelop != nullptr)
-                {
-                    JITDUMP("Unexpected: %s temp V%02u is GDV guard at " FMT_BB "\n",
-                            ev->m_isAllocTemp ? "alloc" : "use", a->m_lclNum, a->m_block->bbNum);
-                    return false;
-                }
+                JITDUMP("Unexpected: %s temp V%02u is GDV guard at " FMT_BB "\n", ev->m_isAllocTemp ? "alloc" : "use",
+                        a->m_lclNum, a->m_block->bbNum);
+                return false;
             }
         }
 
@@ -2184,16 +2181,28 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
         //
         if (ev->m_isAllocTemp && ev->m_isUseTemp)
         {
-            JITDUMP("Unexpected: temp V%02u has appearances both before and after main var assignment " FMT_BB "\n",
+            JITDUMP("Unexpected: temp V%02u has appearances both before and after main var assignment in " FMT_BB "\n",
                     lclNum, defBlock->bbNum);
 
             return false;
         }
 
-        JITDUMP("Temp V%02u is a %s temp\n", ev->m_isAllocTemp ? "alloc" : "use");
+        if (ev->m_isAllocTemp || ev->m_isUseTemp)
+        {
+            JITDUMP("Temp V%02u is a %s temp", lclNum, ev->m_isAllocTemp ? "alloc" : "use");
+            if (ev->m_isInitialAllocTemp)
+            {
+                JITDUMP(" [initial]");
+            }
+            if (ev->m_isFinalAllocTemp)
+            {
+                JITDUMP(" [final]");
+            }
+            JITDUMP("\n");
+        }
     }
 
-    // The allocation block must dominate all T appearances, save for the final T appearance
+    // The allocation block must dominate all T appearances, save for the final T use.
     //
     for (unsigned lclNum : EnumeratorVarMap::KeyIteration(info->m_appearanceMap))
     {
@@ -2206,8 +2215,13 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
             continue;
         }
 
-        for (EnumeratorVarAppearance* const a : *(ev->m_uses))
+        for (EnumeratorVarAppearance* const a : *(ev->m_appearances))
         {
+            if (ev->m_isFinalAllocTemp && (a->m_block == defBlock) && !a->m_isDef)
+            {
+                continue;
+            }
+
             if (!comp->m_domTree->Dominates(allocBlock, a->m_block))
             {
                 JITDUMP("Alloc temp V%02u %s in " FMT_BB " not dominated by alloc " FMT_BB "\n", a->m_lclNum,
@@ -2235,7 +2249,7 @@ bool ObjectAllocator::CheckCanClone(GuardInfo* info)
             continue;
         }
 
-        for (EnumeratorVarAppearance* const a : *(ev->m_uses))
+        for (EnumeratorVarAppearance* const a : *(ev->m_appearances))
         {
             if (!comp->m_domTree->Dominates(defBlock, a->m_block))
             {
@@ -2504,13 +2518,22 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
         fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
         {
             // We could just bash all defs save for the initial temp def
+            // but this would make validating substitutions a bit harder,
+            // as some defs or uses would vanish.
             //
             GenTreeLclVarCommon* const node = (*use)->AsLclVarCommon();
             if (node->OperIs(GT_LCL_VAR, GT_STORE_LCL_VAR))
             {
-                if (m_info->m_appearanceMap->Lookup(node->GetLclNum()))
+                EnumeratorVar* ev = nullptr;
+                if (m_info->m_appearanceMap->Lookup(node->GetLclNum(), &ev))
                 {
-                    node->SetLclNum(m_newLclNum);
+                    // We leave the initial alloc temp as is; the the
+                    // object allocator rewriting will take care of it.
+                    //
+                    if (!ev->m_isInitialAllocTemp)
+                    {
+                        node->SetLclNum(m_newLclNum);
+                    }
                 }
                 MadeChanges = true;
             }
@@ -2536,14 +2559,31 @@ void ObjectAllocator::CloneAndSpecialize(GuardInfo* info)
     // enumerator may well have the right type. The main goal here is
     // to block GDV-inspired cloning of the "slow" loop.
     //
+    // (This is inefficient/odd, because for copies or trees with multiple
+    // uses we will process each one twice or more).
+    //
     for (unsigned lclNum : EnumeratorVarMap::KeyIteration(info->m_appearanceMap))
     {
         EnumeratorVar* ev = nullptr;
         info->m_appearanceMap->Lookup(lclNum, &ev);
         assert(ev != nullptr);
 
-        for (EnumeratorVarAppearance* const a : *(ev->m_uses))
+        for (EnumeratorVarAppearance* const a : *(ev->m_appearances))
         {
+            // We do not rewrite the initial temp appearances. These will be rewritten
+            // when the ALLOCOBJ is turned into a stack allocation.
+            //
+            // Also, we do not clone the allocBlock. Note if we do very early
+            // flow ops and push temp copies into the allocBlock we will have
+            // to rethink.... perhaps the initial temp will be the one live out
+            // of that block, not the one assigned by the ALLOCOBJ.
+            //
+            if (ev->m_isInitialAllocTemp)
+            {
+                continue;
+            }
+
+            assert(a->m_block != info->m_allocBlock);
             BasicBlock* newBlock = nullptr;
             const bool  isCloned = map.Lookup(a->m_block, &newBlock);
             assert(isCloned && (newBlock != nullptr));

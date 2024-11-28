@@ -47,8 +47,7 @@ struct EnumeratorVarAppearance
 struct EnumeratorVar
 {
     EnumeratorVarAppearance*                  m_def                = nullptr;
-    jitstd::vector<EnumeratorVarAppearance*>* m_uses               = nullptr;
-    unsigned                                  m_cloneLcl           = BAD_VAR_NUM;
+    jitstd::vector<EnumeratorVarAppearance*>* m_appearances        = nullptr;
     bool                                      m_hasMultipleDefs    = false;
     bool                                      m_isAllocTemp        = false;
     bool                                      m_isInitialAllocTemp = false;
@@ -63,9 +62,8 @@ typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, EnumeratorVa
 //
 struct GuardInfo
 {
-    unsigned             m_local = BAD_VAR_NUM;
-    CORINFO_CLASS_HANDLE m_type  = NO_CLASS_HANDLE;
-    // jitstd::vector<EnumeratorVarAppearance>* m_appearances     = nullptr;
+    unsigned                     m_local           = BAD_VAR_NUM;
+    CORINFO_CLASS_HANDLE         m_type            = NO_CLASS_HANDLE;
     EnumeratorVarMap*            m_appearanceMap   = nullptr;
     unsigned                     m_appearanceCount = 0;
     GenTree*                     m_allocTree       = nullptr;
