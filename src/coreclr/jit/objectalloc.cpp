@@ -1145,7 +1145,6 @@ bool ObjectAllocator::MorphAllocObjNodes()
     {
         const bool basicBlockHasNewObj       = block->HasFlag(BBF_HAS_NEWOBJ);
         const bool basicBlockHasNewArr       = block->HasFlag(BBF_HAS_NEWARR);
-        const bool basicBlockHasBackwardJump = block->HasFlag(BBF_BACKWARD_JUMP);
 
         if (!basicBlockHasNewObj && !basicBlockHasNewArr)
         {
@@ -1170,6 +1169,14 @@ bool ObjectAllocator::MorphAllocObjNodes()
             if (allocType == OAT_NONE)
             {
                 continue;
+            }
+
+            // If we might stack allocate and have not yet built loops, build them now.
+            //
+            if (IsObjectStackAllocationEnabled() && (comp->m_loops == nullptr))
+            {
+                comp->m_loops = FlowGraphNaturalLoops::Find(comp->m_dfsTree);
+                comp->m_blockToLoop = BlockToNaturalLoopMap::Build(comp->m_loops);
             }
 
             AllocationCandidate c(block, stmt, stmtExpr, lclNum, allocType);
@@ -1272,10 +1279,29 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
 
     // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
     //
-    if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
+    if (comp->m_loops->ImproperLoopHeaders() > 0)
     {
-        candidate.m_onHeapReason = "[alloc in loop]";
-        return false;
+        // There are some improper loops, so fall back to the more conservative backward jump check.
+        //
+        if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
+        {
+            candidate.m_onHeapReason = "[alloc in loop (improper headers)]";
+            return false;
+        }
+    }
+    else if (comp->m_loops->NumLoops() > 0)
+    {
+        // If this method is tail recursive and this allocation
+        // is live into a recursive call, it should be marked as escaping.
+        //
+        // So we don't need to consider the possibility of a loop being formed
+        // via morph's tail recursion to loop optimization.
+        //
+        if (comp->m_blockToLoop->GetLoop(candidate.m_block) != nullptr)
+        {
+            candidate.m_onHeapReason = "[alloc in loop]";
+            return false;
+        }
     }
 
     switch (candidate.m_allocType)
