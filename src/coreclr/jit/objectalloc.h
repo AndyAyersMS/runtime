@@ -177,6 +177,9 @@ class ObjectAllocator final : public Phase
     bool           m_trackFields;
     NodeToIndexMap m_StoreAddressToIndexMap;
 
+    // Loops
+    bool m_haveLiveness;
+
     //===============================================================================
     // Methods
 public:

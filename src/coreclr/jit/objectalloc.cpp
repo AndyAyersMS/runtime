@@ -55,6 +55,7 @@ ObjectAllocator::ObjectAllocator(Compiler* comp)
     , m_regionsToClone(0)
     , m_trackFields(false)
     , m_StoreAddressToIndexMap(comp->getAllocator(CMK_ObjectAllocator))
+    , m_haveLiveness(false)
 {
     m_EscapingPointers                = BitVecOps::UninitVal();
     m_PossiblyStackPointingPointers   = BitVecOps::UninitVal();
@@ -1143,8 +1144,8 @@ bool ObjectAllocator::MorphAllocObjNodes()
 
     for (BasicBlock* const block : comp->Blocks())
     {
-        const bool basicBlockHasNewObj       = block->HasFlag(BBF_HAS_NEWOBJ);
-        const bool basicBlockHasNewArr       = block->HasFlag(BBF_HAS_NEWARR);
+        const bool basicBlockHasNewObj = block->HasFlag(BBF_HAS_NEWOBJ);
+        const bool basicBlockHasNewArr = block->HasFlag(BBF_HAS_NEWARR);
 
         if (!basicBlockHasNewObj && !basicBlockHasNewArr)
         {
@@ -1175,7 +1176,7 @@ bool ObjectAllocator::MorphAllocObjNodes()
             //
             if (IsObjectStackAllocationEnabled() && (comp->m_loops == nullptr))
             {
-                comp->m_loops = FlowGraphNaturalLoops::Find(comp->m_dfsTree);
+                comp->m_loops       = FlowGraphNaturalLoops::Find(comp->m_dfsTree);
                 comp->m_blockToLoop = BlockToNaturalLoopMap::Build(comp->m_loops);
             }
 
@@ -1277,29 +1278,140 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
         return false;
     }
 
-    // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
+    // Check for allocations in loops
     //
+    FlowGraphNaturalLoop* loop = nullptr;
+
     if (comp->m_loops->ImproperLoopHeaders() > 0)
     {
-        // There are some improper loops, so fall back to the more conservative backward jump check.
+        // There are some improper loops, so fall back to the more conservative
+        // backward jump check.
         //
         if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
         {
-            candidate.m_onHeapReason = "[alloc in loop (improper headers)]";
+            candidate.m_onHeapReason = "[alloc in loop (conservative)]";
+
+            // We cannot reason about loop header liveness, so bail out.
+            //
             return false;
         }
     }
-    else if (comp->m_loops->NumLoops() > 0)
+
+    if (comp->m_loops->NumLoops() > 0)
     {
         // If this method is tail recursive and this allocation
         // is live into a recursive call, it should be marked as escaping.
         //
         // So we don't need to consider the possibility of a loop being formed
-        // via morph's tail recursion to loop optimization.
+        // via morph's tail recursion to loop optimization from a liveness
+        // standpoint.
         //
-        if (comp->m_blockToLoop->GetLoop(candidate.m_block) != nullptr)
+        loop = comp->m_blockToLoop->GetLoop(candidate.m_block);
+    }
+
+    if (loop != nullptr)
+    {
+        // This block flag should be set for all these blocks (and more)
+        //
+        assert(candidate.m_block->HasFlag(BBF_BACKWARD_JUMP));
+
+        const bool considerAllocationsInLoops = JitConfig.JitObjectStackAllocationLoops() > 0;
+
+        if (!considerAllocationsInLoops)
         {
             candidate.m_onHeapReason = "[alloc in loop]";
+            return false;
+        }
+
+        // If we have not yet run liveness, do it now...
+        //
+        // Ideally we do this up front before morphing any candidates.
+        //
+        // We only care about the livness of currently tracked locals,
+        // so we don't need to change the tracked local set.
+        //
+        // But notice our BVs are possibly longer than the ones liveness uses
+        // since we have pseudos and fields an such..
+        //
+        if (!m_haveLiveness)
+        {
+            JITDUMP("\nStack allocation site in a loop, running liveness...\n");
+
+            comp->fgIsDoingEarlyLiveness = true;
+            comp->fgInitBlockVarSets();
+            comp->fgLocalVarLivenessChanged = false;
+            do
+            {
+                // we probably don't want to run dead stores right now...?
+                // which means no iteration either
+                comp->fgPerBlockLocalVarLiveness();
+                comp->EndPhase(PHASE_LCLVARLIVENESS_PERBLOCK);
+                comp->fgStmtRemoved = false;
+                comp->fgInterBlockLocalVarLiveness();
+            } while (comp->fgStmtRemoved && comp->fgLocalVarLivenessChanged);
+            comp->fgIsDoingEarlyLiveness = false;
+            m_haveLiveness               = true;
+        }
+
+        // If any connected local is live on loop entry, this allocation must be on the heap
+        //
+        // Note we haven't computed the transitive closure of the connection graph,
+        // so we have do that work here...
+        //
+        BitVec localsToCheck        = BitVecOps::MakeEmpty(&m_bitVecTraits);
+        BitVec localsAlreadyChecked = BitVecOps::MakeEmpty(&m_bitVecTraits);
+        BitVec currentCheckSet      = BitVecOps::MakeEmpty(&m_bitVecTraits);
+
+        unsigned const    lclIndex   = LocalToIndex(candidate.m_lclNum);
+        BasicBlock* const loopHeader = loop->GetHeader();
+
+        BitVecOps::AddElemD(&m_bitVecTraits, localsToCheck, lclIndex);
+        BitVecOps::UnionD(&m_bitVecTraits, localsToCheck, m_ConnGraphAdjacencyMatrix[lclIndex]);
+
+        bool canStackAllocate = true;
+
+        JITDUMP("Checking liveness into " FMT_LP " header " FMT_BB "\n:", loop->GetIndex(), loopHeader->bbNum);
+
+        while (canStackAllocate && !BitVecOps::IsEmpty(&m_bitVecTraits, localsToCheck))
+        {
+            BitVecOps::Assign(&m_bitVecTraits, currentCheckSet, localsToCheck);
+            BitVecOps::Iter iterator(&m_bitVecTraits, currentCheckSet);
+            unsigned        checkIndex = BAD_VAR_NUM;
+            while (canStackAllocate && iterator.NextElem(&checkIndex))
+            {
+                if (checkIndex >= comp->lvaTrackedCount)
+                {
+                    // an unusual bit is set, assume the worst for now
+                    //
+                    candidate.m_onHeapReason = "[in loop; unexpected connection]";
+                    canStackAllocate         = false;
+                    break;
+                }
+
+                if (VarSetOps::IsMember(comp, candidate.m_block->bbLiveIn, checkIndex))
+                {
+                    // This local is live on loop entry and connected to the allocation.
+                    //
+                    canStackAllocate = false;
+                    candidate.m_onHeapReason =
+                        comp->printfAlloc("[in loop; connected V%02u is live into header " FMT_BB "]",
+                                          IndexToLocal(checkIndex), loopHeader->bbNum);
+                    break;
+                }
+
+                BitVecOps::AddElemD(&m_bitVecTraits, localsAlreadyChecked, checkIndex);
+                BitVecOps::UnionD(&m_bitVecTraits, localsToCheck, m_ConnGraphAdjacencyMatrix[checkIndex]);
+                BitVecOps::IntersectionD(&m_bitVecTraits, localsToCheck, localsAlreadyChecked);
+            }
+        }
+
+        // If the allocation is dead...?
+        //
+
+        if (!canStackAllocate)
+        {
+            // Reason set above...
+            //
             return false;
         }
     }
@@ -1561,6 +1673,8 @@ unsigned int ObjectAllocator::MorphNewArrNodeIntoStackAlloc(GenTreeCall*        
     lclDsc->lvStackAllocatedObject = true;
 
     // Initialize the object memory if necessary.
+    // Here we do have to worry about tail recursion -> loop, so use the conservative check.
+    //
     bool bbInALoop  = block->HasFlag(BBF_BACKWARD_JUMP);
     bool bbIsReturn = block->KindIs(BBJ_RETURN);
     if (comp->fgVarNeedsExplicitZeroInit(lclNum, bbInALoop, bbIsReturn))
