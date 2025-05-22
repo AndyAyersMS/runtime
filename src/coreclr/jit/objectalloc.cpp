@@ -503,6 +503,11 @@ void ObjectAllocator::PrepareAnalysis()
         comp->lvaTrackedToVarNum     = new (comp->getAllocator(CMK_LvaTable)) unsigned[comp->lvaTrackedToVarNumSize];
     }
 
+    comp->lvaTrackedCount = m_bvCount;
+    comp->lvaCurEpoch++;
+    comp->lvaTrackedCountInSizeTUnits =
+        roundUp((unsigned)comp->lvaTrackedCount, (unsigned)(sizeof(size_t) * 8)) / unsigned(sizeof(size_t) * 8);
+
     for (unsigned lclNum = 0; lclNum < localCount; lclNum++)
     {
         LclVarDsc* const varDsc = comp->lvaGetDesc(lclNum);
@@ -1176,6 +1181,7 @@ bool ObjectAllocator::MorphAllocObjNodes()
             //
             if (IsObjectStackAllocationEnabled() && (comp->m_loops == nullptr))
             {
+                JITDUMP("Object allocation in " FMT_BB " may be in a loop; building loops\n", block->bbNum);
                 comp->m_loops       = FlowGraphNaturalLoops::Find(comp->m_dfsTree);
                 comp->m_blockToLoop = BlockToNaturalLoopMap::Build(comp->m_loops);
             }
@@ -1287,11 +1293,12 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
         // There are some improper loops, so fall back to the more conservative
         // backward jump check.
         //
-        if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
+
         {
             candidate.m_onHeapReason = "[alloc in loop (conservative)]";
 
-            // We cannot reason about loop header liveness, so bail out.
+            // With improper loops we cannot reason about loop header liveness,
+            // so bail out.
             //
             return false;
         }
@@ -1351,6 +1358,12 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
             } while (comp->fgStmtRemoved && comp->fgLocalVarLivenessChanged);
             comp->fgIsDoingEarlyLiveness = false;
             m_haveLiveness               = true;
+
+            // Note we might have killed the allocation! Need to watch for this
+
+            // todo  -- leverage threading somehow?
+            //
+            comp->fgNodeThreading = NodeThreading::None;
         }
 
         // If any connected local is live on loop entry, this allocation must be on the heap
@@ -1358,50 +1371,80 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
         // Note we haven't computed the transitive closure of the connection graph,
         // so we have do that work here...
         //
-        BitVec localsToCheck        = BitVecOps::MakeEmpty(&m_bitVecTraits);
-        BitVec localsAlreadyChecked = BitVecOps::MakeEmpty(&m_bitVecTraits);
-        BitVec currentCheckSet      = BitVecOps::MakeEmpty(&m_bitVecTraits);
+        BasicBlock* const loopHeader       = loop->GetHeader();
+        unsigned const    lclIndex         = LocalToIndex(candidate.m_lclNum);
+        bool              canStackAllocate = true;
 
-        unsigned const    lclIndex   = LocalToIndex(candidate.m_lclNum);
-        BasicBlock* const loopHeader = loop->GetHeader();
-
-        BitVecOps::AddElemD(&m_bitVecTraits, localsToCheck, lclIndex);
-        BitVecOps::UnionD(&m_bitVecTraits, localsToCheck, m_ConnGraphAdjacencyMatrix[lclIndex]);
-
-        bool canStackAllocate = true;
-
-        JITDUMP("Checking liveness into " FMT_LP " header " FMT_BB "\n:", loop->GetIndex(), loopHeader->bbNum);
-
-        while (canStackAllocate && !BitVecOps::IsEmpty(&m_bitVecTraits, localsToCheck))
+        // First check the var directly, then any connections.
+        //
+        if (VarSetOps::IsMember(comp, candidate.m_block->bbLiveIn, lclIndex))
         {
-            BitVecOps::Assign(&m_bitVecTraits, currentCheckSet, localsToCheck);
-            BitVecOps::Iter iterator(&m_bitVecTraits, currentCheckSet);
-            unsigned        checkIndex = BAD_VAR_NUM;
-            while (canStackAllocate && iterator.NextElem(&checkIndex))
+            JITDUMP("Allocation var V%02u is live into " FMT_LP " header " FMT_BB "\n", candidate.m_lclNum,
+                    loop->GetIndex(), loopHeader->bbNum);
+            canStackAllocate = false;
+        }
+        else
+        {
+            JITDUMP("Allocation var V%02u is not live into " FMT_LP " header " FMT_BB "\n", candidate.m_lclNum,
+                    loop->GetIndex(), loopHeader->bbNum);
+            BitVec connectedSet = BitVecOps::MakeEmpty(&m_bitVecTraits);
+            BitVec checkedSet   = BitVecOps::MakeEmpty(&m_bitVecTraits);
+            BitVecOps::AddElemD(&m_bitVecTraits, connectedSet, lclIndex);
+            BitVecOps::AddElemD(&m_bitVecTraits, checkedSet, lclIndex);
+
+            bool foundNewConnection = true;
+            JITDUMP("Checking for other connections ....\n");
+
+            int limit = 1000;
+
+            while (canStackAllocate && foundNewConnection)
             {
-                if (checkIndex >= comp->lvaTrackedCount)
-                {
-                    // an unusual bit is set, assume the worst for now
-                    //
-                    candidate.m_onHeapReason = "[in loop; unexpected connection]";
-                    canStackAllocate         = false;
-                    break;
-                }
+                limit--;
+                assert(limit > 0);
+                foundNewConnection = false;
 
-                if (VarSetOps::IsMember(comp, candidate.m_block->bbLiveIn, checkIndex))
+                // Can probably limit this to the "normal" locals and then
+                // check for unusual connections later?
+                //
+                // Can init a "to check" with all bits set and turn them
+                // off as we check and iterate that...?
+                //
+                unsigned const maxIndex = comp->lvaTrackedCount;
+                for (unsigned checkIndex = 0; checkIndex < maxIndex; checkIndex++)
                 {
-                    // This local is live on loop entry and connected to the allocation.
+                    // Skip if we already found this index was connected
                     //
-                    canStackAllocate = false;
-                    candidate.m_onHeapReason =
-                        comp->printfAlloc("[in loop; connected V%02u is live into header " FMT_BB "]",
-                                          IndexToLocal(checkIndex), loopHeader->bbNum);
-                    break;
-                }
+                    if (BitVecOps::IsMember(&m_bitVecTraits, connectedSet, checkIndex))
+                    {
+                        continue;
+                    }
 
-                BitVecOps::AddElemD(&m_bitVecTraits, localsAlreadyChecked, checkIndex);
-                BitVecOps::UnionD(&m_bitVecTraits, localsToCheck, m_ConnGraphAdjacencyMatrix[checkIndex]);
-                BitVecOps::IntersectionD(&m_bitVecTraits, localsToCheck, localsAlreadyChecked);
+                    // Skip if index is not (yet) connected
+                    //
+                    if (BitVecOps::IsEmptyIntersection(&m_bitVecTraits, connectedSet,
+                                                       m_ConnGraphAdjacencyMatrix[checkIndex]))
+                    {
+                        continue;
+                    }
+
+                    foundNewConnection = true;
+                    BitVecOps::AddElemD(&m_bitVecTraits, connectedSet, checkIndex);
+
+                    if (VarSetOps::IsMember(comp, candidate.m_block->bbLiveIn, checkIndex))
+                    {
+                        // This local is live on loop entry and connected to the allocation.
+                        //
+                        JITDUMPEXEC(DumpIndex(checkIndex));
+                        JITDUMP("  is live\n");
+                        canStackAllocate         = false;
+                        candidate.m_onHeapReason = "[in loop; connected lclvar is live into header]";
+                        break;
+                    }
+
+                    JITDUMP("  connection");
+                    JITDUMPEXEC(DumpIndex(checkIndex));
+                    JITDUMP(" is not live\n");
+                }
             }
         }
 

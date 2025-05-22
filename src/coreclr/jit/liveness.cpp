@@ -44,11 +44,14 @@ void Compiler::fgMarkUseDef(GenTreeLclVarCommon* tree)
     LclVarDsc* const varDsc = lvaGetDesc(lclNum);
 
     // We should never encounter a reference to a lclVar that has a zero refCnt.
-    if (varDsc->lvRefCnt(lvaRefCountState) == 0 && (!varTypeIsPromotable(varDsc) || !varDsc->lvPromoted))
+    if (lvaRefCountState != RCS_INVALID)
     {
-        JITDUMP("Found reference to V%02u with zero refCnt.\n", lclNum);
-        assert(!"We should never encounter a reference to a lclVar that has a zero refCnt.");
-        varDsc->setLvRefCnt(1);
+        if (varDsc->lvRefCnt(lvaRefCountState) == 0 && (!varTypeIsPromotable(varDsc) || !varDsc->lvPromoted))
+        {
+            JITDUMP("Found reference to V%02u with zero refCnt.\n", lclNum);
+            assert(!"We should never encounter a reference to a lclVar that has a zero refCnt.");
+            varDsc->setLvRefCnt(1);
+        }
     }
 
     const bool isDef     = ((tree->gtFlags & GTF_VAR_DEF) != 0);
@@ -399,6 +402,15 @@ void Compiler::fgPerBlockLocalVarLiveness()
     // memory that is not a GC Heap def.
     byrefStatesMatchGcHeapStates = true;
 
+    // Note if we need to run local node threading
+    //
+    const bool doLocalNodeThreading = fgIsDoingEarlyLiveness && (fgNodeThreading == NodeThreading::None);
+
+    if (doLocalNodeThreading)
+    {
+        fgNodeThreading = NodeThreading::AllLocals;
+    }
+
     for (unsigned i = m_dfsTree->GetPostOrderCount(); i != 0; i--)
     {
         BasicBlock* block = m_dfsTree->GetPostOrder(i - 1);
@@ -430,12 +442,17 @@ void Compiler::fgPerBlockLocalVarLiveness()
         }
         else
         {
-            assert(fgIsDoingEarlyLiveness && (fgNodeThreading == NodeThreading::AllLocals));
+            assert(fgIsDoingEarlyLiveness);
 
             if (compQmarkUsed)
             {
                 for (Statement* stmt : block->Statements())
                 {
+                    if (doLocalNodeThreading)
+                    {
+                        fgSequenceLocals(stmt);
+                    }
+
                     GenTree* dst;
                     GenTree* qmark = fgGetTopLevelQmark(stmt->GetRootNode(), &dst);
                     if (qmark == nullptr)
@@ -474,6 +491,11 @@ void Compiler::fgPerBlockLocalVarLiveness()
             {
                 for (Statement* stmt : block->Statements())
                 {
+                    if (doLocalNodeThreading)
+                    {
+                        fgSequenceLocals(stmt);
+                    }
+
                     for (GenTreeLclVarCommon* lcl : stmt->LocalsTreeList())
                     {
                         fgMarkUseDef<false>(lcl);
