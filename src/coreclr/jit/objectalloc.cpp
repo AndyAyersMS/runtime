@@ -1979,6 +1979,26 @@ void ObjectAllocator::AnalyzeParentStack(ArrayStack<GenTree*>* parentStack, unsi
                         canLclVarEscapeViaParentStack = false;
                     }
                 }
+                else if (tree->OperIs(GT_FIELD_ADDR) && !call->CanTailCall())
+                {
+                    // Could handle GC index addr this way too, for non-GC arrays
+                    //
+                    GenTreeFieldAddr* const fieldAddr = tree->AsFieldAddr();
+                    if (fieldAddr->IsInstance() && (fieldAddr->gtFldHnd != NO_FIELD_HANDLE))
+                    {
+                        CORINFO_CLASS_HANDLE fieldClass = comp->info.compCompHnd->getFieldClass(fieldAddr->gtFldHnd);
+
+                        if ((comp->info.compCompHnd->getClassAttribs(fieldClass) &
+                             (CORINFO_FLG_CONTAINS_GC_PTR | CORINFO_FLG_BYREF_LIKE)) == 0)
+                        {
+                            // Passing a non-gc byref field of something as an arg;
+                            // this can't cause escape or inspire callee write barriers.
+                            //
+                            JITDUMP("Nongc field address passed as arg...\n");
+                            canLclVarEscapeViaParentStack = false;
+                        }
+                    }
+                }
 
                 // Note there is nothing special here about the parent being a call. We could move all this processing
                 // up to the caller and handle any sort of tree that could lead to escapes this way.
