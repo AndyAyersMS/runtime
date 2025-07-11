@@ -565,16 +565,25 @@ void DefaultPolicy::NoteInt(InlineObservation obs, int value)
             // failure to inline could negatively impact code quality.
             //
 
-            unsigned basicBlockCount = static_cast<unsigned>(value);
+            unsigned const maxLimit        = (unsigned)JitConfig.JitExtDefaultPolicyMaxBB();
+            unsigned const limit           = MAX_BASIC_BLOCKS;
+            unsigned       basicBlockCount = static_cast<unsigned>(value);
 
             // CALLEE_IS_FORCE_INLINE overrides CALLEE_DOES_NOT_RETURN
             if (!m_IsForceInline && m_IsNoReturn && (basicBlockCount == 1))
             {
                 SetNever(InlineObservation::CALLEE_DOES_NOT_RETURN);
             }
-            else if (!m_IsForceInline && (basicBlockCount > MAX_BASIC_BLOCKS))
+            else if (!m_IsForceInline && (basicBlockCount > limit))
             {
-                SetNever(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+                if (basicBlockCount > maxLimit)
+                {
+                    SetNever(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+                }
+                else
+                {
+                    SetFailure(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+                }
             }
 
             break;
@@ -586,8 +595,12 @@ void DefaultPolicy::NoteInt(InlineObservation obs, int value)
             assert(value != 0);
             m_CodeSize = static_cast<unsigned>(value);
 
-            unsigned alwaysInlineSize = InlineStrategy::ALWAYS_INLINE_SIZE;
-            unsigned maxCodeSize      = m_RootCompiler->m_inlineStrategy->GetMaxInlineILSize();
+            unsigned       alwaysInlineSize = InlineStrategy::ALWAYS_INLINE_SIZE;
+            unsigned       maxCodeSize      = m_RootCompiler->m_inlineStrategy->GetMaxInlineILSize();
+            unsigned const maxMaxCodeSize   = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxILProf());
+
+            assert(maxMaxCodeSize >= maxCodeSize);
+
             if (m_InsideThrowBlock)
             {
                 // Inline only small code in BBJ_THROW blocks, e.g. <= 8 bytes of IL
@@ -614,8 +627,16 @@ void DefaultPolicy::NoteInt(InlineObservation obs, int value)
             }
             else
             {
-                // Callee too big, not a candidate
-                SetNever(InlineObservation::CALLEE_TOO_MUCH_IL);
+                // If the IL size is bigger than any policy setting, mark this method as not inlinable.
+                // Otherwise just fail this inline.
+                if (m_CodeSize > maxMaxCodeSize)
+                {
+                    SetNever(InlineObservation::CALLEE_TOO_MUCH_IL);
+                }
+                else
+                {
+                    SetFailure(InlineObservation::CALLEE_TOO_MUCH_IL);
+                }
             }
 
             break;
@@ -1366,14 +1387,23 @@ void ExtendedDefaultPolicy::NoteInt(InlineObservation obs, int value)
         {
             assert(m_IsForceInlineKnown);
             assert(value != 0);
-            m_CodeSize           = static_cast<unsigned>(value);
-            unsigned maxCodeSize = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxIL());
+            m_CodeSize                        = static_cast<unsigned>(value);
+            unsigned const defaultMaxCodeSize = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxIL());
+            unsigned const rootMaxCodeSize    = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxILRoot());
+            unsigned const maxMaxCodeSize     = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxILProf());
 
+            assert(maxMaxCodeSize >= rootMaxCodeSize);
+            assert(maxMaxCodeSize >= defaultMaxCodeSize);
+
+            unsigned maxCodeSize = defaultMaxCodeSize;
+
+            // Boost max code size depending on PGO state
+            //
             // TODO: Enable for PgoSource::Static as well if it's not the generic profile we bundle.
             if (m_HasProfileWeights && (m_RootCompiler->fgHaveTrustedProfileWeights()))
             {
                 JITDUMP("Callee and root has trusted profile\n");
-                maxCodeSize = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxILProf());
+                maxCodeSize = maxMaxCodeSize;
             }
             else if (m_RootCompiler->fgHaveSufficientProfileWeights())
             {
@@ -1385,7 +1415,7 @@ void ExtendedDefaultPolicy::NoteInt(InlineObservation obs, int value)
                         isTier1Instr ? "; but we are not boosting max IL size for Tier1+Instr" : "");
                 if (!isTier1Instr)
                 {
-                    maxCodeSize = static_cast<unsigned>(JitConfig.JitExtDefaultPolicyMaxILRoot());
+                    maxCodeSize = rootMaxCodeSize;
                 }
             }
             else
@@ -1421,7 +1451,17 @@ void ExtendedDefaultPolicy::NoteInt(InlineObservation obs, int value)
             {
                 // Callee too big, not a candidate
                 JITDUMP("Callee IL size %u exceeds maxCodeSize %u\n", m_CodeSize, maxCodeSize);
-                SetNever(InlineObservation::CALLEE_TOO_MUCH_IL);
+
+                // If the IL size is bigger than any policy limit, mark this method as not inlinable.
+                // Otherwise just fail this inline.
+                if (m_CodeSize > maxMaxCodeSize)
+                {
+                    SetNever(InlineObservation::CALLEE_TOO_MUCH_IL);
+                }
+                else
+                {
+                    SetFailure(InlineObservation::CALLEE_TOO_MUCH_IL);
+                }
             }
             break;
         }
@@ -1434,7 +1474,8 @@ void ExtendedDefaultPolicy::NoteInt(InlineObservation obs, int value)
             else if (!m_IsForceInline && !m_HasProfileWeights && !m_ConstArgFeedsIsKnownConst &&
                      !m_ArgFeedsIsKnownConst)
             {
-                unsigned bbLimit = (unsigned)JitConfig.JitExtDefaultPolicyMaxBB();
+                unsigned const maxLimit = (unsigned)JitConfig.JitExtDefaultPolicyMaxBB();
+                unsigned       bbLimit  = maxLimit;
                 if (m_IsPrejitRoot)
                 {
                     // We're not able to recognize arg-specific foldable branches
@@ -1443,10 +1484,20 @@ void ExtendedDefaultPolicy::NoteInt(InlineObservation obs, int value)
                 }
                 bbLimit += m_FoldableBranch + m_FoldableSwitch * 10 + m_UnrollableMemop * 2;
 
-                if ((unsigned)value > bbLimit)
+                const unsigned bbCount = (unsigned)value;
+
+                if (bbCount > bbLimit)
                 {
                     JITDUMP("Callee BB count %u exceeds bbLimit %u\n", value, bbLimit);
-                    SetNever(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+
+                    if (bbCount > maxLimit)
+                    {
+                        SetNever(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+                    }
+                    else
+                    {
+                        SetFailure(InlineObservation::CALLEE_TOO_MANY_BASIC_BLOCKS);
+                    }
                 }
             }
             break;
