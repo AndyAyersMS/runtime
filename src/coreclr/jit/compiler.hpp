@@ -5121,22 +5121,37 @@ inline bool Compiler::compCanHavePatchpoints(const char** reason)
 // fgRunDfs: Run DFS over the flow graph.
 //
 // Type parameters:
-//   VisitPreorder  - Functor type that takes a BasicBlock* and its preorder number
-//   VisitPostorder - Functor type that takes a BasicBlock* and its postorder number
-//   VisitEdge      - Functor type that takes two BasicBlock*.
-//   useProfile     - If true, determines order of successors visited using profile data
+//   VisitPreorder       - Functor type that takes a BasicBlock* and its preorder number
+//   VisitPostorder      - Functor type that takes a BasicBlock* and its postorder number
+//   VisitEdge           - Functor type that takes two BasicBlock*.
+//   EnumerateSuccessors - Type of block successor enumerator
+//   EnumerateEntries    - Type of flow graph entry enumerator
+//   IncludeBlock        - Functor type that returns true if block is part of the graph to visit
+//   useProfile          - If true, successor enumeration order is influenced by profile data
 //
 // Parameters:
-//   visitPreorder  - Functor to visit block in its preorder
-//   visitPostorder - Functor to visit block in its postorder
-//   visitEdge      - Functor to visit an edge. Called after visitPreorder (if
-//                    this is the first time the successor is seen).
+//   visitPreorder       - Functor to visit block in its preorder
+//   visitPostorder      - Functor to visit block in its postorder
+//   visitEdge           - Functor to visit an edge. Called after visitPreorder (if
+//                            this is the first time the successor is seen).
+//   includeBlock        - Functor to identify blocks that are part of this DFS
+//                            (normally just returns true, so DFS includes all blocks,
+//                            but can be used to specify a subgraph)
 //
 // Returns:
 //   Number of blocks visited.
 //
-template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, const bool useProfile /* = false */>
-unsigned Compiler::fgRunDfs(VisitPreorder visitPreorder, VisitPostorder visitPostorder, VisitEdge visitEdge)
+template <typename VisitPreorder,
+          typename VisitPostorder,
+          typename VisitEdge,
+          typename EnumerateSuccessors,
+          typename EnumerateEntries,
+          typename IncludeBlock,
+          const bool useProfile /* = false */>
+unsigned Compiler::fgRunDfs(VisitPreorder  visitPreorder,
+                            VisitPostorder visitPostorder,
+                            VisitEdge      visitEdge,
+                            IncludeBlock   includeBlock)
 {
     BitVecTraits traits(fgBBNumMax + 1, this);
     BitVec       visited(BitVecOps::MakeEmpty(&traits));
@@ -5144,7 +5159,7 @@ unsigned Compiler::fgRunDfs(VisitPreorder visitPreorder, VisitPostorder visitPos
     unsigned preOrderIndex  = 0;
     unsigned postOrderIndex = 0;
 
-    ArrayStack<AllSuccessorEnumerator> blocks(getAllocator(CMK_DepthFirstSearch));
+    ArrayStack<EnumerateSuccessors> blocks(getAllocator(CMK_DepthFirstSearch));
 
     auto dfsFrom = [&](BasicBlock* firstBB) {
         BitVecOps::AddElemD(&traits, visited, firstBB->bbNum);
@@ -5158,13 +5173,16 @@ unsigned Compiler::fgRunDfs(VisitPreorder visitPreorder, VisitPostorder visitPos
 
             if (succ != nullptr)
             {
-                if (BitVecOps::TryAddElemD(&traits, visited, succ->bbNum))
+                if (includeBlock(succ))
                 {
-                    blocks.Emplace(this, succ, useProfile);
-                    visitPreorder(succ, preOrderIndex++);
-                }
+                    if (BitVecOps::TryAddElemD(&traits, visited, succ->bbNum))
+                    {
+                        blocks.Emplace(this, succ, useProfile);
+                        visitPreorder(succ, preOrderIndex++);
+                    }
 
-                visitEdge(block, succ);
+                    visitEdge(block, succ);
+                }
             }
             else
             {
@@ -5174,23 +5192,23 @@ unsigned Compiler::fgRunDfs(VisitPreorder visitPreorder, VisitPostorder visitPos
         }
     };
 
-    dfsFrom(fgFirstBB);
+    EnumerateEntries entries(this);
 
-    if ((fgEntryBB != nullptr) && !BitVecOps::IsMember(&traits, visited, fgEntryBB->bbNum))
+    while (true)
     {
-        // OSR methods will early on create flow that looks like it goes to the
-        // patchpoint, but during morph we may transform to something that
-        // requires the original entry (fgEntryBB).
-        assert(opts.IsOSR());
-        dfsFrom(fgEntryBB);
-    }
+        BasicBlock* const entry = entries.NextEntry();
 
-    if ((genReturnBB != nullptr) && !BitVecOps::IsMember(&traits, visited, genReturnBB->bbNum))
-    {
-        assert(!fgGlobalMorphDone);
-        // We introduce the merged return BB before morph and will redirect
-        // other returns to it as part of morph; keep it reachable.
-        dfsFrom(genReturnBB);
+        if (entry == nullptr)
+        {
+            break;
+        }
+
+        if (BitVecOps::IsMember(&traits, visited, entry->bbNum))
+        {
+            continue;
+        }
+
+        dfsFrom(entry);
     }
 
     assert(preOrderIndex == postOrderIndex);

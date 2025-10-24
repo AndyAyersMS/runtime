@@ -4350,6 +4350,48 @@ void Compiler::fgSetBlockOrder(BasicBlock* block)
     return firstNode;
 }
 
+//------------------------------------------------------------------------
+// NextEntry(): return next normal entry for a flow graph
+//
+// Return Value:
+//    Block that may only be reachable by external flow
+//
+BasicBlock* NormalEntries::NextEntry()
+{
+    switch (m_state)
+    {
+        case 0:
+            m_state = 1;
+            return m_comp->fgFirstBB;
+
+        case 1:
+            // OSR methods will early on create flow that looks like it goes to the
+            // patchpoint, but during morph we may transform to something that
+            // requires the original entry (fgEntryBB).
+            m_state = 2;
+            if (m_comp->fgEntryBB != nullptr)
+            {
+                return m_comp->fgEntryBB;
+            }
+
+            FALLTHROUGH;
+
+        case 2:
+            // We introduce the merged return BB before morph and will redirect
+            // other returns to it as part of morph; keep it reachable.
+            m_state = 3;
+            if (m_comp->genReturnBB != nullptr)
+            {
+                return m_comp->genReturnBB;
+            }
+
+            FALLTHROUGH;
+
+        default:
+            return nullptr;
+    }
+}
+
 #ifdef DEBUG
 
 //------------------------------------------------------------------------
@@ -4450,10 +4492,14 @@ FlowGraphDfsTree* Compiler::fgComputeDfs()
         }
     };
 
+    auto includeBlock = [](BasicBlock* block) {
+        return true;
+    };
+
     unsigned numBlocks =
-        fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), useProfile>(visitPreorder,
-                                                                                                     visitPostorder,
-                                                                                                     visitEdge);
+        fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
+                 NormalEntries, decltype(includeBlock), useProfile>(visitPreorder, visitPostorder, visitEdge,
+                                                                    includeBlock);
     return new (this, CMK_DepthFirstSearch) FlowGraphDfsTree(this, postOrder, numBlocks, hasCycle, useProfile);
 }
 

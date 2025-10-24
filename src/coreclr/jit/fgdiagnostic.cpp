@@ -4739,18 +4739,22 @@ void Compiler::fgDebugCheckFlowGraphAnnotations()
 
     auto visitEdge = [](BasicBlock* block, BasicBlock* succ) {};
 
+    auto includeBlock = [](BasicBlock* block) {
+        return true;
+    };
+
     unsigned count;
     if (m_dfsTree->IsProfileAware())
     {
-        count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), true>(visitPreorder,
-                                                                                                       visitPostorder,
-                                                                                                       visitEdge);
+        count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
+                         NormalEntries, decltype(includeBlock), true>(visitPreorder, visitPostorder, visitEdge,
+                                                                      includeBlock);
     }
     else
     {
-        count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), false>(visitPreorder,
-                                                                                                        visitPostorder,
-                                                                                                        visitEdge);
+        count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
+                         NormalEntries, decltype(includeBlock), false>(visitPreorder, visitPostorder, visitEdge,
+                                                                       includeBlock);
     }
 
     assert(m_dfsTree->GetPostOrderCount() == count);
