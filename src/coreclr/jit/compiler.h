@@ -1780,6 +1780,22 @@ typedef JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, TestLabelAndNum> NodeToT
 // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #endif // DEBUG
 
+// Enumerate the normal entry blocks of a flow graph
+//
+// These are blocks reachable by external control flow, or
+// blocks we want to keep reachable in early phases.
+//
+struct NormalEntries
+{
+private:
+    Compiler* m_comp;
+    int m_state;
+
+public:
+    NormalEntries(Compiler* comp) : m_comp(comp), m_state(0) {};
+    BasicBlock* NextEntry();
+};
+
 // Represents a depth-first search tree of the flow graph.
 class FlowGraphDfsTree
 {
@@ -6238,8 +6254,8 @@ public:
     PhaseStatus fgSetBlockOrder();
     bool fgHasCycleWithoutGCSafePoint();
 
-    template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, const bool useProfile = false>
-    unsigned fgRunDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge);
+    template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, typename EnumerateSuccessors, typename EnumerateEntries, typename IncludeBlock, const bool useProfile = false>
+    unsigned fgRunDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, IncludeBlock includeBlock);
 
     template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, const bool useProfile = false>
     unsigned fgRunSubgraphDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, BitVec& subgraph, BitVecTraits& subgraphTraits);
