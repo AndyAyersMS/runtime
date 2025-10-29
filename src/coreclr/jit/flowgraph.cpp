@@ -4351,12 +4351,15 @@ void Compiler::fgSetBlockOrder(BasicBlock* block)
 }
 
 //------------------------------------------------------------------------
-// NextEntry(): return next normal entry for a flow graph
+// NormalEntries::Next: return next normal entry for a flow graph
 //
 // Return Value:
-//    Block that may only be reachable by external flow
+//    Entry block for the flow graph -- block that may only be reachable by external flow
 //
-BasicBlock* NormalEntries::NextEntry()
+// Notes:
+//    Call repeatedly until nullptr is returned to enumerate all possible entries
+//
+BasicBlock* NormalEntries::Next()
 {
     switch (m_state)
     {
@@ -4496,10 +4499,11 @@ FlowGraphDfsTree* Compiler::fgComputeDfs()
         return true;
     };
 
+    NormalEntries entries(this);
+
     unsigned numBlocks =
         fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
-                 NormalEntries, decltype(includeBlock), useProfile>(visitPreorder, visitPostorder, visitEdge,
-                                                                    includeBlock);
+                 decltype(includeBlock), useProfile>(entries, visitPreorder, visitPostorder, visitEdge, includeBlock);
     return new (this, CMK_DepthFirstSearch) FlowGraphDfsTree(this, postOrder, numBlocks, hasCycle, useProfile);
 }
 
