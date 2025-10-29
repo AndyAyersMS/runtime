@@ -4743,18 +4743,19 @@ void Compiler::fgDebugCheckFlowGraphAnnotations()
         return true;
     };
 
-    unsigned count;
+    unsigned      count;
+    NormalEntries entries(this);
+
     if (m_dfsTree->IsProfileAware())
     {
         count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
-                         NormalEntries, decltype(includeBlock), true>(visitPreorder, visitPostorder, visitEdge,
-                                                                      includeBlock);
+                         decltype(includeBlock), true>(entries, visitPreorder, visitPostorder, visitEdge, includeBlock);
     }
     else
     {
-        count = fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
-                         NormalEntries, decltype(includeBlock), false>(visitPreorder, visitPostorder, visitEdge,
-                                                                       includeBlock);
+        count =
+            fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), AllSuccessorEnumerator,
+                     decltype(includeBlock), false>(entries, visitPreorder, visitPostorder, visitEdge, includeBlock);
     }
 
     assert(m_dfsTree->GetPostOrderCount() == count);

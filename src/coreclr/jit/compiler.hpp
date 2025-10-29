@@ -5125,11 +5125,11 @@ inline bool Compiler::compCanHavePatchpoints(const char** reason)
 //   VisitPostorder      - Functor type that takes a BasicBlock* and its postorder number
 //   VisitEdge           - Functor type that takes two BasicBlock*.
 //   EnumerateSuccessors - Type of block successor enumerator
-//   EnumerateEntries    - Type of flow graph entry enumerator
 //   IncludeBlock        - Functor type that returns true if block is part of the graph to visit
 //   useProfile          - If true, successor enumeration order is influenced by profile data
 //
 // Parameters:
+//   entries             - Enumerator for DFS entry points
 //   visitPreorder       - Functor to visit block in its preorder
 //   visitPostorder      - Functor to visit block in its postorder
 //   visitEdge           - Functor to visit an edge. Called after visitPreorder (if
@@ -5145,13 +5145,13 @@ template <typename VisitPreorder,
           typename VisitPostorder,
           typename VisitEdge,
           typename EnumerateSuccessors,
-          typename EnumerateEntries,
           typename IncludeBlock,
           const bool useProfile /* = false */>
-unsigned Compiler::fgRunDfs(VisitPreorder  visitPreorder,
-                            VisitPostorder visitPostorder,
-                            VisitEdge      visitEdge,
-                            IncludeBlock   includeBlock)
+unsigned Compiler::fgRunDfs(BlockEnumerator& entries,
+                            VisitPreorder    visitPreorder,
+                            VisitPostorder   visitPostorder,
+                            VisitEdge        visitEdge,
+                            IncludeBlock     includeBlock)
 {
     BitVecTraits traits(fgBBNumMax + 1, this);
     BitVec       visited(BitVecOps::MakeEmpty(&traits));
@@ -5192,11 +5192,9 @@ unsigned Compiler::fgRunDfs(VisitPreorder  visitPreorder,
         }
     };
 
-    EnumerateEntries entries(this);
-
     while (true)
     {
-        BasicBlock* const entry = entries.NextEntry();
+        BasicBlock* const entry = entries.Next();
 
         if (entry == nullptr)
         {

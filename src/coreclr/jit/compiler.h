@@ -1780,12 +1780,20 @@ typedef JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, TestLabelAndNum> NodeToT
 // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #endif // DEBUG
 
+// Interface type for block enumeration
+//
+class BlockEnumerator
+{
+public:
+    virtual BasicBlock* Next() = 0;
+};
+
 // Enumerate the normal entry blocks of a flow graph
 //
 // These are blocks reachable by external control flow, or
 // blocks we want to keep reachable in early phases.
 //
-struct NormalEntries
+class NormalEntries : public BlockEnumerator
 {
 private:
     Compiler* m_comp;
@@ -1793,7 +1801,7 @@ private:
 
 public:
     NormalEntries(Compiler* comp) : m_comp(comp), m_state(0) {};
-    BasicBlock* NextEntry();
+    BasicBlock* Next() override;
 };
 
 // Represents a depth-first search tree of the flow graph.
@@ -6254,8 +6262,8 @@ public:
     PhaseStatus fgSetBlockOrder();
     bool fgHasCycleWithoutGCSafePoint();
 
-    template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, typename EnumerateSuccessors, typename EnumerateEntries, typename IncludeBlock, const bool useProfile = false>
-    unsigned fgRunDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, IncludeBlock includeBlock);
+    template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, typename EnumerateSuccessors, typename IncludeBlock, const bool useProfile = false>
+    unsigned fgRunDfs(BlockEnumerator& entries, VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, IncludeBlock includeBlock);
 
     template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, const bool useProfile = false>
     unsigned fgRunSubgraphDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, BitVec& subgraph, BitVecTraits& subgraphTraits);
