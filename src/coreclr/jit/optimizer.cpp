@@ -2354,35 +2354,36 @@ void Compiler::optFindLoops()
         if (optFindSCCs(failedToModifyAll))
         {
             JITDUMP("SCC modification %ssucceeded, finding natural loops\n", failedToModifyAll ? "partially " : "");
-        }
 
-        fgInvalidateDfsTree();
-        m_dfsTree = fgComputeDfs();
-        m_loops   = FlowGraphNaturalLoops::Find(m_dfsTree);
+            fgInvalidateDfsTree();
+            m_dfsTree = fgComputeDfs();
+            m_loops   = FlowGraphNaturalLoops::Find(m_dfsTree);
 
 #ifdef DEBUG
-        // If there are SCCs that pass through finallys, faults, or catches, we won't have remediated them above.
-        // These seem to be relatively rare, and won't represent unstructured flow in wasm, so we can ignore such cases.
-        //
-        // Note in the assert below we don't know for sure the unstructured flow goes
-        // through any EH construct, but it's a start.
-        //
-        bool hasEH = false;
-        for (EHblkDsc* const ehDsc : EHClauses(this))
-        {
-            hasEH = true;
-            break;
-        }
+            // If there are SCCs that pass through finallys, faults, or catches, we won't have remediated them above.
+            // These seem to be relatively rare, and won't represent unstructured flow in wasm, so we can ignore such
+            // cases.
+            //
+            // Note in the assert below we don't know for sure the unstructured flow goes
+            // through any EH construct, but it's a start.
+            //
+            bool hasEH = false;
+            for (EHblkDsc* const ehDsc : EHClauses(this))
+            {
+                hasEH = true;
+                break;
+            }
 
-        JITDUMP("Graph %s EH; %u improper headers; %s SCC transformations failed\n", hasEH ? "has" : "does not have",
-                m_loops->ImproperLoopHeaders(), failedToModifyAll ? "some" : "no");
+            JITDUMP("Graph %s EH; %u improper headers; %s SCC transformations failed\n",
+                    hasEH ? "has" : "does not have", m_loops->ImproperLoopHeaders(), failedToModifyAll ? "some" : "no");
 
-        // We currently think we handle all expected cases. This may change.
-        assert(!failedToModifyAll);
+            // We currently think we handle all expected cases. This may change.
+            assert(!failedToModifyAll);
 
-        // We should only see residual improper heades if there is EH
-        assert(hasEH || (m_loops->ImproperLoopHeaders() == 0));
+            // We should only see residual improper heades if there is EH
+            assert(hasEH || (m_loops->ImproperLoopHeaders() == 0));
 #endif
+        }
     }
 
     optCompactLoops();
@@ -3120,8 +3121,6 @@ public:
 
         JITDUMP("\n --> nested %u blocks... \n", BitVecOps::Count(&m_traits, nestedBlocks));
 
-        ArrayStack<SCC*> nestedSccs(m_comp->getAllocator(CMK_DepthFirstSearch));
-
         // Build a new postorder for the nested blocks
         //
         BasicBlock** postOrder = new (m_comp, CMK_DepthFirstSearch) BasicBlock*[nestedCount];
@@ -3138,47 +3137,76 @@ public:
             return BitVecOps::IsMember(&m_traits, nestedBlocks, block->bbPostorderNum);
         };
 
-        class SCCEntries : public BlockEnumerator
+        // Find the nestged subgraph entry blocks
+        // (blocks that have no pred, or a pred not in the subgraph).
+        //
+        ArrayStack<BasicBlock*> entries(m_comp->getAllocator(CMK_DepthFirstSearch));
+
+        unsigned        poNum = 0;
+        BitVecOps::Iter iterator(&m_traits, nestedBlocks);
+        while (iterator.NextElem(&poNum))
+        {
+            BasicBlock* const block   = m_comp->m_dfsTree->GetPostOrder(poNum);
+            bool              hasPred = false;
+            for (BasicBlock* const pred : block->PredBlocks())
+            {
+                hasPred = true;
+                if (!BitVecOps::IsMember(&m_traits, nestedBlocks, pred->bbPostorderNum))
+                {
+                    JITDUMP(FMT_BB " is subgraph entry\n", block->bbNum);
+                    entries.Emplace(block);
+                }
+            }
+
+            if (!hasPred)
+            {
+                JITDUMP(FMT_BB " is an isolated subgraph entry\n", block->bbNum);
+                entries.Emplace(block);
+            }
+        }
+
+        // Adapt the array stack of entries to be a block enumerator
+        //
+        class NestedEntries : public BlockEnumerator
         {
         private:
-            BitVecOps::Iter   m_iter;
-            FlowGraphDfsTree* m_dfsTree;
+            ArrayStack<BasicBlock*>& m_entries;
 
         public:
 
-            SCCEntries(SCC* scc, FlowGraphDfsTree* dfs)
-                : m_iter(&scc->m_traits, scc->m_entries)
-                , m_dfsTree(dfs)
+            NestedEntries(ArrayStack<BasicBlock*>& entries)
+                : m_entries(entries)
             {
             }
 
             BasicBlock* Next() override
             {
-                unsigned poNum = 0;
-                if (m_iter.NextElem(&poNum))
+                if (m_entries.Empty())
                 {
-                    return m_dfsTree->GetPostOrder(poNum);
+                    return nullptr;
                 }
 
-                return nullptr;
+                return m_entries.Pop();
             }
         };
 
-        SCCEntries entries(this, m_comp->m_dfsTree);
+        NestedEntries nestedEntries(entries);
 
-        unsigned numBlocks =
-            m_comp->fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge),
-                             AllSuccessorEnumerator, decltype(includeBlock),
-                             /* useProfile */ false>(entries, visitPreorder, visitPostorder, visitEdge, includeBlock);
+        unsigned numBlocks = m_comp->fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge),
+                                              AllSuccessorEnumerator, decltype(includeBlock),
+                                              /* useProfile */ false>(nestedEntries, visitPreorder, visitPostorder,
+                                                                      visitEdge, includeBlock);
 
         if (numBlocks != nestedCount)
         {
-            JITDUMP("Eh? numBlocks %u nestedCount %u\n", numBlocks, nestedCount);
+            printf("Eh? numBlocks %u nestedCount %u\n", numBlocks, nestedCount);
         }
         assert(numBlocks == nestedCount);
 
         // Use that to find the nested SCCs
         //
+        ArrayStack<SCC*> nestedSccs(m_comp->getAllocator(CMK_DepthFirstSearch));
+
         m_comp->optFindSCCs(nestedBlocks, m_traits, nestedSccs, postOrder, nestedCount);
 
         const int nNested = nestedSccs.Height();

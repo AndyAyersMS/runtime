@@ -5183,6 +5183,29 @@ unsigned Compiler::fgRunDfs(BlockEnumerator& entries,
 
                     visitEdge(block, succ);
                 }
+                // If this is a callfinally but the finally is not
+                // in the subset, summarize the flow through the finally
+                // to the return point, if that point is in the subset.
+                //
+                // Note a callfinally will only have one successor, so
+                // we don't need extra conditions here (that is, the
+                // callfinally block enumerator is done).
+                //
+                else if (block->isBBCallFinallyPair())
+                {
+                    BasicBlock* const callFinallyRet = block->Next();
+
+                    if (includeBlock(callFinallyRet))
+                    {
+                        if (BitVecOps::TryAddElemD(&traits, visited, callFinallyRet->bbNum))
+                        {
+                            blocks.Emplace(this, callFinallyRet, useProfile);
+                            visitPreorder(callFinallyRet, preOrderIndex++);
+                        }
+
+                        visitEdge(block, callFinallyRet);
+                    }
+                }
             }
             else
             {
@@ -5200,6 +5223,8 @@ unsigned Compiler::fgRunDfs(BlockEnumerator& entries,
         {
             break;
         }
+
+        assert(includeBlock(entry));
 
         if (BitVecOps::IsMember(&traits, visited, entry->bbNum))
         {
