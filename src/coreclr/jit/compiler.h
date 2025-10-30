@@ -6265,9 +6265,6 @@ public:
     template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, typename EnumerateSuccessors, typename IncludeBlock, const bool useProfile = false>
     unsigned fgRunDfs(BlockEnumerator& entries, VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, IncludeBlock includeBlock);
 
-    template <typename VisitPreorder, typename VisitPostorder, typename VisitEdge, const bool useProfile = false>
-    unsigned fgRunSubgraphDfs(VisitPreorder assignPreorder, VisitPostorder assignPostorder, VisitEdge visitEdge, BitVec& subgraph, BitVecTraits& subgraphTraits);
-
     template <const bool useProfile = false>
     FlowGraphDfsTree* fgComputeDfs();
     void fgInvalidateDfsTree();

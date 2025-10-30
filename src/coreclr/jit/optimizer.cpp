@@ -3134,10 +3134,42 @@ public:
 
         auto visitEdge = [](BasicBlock* block, BasicBlock* succ) {};
 
+        auto includeBlock = [this, &nestedBlocks](BasicBlock* block) {
+            return BitVecOps::IsMember(&m_traits, nestedBlocks, block->bbPostorderNum);
+        };
+
+        class SCCEntries : public BlockEnumerator
+        {
+        private:
+            BitVecOps::Iter   m_iter;
+            FlowGraphDfsTree* m_dfsTree;
+
+        public:
+
+            SCCEntries(SCC* scc, FlowGraphDfsTree* dfs)
+                : m_iter(&scc->m_traits, scc->m_entries)
+                , m_dfsTree(dfs)
+            {
+            }
+
+            BasicBlock* Next() override
+            {
+                unsigned poNum = 0;
+                if (m_iter.NextElem(&poNum))
+                {
+                    return m_dfsTree->GetPostOrder(poNum);
+                }
+
+                return nullptr;
+            }
+        };
+
+        SCCEntries entries(this, m_comp->m_dfsTree);
+
         unsigned numBlocks =
-            m_comp->fgRunSubgraphDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge),
-                                     /* useProfile */ false>(visitPreorder, visitPostorder, visitEdge, nestedBlocks,
-                                                             m_traits);
+            m_comp->fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge),
+                             AllSuccessorEnumerator, decltype(includeBlock),
+                             /* useProfile */ false>(entries, visitPreorder, visitPostorder, visitEdge, includeBlock);
 
         if (numBlocks != nestedCount)
         {
