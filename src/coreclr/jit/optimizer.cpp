@@ -3449,14 +3449,24 @@ bool Compiler::optFindSCCs(bool& failedToModify)
 void Compiler::optFindSCCs(
     BitVec& subset, BitVecTraits& traits, ArrayStack<SCC*>& sccs, BasicBlock** postorder, unsigned postorderCount)
 {
-    // Initially we map a block to a null entry in the map.
-    // If we then get a second block in that SCC, we allocate an SCC instance.
+    // This is the core bit of the Kosaraju algorithm for finding SCCs. It is invoked
+    // by fgRunDfs in a reverse graph traversal (walk from a block to its preds).
     //
-    // We probably want to ignore flow through finallies (back ignore preds that are callfinally ret?)
+    // Root (the initial block in a traversal sequence) is set by the BlocksInRPO enumerator
+    // below...
     //
-    SCCMap map(getAllocator(CMK_DepthFirstSearch));
+    // If a block has an entry in map, it has been visited. Intially the value is set to
+    // nullptr. If we find another unvisited block in that same root traversal, we
+    // allocate an SCC instance and associate it with both blocks, and from then on continue
+    // adding blocks to the SCC.
+    //
+    SCCMap      map(getAllocator(CMK_DepthFirstSearch));
+    BasicBlock* root = nullptr;
+    JITDUMP("Root is null\n");
 
-    auto assign = [=, &map, &sccs, &traits](auto self, BasicBlock* u, BasicBlock* root, BitVec& subset) -> void {
+    auto visitPreorder = [=, &root, &traits, &map, &sccs](BasicBlock* block, unsigned preorderNum) {
+
+        assert(root != nullptr);
         // Ignore blocks not in the subset
         //
         // This might be too restrictive. Consider
@@ -3476,14 +3486,14 @@ void Compiler::optFindSCCs(
         // However I think we still find all nested SCCs, since those cannot
         // share a header with the outer SCC?
         //
-        if (!BitVecOps::IsMember(&traits, subset, u->bbPostorderNum))
+        if (!BitVecOps::IsMember(&traits, subset, block->bbPostorderNum))
         {
             return;
         }
 
         // If we've assigned u an scc, no more work needed.
         //
-        if (map.Lookup(u))
+        if (map.Lookup(block))
         {
             return;
         }
@@ -3495,7 +3505,7 @@ void Compiler::optFindSCCs(
 
         if (found)
         {
-            assert(u != root);
+            assert(block != root);
 
             if (scc == nullptr)
             {
@@ -3504,60 +3514,144 @@ void Compiler::optFindSCCs(
                 sccs.Push(scc);
             }
 
-            scc->Add(u);
+            scc->Add(block);
         }
 
-        // Indicate we've visited u
+        // Indicate we've visited block
         //
-        map.Set(u, scc);
+        map.Set(block, scc);
+    };
 
-        // Walk u's preds looking for more SCC members
-        //
-        // Do not walk back out of a handler
-        //
-        if (bbIsHandlerBeg(u))
+    // Adapter to walk the pred list as the "successors" of a block so we
+    // can repurpose fgRunDfs to traverse the reverse flowgraph too.
+    //
+    // For our use cases an SCC can never include a finally or a catch/filter,
+    // we assume finallys are "called" somehow.
+    //
+    // (perhaps more ideally we ensure that we convert all try/finallys to
+    // try/faults with more aggressive finally cloning
+    //
+    class PredEnumerator
+    {
+    private:
+        Compiler*   m_comp;
+        BasicBlock* m_block;
+        FlowEdge*   m_edge;
+    public:
+        PredEnumerator(Compiler* comp, BasicBlock* block, bool useProfile)
+            : m_comp(comp)
+            , m_block(block)
+            , m_edge(nullptr)
         {
-            return;
-        }
-
-        // Do not walk back into a finally,
-        // instead skip to the call finally.
-        //
-        if (u->isBBCallFinallyPairTail())
-        {
-            self(self, u->Prev(), root, subset);
-            return;
-        }
-
-        // Else walk preds...
-        //
-        for (BasicBlock* p : u->PredBlocks())
-        {
-            // Do not walk back into a catch or filter.
-            //
-            if (p->KindIs(BBJ_EHCATCHRET, BBJ_EHFILTERRET))
+            if (comp->bbIsHandlerBeg(block))
             {
-                continue;
+                return;
             }
 
-            self(self, p, root, subset);
+            m_edge = block->bbPreds;
+        }
+
+        BasicBlock* Block()
+        {
+            return m_block;
+        }
+
+        BasicBlock* NextSuccessor()
+        {
+            // Do not walk back into a finally,
+            // instead skip to the call finally.
+            //
+            if ((m_edge != nullptr) && m_block->isBBCallFinallyPairTail())
+            {
+                m_edge = nullptr;
+                return m_block->Prev();
+            }
+
+            // Do not walk back into catches or filters
+            //
+            while (m_edge != nullptr)
+            {
+                BasicBlock* const result = m_edge->getSourceBlock();
+                m_edge                   = m_edge->getNextPredEdge();
+
+                if (result->KindIs(BBJ_EHCATCHRET, BBJ_EHFILTERRET))
+                {
+                    continue;
+                }
+
+                return result;
+            }
+
+            return nullptr;
         }
     };
 
-    // proper rdfs? bv iter...?
-    //
-    for (unsigned i = 0; i < postorderCount; i++)
-    {
-        unsigned const    rpoNum = postorderCount - i - 1;
-        BasicBlock* const block  = postorder[rpoNum];
+    auto visitPostorder = [](BasicBlock* block, unsigned postorderNum) {};
+    auto visitEdge      = [](BasicBlock* source, BasicBlock* target) {};
 
-        if (!BitVecOps::IsMember(&traits, subset, block->bbPostorderNum))
+    auto includeBlock = [&traits, &subset](BasicBlock* block) {
+        return BitVecOps::IsMember(&traits, subset, block->bbPostorderNum);
+    };
+
+    // Adapter class to produce blocks in reverse postorder
+    // for a given subset of the flowgraph
+    //
+    class BlocksInRPO : public BlockEnumerator
+    {
+    private:
+        int           m_index;
+        int           m_limit;
+        BasicBlock**  m_postorder;
+        BitVecTraits* m_traits;
+        BitVec&       m_subset;
+        BasicBlock**  m_root;
+
+    public:
+
+        BlocksInRPO(
+            BitVecTraits* traits, BitVec& subset, BasicBlock** postorder, unsigned postorderCount, BasicBlock** root)
+            : m_index(0)
+            , m_limit(postorderCount)
+            , m_postorder(postorder)
+            , m_traits(traits)
+            , m_subset(subset)
+            , m_root(root)
         {
-            continue;
         }
 
-        assign(assign, block, block, subset);
-    }
+        BasicBlock* Next() override
+        {
+            // Would be nice to have a reverse order bv iterator
+            //
+            while (m_index < m_limit)
+            {
+                unsigned const    rpoNum = m_limit - m_index - 1;
+                BasicBlock* const block  = m_postorder[rpoNum];
+                m_index++;
+
+                if (!BitVecOps::IsMember(m_traits, m_subset, block->bbPostorderNum))
+                {
+                    continue;
+                }
+
+                // Each block we return here is a candidate SCC root, so update
+                // this bit of shared state.
+                //
+                JITDUMP("Setting root to " FMT_BB "\n", block->bbNum);
+                *m_root = block;
+
+                return block;
+            }
+
+            return nullptr;
+        }
+    };
+
+    BlocksInRPO rpo(&traits, subset, postorder, postorderCount, &root);
+
+    fgRunDfs<decltype(visitPreorder), decltype(visitPostorder), decltype(visitEdge), PredEnumerator,
+             decltype(includeBlock), /* useProfile */ false>(rpo, visitPreorder, visitPostorder, visitEdge,
+                                                             includeBlock);
 
     if (sccs.Height() > 0)
     {
