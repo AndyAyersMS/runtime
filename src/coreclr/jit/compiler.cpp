@@ -5015,6 +5015,8 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     DoPhase(this, PHASE_ALIGN_LOOPS, &Compiler::placeLoopAlignInstructions);
 #endif
 
+    DoPhase(this, PHASE_WASM_CONTROL_FLOW, &Compiler::fgWasmControlFlow);
+
     // The common phase checks and dumps are no longer relevant past this point.
     //
     activePhaseChecks = PhaseChecks::CHECK_NONE;
