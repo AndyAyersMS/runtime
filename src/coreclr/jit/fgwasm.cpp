@@ -18,7 +18,7 @@ private:
     WasmInterval* m_prev;
 
     // m_chain refers to the conflict set member with the lowest m_start.
-    // (for "trivial" conflict sets m_chain will be `this`)
+    // (for "trivial" singlton conflict sets m_chain will be `this`)
     //
     WasmInterval* m_chain;
 
@@ -31,9 +31,6 @@ private:
 
     // True index of end; interval ends just before this block
     unsigned m_end;
-
-    // Smallest start index of any chained interval
-    unsigned m_chainStart;
 
     // Largest end index of any chained interval
     unsigned m_chainEnd;
@@ -51,39 +48,38 @@ public:
         , m_containingLoop(loop)
         , m_start(start)
         , m_end(end)
-        , m_chainStart(start)
         , m_chainEnd(end)
         , m_isLoop(isLoop)
     {
         m_chain = this;
     }
 
-    unsigned Start()
+    unsigned Start() const
     {
         return m_start;
     }
-    unsigned End()
+
+    unsigned End() const
     {
         return m_end;
     }
-    unsigned ChainStart()
-    {
-        return m_chainStart;
-    }
-    unsigned ChainEnd()
+
+    unsigned ChainEnd() const
     {
         return m_chainEnd;
     }
 
-    WasmInterval* Next()
+    WasmInterval* Next() const
     {
         return m_next;
     }
-    WasmInterval* Prev()
+
+    WasmInterval* Prev() const
     {
         return m_prev;
     }
-    WasmInterval* Chain()
+
+    WasmInterval* Chain() 
     {
         if (m_chain == this)
         {
@@ -95,11 +91,12 @@ public:
         return chain;
     }
 
-    bool IsLoop()
+    bool IsLoop() const
     {
         return m_isLoop;
     }
-    FlowGraphNaturalLoop* ContainingLoop()
+
+    FlowGraphNaturalLoop* ContainingLoop() const
     {
         return m_containingLoop;
     }
@@ -120,7 +117,6 @@ public:
     void SetChain(WasmInterval* c)
     {
         m_chain         = c;
-        c->m_chainStart = min(c->m_chainStart, m_chainStart);
         c->m_chainEnd   = max(c->m_chainEnd, m_chainEnd);
     }
 
@@ -147,7 +143,7 @@ public:
 
     void Dump(bool chainExtent = false)
     {
-        printf("[%03u,%03u]%s", chainExtent ? m_chainStart : m_start, chainExtent ? m_chainEnd : m_end,
+        printf("[%03u,%03u]%s", m_start, chainExtent ? m_chainEnd : m_end,
                m_isLoop && !chainExtent ? " L" : "");
 
         if (!chainExtent && (m_containingLoop != nullptr))
@@ -384,7 +380,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
             // See if the current (possibly extended) interval starts at or inside
             // the chain interval and ends outside.
             //
-            if ((ic->ChainStart() <= iv->Start()) && (iv->Start() < ic->ChainEnd()))
+            if ((ic->Start() <= iv->Start()) && (iv->Start() < ic->ChainEnd()))
             {
                 JITDUMP("Start nested in ");
                 JITDUMPEXEC(ic->Dump());
