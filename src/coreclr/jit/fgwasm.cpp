@@ -6,6 +6,8 @@
 #pragma hdrstop
 #endif
 
+#include "algorithm.h"
+
 // WasmInterval
 //
 // Represents a BLOCK/END or LOOP/END
@@ -79,7 +81,7 @@ public:
         return m_prev;
     }
 
-    WasmInterval* Chain() 
+    WasmInterval* Chain()
     {
         if (m_chain == this)
         {
@@ -116,8 +118,8 @@ public:
 
     void SetChain(WasmInterval* c)
     {
-        m_chain         = c;
-        c->m_chainEnd   = max(c->m_chainEnd, m_chainEnd);
+        m_chain       = c;
+        c->m_chainEnd = max(c->m_chainEnd, m_chainEnd);
     }
 
     static WasmInterval* NewRoot(Compiler* comp, unsigned numBlocks)
@@ -143,8 +145,7 @@ public:
 
     void Dump(bool chainExtent = false)
     {
-        printf("[%03u,%03u]%s", m_start, chainExtent ? m_chainEnd : m_end,
-               m_isLoop && !chainExtent ? " L" : "");
+        printf("[%03u,%03u]%s", m_start, chainExtent ? m_chainEnd : m_end, m_isLoop && !chainExtent ? " L" : "");
 
         if (!chainExtent && (m_containingLoop != nullptr))
         {
@@ -248,6 +249,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // block intervals that end at a certain point.
     //
     jitstd::vector<WasmInterval*> intervals(numHotBlocks, nullptr, getAllocator(CMK_Wasm));
+    JITDUMP("Scratch vector size %zu\n", intervals.size());
 
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
@@ -411,6 +413,69 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     JITDUMP("\n-------------- After finding conflicts\n");
     for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    {
+        JITDUMPEXEC(iv->Dump());
+    }
+    JITDUMP("--------------\n\n");
+
+    // Now add all the intervals to the scratch vector
+    //
+    intervals.clear();
+    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    {
+        intervals.push_back(iv);
+    }
+
+    // Sort by chain start index (ascending) then actual end index (descending) then isLoop
+    //
+    auto comesBefore = [](WasmInterval* i1, WasmInterval* i2) {
+        WasmInterval* const p1 = i1->Chain();
+        WasmInterval* const p2 = i2->Chain();
+
+        // Lowest chain start
+        //
+        if (p1->Start() < p2->Start())
+        {
+            return true;
+        }
+
+        if (p2->Start() < p1->Start())
+        {
+            return false;
+        }
+
+        // Highest end
+        //
+        if (i1->End() > i2->End())
+        {
+            return true;
+        }
+
+        if (i2->End() > i1->End())
+        {
+            return false;
+        }
+
+        // Tiebreaker
+        //
+        if (i1->IsLoop())
+        {
+            return true;
+        }
+
+        return false;
+    };
+
+    intervals.clear();
+    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    {
+        intervals.push_back(iv);
+    }
+
+    jitstd::sort(intervals.begin(), intervals.end(), comesBefore);
+
+    JITDUMP("\n-------------- After sorting\n");
+    for (WasmInterval* iv : intervals)
     {
         JITDUMPEXEC(iv->Dump());
     }
