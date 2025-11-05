@@ -262,6 +262,15 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
         // Now see where block branches to...
         //
+
+        if (block->isBBCallFinallyPair())
+        {
+            // We ignore these and treat them as if they fall through to the tail.
+            // Since the tail cannot be a join we don't need a block.
+            //
+            continue;
+        }
+
         for (BasicBlock* const succ : block->Succs())
         {
             unsigned const succNum = succ->bbPreorderNum;
@@ -544,7 +553,12 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
             case BBJ_CALLFINALLY:
             {
-                // no-op
+                // no-op (implied fall through to tail, if it exists)
+                //
+                if (!block->isBBCallFinallyPair())
+                {
+                    JITDUMP("UNREACHED\n");
+                }
                 break;
             }
 
@@ -704,6 +718,18 @@ PhaseStatus Compiler::fgWasmControlFlow()
                     {
                         JITDUMP("  subgraph cluster_%u_%u%s {\n", chain->Start(), interval->End(),
                                 interval->IsLoop() ? "_loop" : "");
+
+                        FlowGraphNaturalLoop* const loop = m_loops->GetLoopByHeader(block);
+
+                        if (loop != nullptr)
+                        {
+                            JITDUMP("    color=red;\n");
+                        }
+                        else
+                        {
+                            JITDUMP("    color=black;\n");
+                        }
+
                         wasmCursor++;
                         activeIntervals.Push(interval);
 
@@ -727,9 +753,20 @@ PhaseStatus Compiler::fgWasmControlFlow()
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
         BasicBlock* const block = initialLayout[cursor];
-        for (BasicBlock* const succ : block->Succs())
+
+        if (block->KindIs(BBJ_CALLFINALLY))
         {
-            JITDUMP("   " FMT_BB " -> " FMT_BB ";\n", block->bbNum, succ->bbNum);
+            if (block->isBBCallFinallyPair())
+            {
+                JITDUMP("   " FMT_BB " -> " FMT_BB " [style=dotted];\n", block->bbNum, block->Next()->bbNum);
+            }
+        }
+        else
+        {
+            for (BasicBlock* const succ : block->Succs())
+            {
+                JITDUMP("   " FMT_BB " -> " FMT_BB ";\n", block->bbNum, succ->bbNum);
+            }
         }
     }
 
