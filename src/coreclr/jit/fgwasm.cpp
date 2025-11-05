@@ -274,7 +274,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
             }
 
             WasmInterval* const loopInterval =
-                WasmInterval::NewLoop(this, block, initialLayout[endCursor - 1], containingLoop);
+                WasmInterval::NewLoop(this, block, initialLayout[endCursor], containingLoop);
             JITDUMPEXEC(loopInterval->Dump());
 
             // We assume here that a given block is only the header of one loop.
@@ -320,7 +320,8 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 continue;
             }
 
-            // Branch to cold block needs no block (presumably a finally invoke?)
+            // Branch to cold block needs no block (presumably something EH related).
+            // Eventually we need to case these out and handle them better.
             //
             if (succNum >= numHotBlocks)
             {
@@ -480,6 +481,137 @@ PhaseStatus Compiler::fgWasmControlFlow()
         JITDUMPEXEC(iv->Dump());
     }
     JITDUMP("--------------\n\n");
+
+    // Now show (roughly) what the WASM control flow looks like
+    //
+    ArrayStack<WasmInterval*> activeIntervals(getAllocator(CMK_Wasm));
+    unsigned                  wasmCursor = 0;
+    activeIntervals.Push(root);
+
+    for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
+    {
+        BasicBlock* const block = initialLayout[cursor];
+
+        // Close intervals that end here (at most two, block and/or loop)
+        //
+        while (activeIntervals.Top()->End() == cursor)
+        {
+            JITDUMP("END    (%u)%s\n", activeIntervals.Top()->End(), activeIntervals.Top()->IsLoop() ? " LOOP" : "");
+            activeIntervals.Pop();
+        }
+
+        // Open intervals that start here
+        //
+        if (wasmCursor < intervals.size())
+        {
+            WasmInterval* interval = intervals[wasmCursor];
+            WasmInterval* chain    = interval->Chain();
+
+            if (chain->Start() <= cursor)
+            {
+                if (interval == root)
+                {
+                    JITDUMP("ENTER\n");
+                    wasmCursor++;
+                }
+                else
+                {
+                    while (chain->Start() <= cursor)
+                    {
+                        JITDUMP("%s (%u)\n", interval->IsLoop() ? "LOOP " : "BLOCK", interval->End());
+                        wasmCursor++;
+                        activeIntervals.Push(interval);
+
+                        if (wasmCursor >= intervals.size())
+                        {
+                            break;
+                        }
+
+                        interval = intervals[wasmCursor];
+                        chain    = interval->Chain();
+                    }
+                }
+            }
+        }
+
+        JITDUMP("  " FMT_BB "\n", block->bbNum);
+
+        if (block->KindIs(BBJ_RETURN))
+        {
+            JITDUMP("RETURN\n");
+            continue;
+        }
+
+        if (block->KindIs(BBJ_THROW))
+        {
+            JITDUMP("THROW\n");
+            continue;
+        }
+
+        // Display branches
+        //
+        for (BasicBlock* const succ : block->Succs())
+        {
+            unsigned const succNum = succ->bbPreorderNum;
+
+            // Branch to next
+            //
+            if (succNum == (cursor + 1))
+            {
+                JITDUMP("FALLTHROUGH\n");
+                continue;
+            }
+
+            // Branch to cold block needs no block (presumably a finally invoke?)
+            //
+            if (succNum >= numHotBlocks)
+            {
+                continue;
+            }
+
+            // Assume we've modified branch so that the first succ is
+            // the conditional target...
+            //
+            int const  h        = activeIntervals.Height();
+            bool const wantLoop = succNum <= cursor;
+            bool       found    = false;
+
+            for (int i = 0; i < h; i++)
+            {
+                WasmInterval* const ii    = activeIntervals.Top(i);
+                unsigned            match = 0;
+
+                if (wantLoop)
+                {
+                    // loops bind to start
+                    match = ii->Start();
+                }
+                else
+                {
+                    // blocks bind to end
+                    match = ii->End();
+                }
+
+                if ((match == succNum) && (wantLoop == ii->IsLoop()))
+                {
+                    JITDUMP("BR%s %d (%u)%s\n",
+                            block->KindIs(BBJ_COND) && (block->GetTrueTarget() == succ) ? "_IF" : "   ", i, match,
+                            wantLoop ? " ; back edge" : "");
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                JITDUMP("Eh? Could not find %u " FMT_BB " in active control stack\n", succNum, succ->bbNum);
+            }
+
+            // assert(found);
+        }
+
+        JITDUMP("\n");
+    }
 
     return PhaseStatus::MODIFIED_NOTHING;
 }
