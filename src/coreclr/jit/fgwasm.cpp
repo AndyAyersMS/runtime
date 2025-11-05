@@ -607,11 +607,81 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 JITDUMP("Eh? Could not find %u " FMT_BB " in active control stack\n", succNum, succ->bbNum);
             }
 
-            // assert(found);
+            assert(found);
         }
 
         JITDUMP("\n");
     }
+
+    // Ditto but in dot markup
+    //
+    activeIntervals.Reset();
+    activeIntervals.Push(root);
+    wasmCursor = 0;
+    JITDUMP("\ndigraph WASM {\n");
+
+    for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
+    {
+        BasicBlock* const block = initialLayout[cursor];
+
+        // Close intervals that end here (at most two, block and/or loop)
+        //
+        while (activeIntervals.Top()->End() == cursor)
+        {
+            JITDUMP("  }\n");
+            activeIntervals.Pop();
+        }
+
+        // Open intervals that start here
+        //
+        if (wasmCursor < intervals.size())
+        {
+            WasmInterval* interval = intervals[wasmCursor];
+            WasmInterval* chain    = interval->Chain();
+
+            if (chain->Start() <= cursor)
+            {
+
+                if (interval == root)
+                {
+                    wasmCursor++;
+                }
+                else
+                {
+                    while (chain->Start() <= cursor)
+                    {
+                        JITDUMP("  subgraph cluster_%u_%u%s {\n", chain->Start(), interval->End(),
+                                interval->IsLoop() ? "_loop" : "");
+                        wasmCursor++;
+                        activeIntervals.Push(interval);
+
+                        if (wasmCursor >= intervals.size())
+                        {
+                            break;
+                        }
+
+                        interval = intervals[wasmCursor];
+                        chain    = interval->Chain();
+                    }
+                }
+            }
+        }
+
+        JITDUMP("    " FMT_BB ";\n", block->bbNum);
+    }
+
+    // Now list all the branches
+
+    for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
+    {
+        BasicBlock* const block = initialLayout[cursor];
+        for (BasicBlock* const succ : block->Succs())
+        {
+            JITDUMP("   " FMT_BB " -> " FMT_BB ";\n", block->bbNum, succ->bbNum);
+        }
+    }
+
+    JITDUMP("}\n");
 
     return PhaseStatus::MODIFIED_NOTHING;
 }
