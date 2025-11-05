@@ -20,9 +20,6 @@ private:
     // (for "trivial" singlton conflict sets m_chain will be `this`)
     WasmInterval* m_chain;
 
-    // Most nested loop containing this interval, or nullptr.
-    FlowGraphNaturalLoop* m_containingLoop;
-
     // True index of start
     unsigned m_start;
 
@@ -37,9 +34,8 @@ private:
 
 public:
 
-    WasmInterval(unsigned start, unsigned end, FlowGraphNaturalLoop* loop, bool isLoop)
+    WasmInterval(unsigned start, unsigned end, bool isLoop)
         : m_chain(nullptr)
-        , m_containingLoop(loop)
         , m_start(start)
         , m_end(end)
         , m_chainEnd(end)
@@ -80,11 +76,6 @@ public:
         return m_isLoop;
     }
 
-    FlowGraphNaturalLoop* ContainingLoop() const
-    {
-        return m_containingLoop;
-    }
-
     void SetChain(WasmInterval* c)
     {
         m_chain       = c;
@@ -93,33 +84,27 @@ public:
 
     static WasmInterval* NewRoot(Compiler* comp, unsigned numBlocks)
     {
-        WasmInterval* root =
-            new (comp, CMK_Wasm) WasmInterval(0, numBlocks, /* containingLoop */ nullptr, /* isLoop */ false);
+        WasmInterval* root = new (comp, CMK_Wasm) WasmInterval(0, numBlocks, /* isLoop */ false);
         return root;
     }
 
-    static WasmInterval* NewBlock(Compiler* comp, BasicBlock* start, BasicBlock* end, FlowGraphNaturalLoop* loop)
+    static WasmInterval* NewBlock(Compiler* comp, BasicBlock* start, BasicBlock* end)
     {
         WasmInterval* result =
-            new (comp, CMK_Wasm) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, loop, /* isLoop */ false);
+            new (comp, CMK_Wasm) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, /* isLoop */ false);
         return result;
     }
 
-    static WasmInterval* NewLoop(Compiler* comp, BasicBlock* start, BasicBlock* end, FlowGraphNaturalLoop* loop)
+    static WasmInterval* NewLoop(Compiler* comp, BasicBlock* start, BasicBlock* end)
     {
         WasmInterval* result =
-            new (comp, CMK_Wasm) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, loop, /* isLoop */ true);
+            new (comp, CMK_Wasm) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, /* isLoop */ true);
         return result;
     }
 
     void Dump(bool chainExtent = false)
     {
         printf("[%03u,%03u]%s", m_start, chainExtent ? m_chainEnd : m_end, m_isLoop && !chainExtent ? " L" : "");
-
-        if (!chainExtent && (m_containingLoop != nullptr))
-        {
-            printf(" in L%02u", m_containingLoop->GetIndex());
-        }
 
         if (m_chain != this)
         {
@@ -183,6 +168,7 @@ public:
 //
 PhaseStatus Compiler::fgWasmControlFlow()
 {
+    // -----------------------------------------------
     // (1) Build loop-aware RPO layout
     //
     if (m_dfsTree == nullptr)
@@ -216,13 +202,9 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     fgVisitBlocksInLoopAwareRPO(m_dfsTree, m_loops, addToSequence);
 
+    // -----------------------------------------------
     // (2) Build the intervals
     //
-
-    // Keep track of containing loops
-    //
-    FlowGraphNaturalLoop* containingLoop = nullptr;
-
     // Allocate inteval and scratch vectors. We'll use the scratch vectort to keep track of
     // block intervals that end at a certain point.
     //
@@ -232,24 +214,20 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // Build the root
     //
     WasmInterval* root = WasmInterval::NewRoot(this, numHotBlocks);
-    JITDUMPEXEC(root->Dump());
     intervals.push_back(root);
 
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
         BasicBlock* const block = initialLayout[cursor];
 
-        // See if we entered or exited any loops
+        // See if we entered any loops
         //
         FlowGraphNaturalLoop* const loop = m_loops->GetLoopByHeader(block);
 
         if (loop != nullptr)
         {
-            // Loop header block. Verify loop nesting is as expected
-            //
-            assert(containingLoop == loop->GetParent());
-
             // Find the loop's lexical extent given our ordering
+            // (maybe memoize this during loop finding...)
             //
             unsigned endCursor = cursor;
             while (loop->ContainsBlock(initialLayout[endCursor]) && (endCursor < numHotBlocks))
@@ -257,23 +235,13 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 endCursor++;
             }
 
-            WasmInterval* const loopInterval =
-                WasmInterval::NewLoop(this, block, initialLayout[endCursor], containingLoop);
-            JITDUMPEXEC(loopInterval->Dump());
+            // What if loop extends to end of method... hmmm
+            //
+            WasmInterval* const loopInterval = WasmInterval::NewLoop(this, block, initialLayout[endCursor]);
 
-            // We assume here that a given block is only the header of one loop.
+            // We assume here that a block is only the header of one loop.
             //
             intervals.push_back(loopInterval);
-            containingLoop = loop;
-        }
-        else
-        {
-            // Non-loop header block. We may have exited one or more loops.
-            //
-            while ((containingLoop != nullptr) && !containingLoop->ContainsBlock(block))
-            {
-                containingLoop = containingLoop->GetParent();
-            }
         }
 
         // Now see where block branches to...
@@ -326,9 +294,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
             // Non-contiguous, non-subsumed forward branch
             //
-            WasmInterval* const branch = WasmInterval::NewBlock(this, block, initialLayout[succNum], containingLoop);
-            JITDUMPEXEC(branch->Dump());
-
+            WasmInterval* const branch = WasmInterval::NewBlock(this, block, initialLayout[succNum]);
             intervals.push_back(branch);
 
             // Remeber an interval end here
@@ -346,6 +312,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
     }
     JITDUMP("--------------\n\n");
 
+    // -----------------------------------------------
     // (3) Find intervals that overlap
     //
     // See if this interval conflicts with any other. If so,
@@ -353,11 +320,10 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // the conflict set for futher resolution.
     //
     auto resolve = [&intervals](WasmInterval* const iv, WasmInterval* const root) {
-        JITDUMP("Resolve ");
-        JITDUMPEXEC(iv->Dump());
-
         for (WasmInterval* ip : intervals)
         {
+            // We only need to consider intervals that start at the same point or earlier.
+            //
             if (ip == iv)
             {
                 break;
@@ -367,19 +333,16 @@ PhaseStatus Compiler::fgWasmControlFlow()
             //
             assert(ip->Start() <= iv->Start());
 
-            // We may have chained the previous interval to another even earlier.
+            // We may have chained this previous interval to another even earlier.
             // Find the head of that chain.
             //
             WasmInterval* const ic = ip->Chain();
 
-            // See if the current (possibly extended) interval starts at or inside
+            // See if the current interval starts at or inside
             // the chain interval and ends outside.
             //
             if ((ic->Start() <= iv->Start()) && (iv->Start() < ic->ChainEnd()))
             {
-                JITDUMP("Start nested in ");
-                JITDUMPEXEC(ic->Dump());
-
                 // This interval starts in the middle of a prior one.
                 // Does it end afterwards?
                 //
@@ -392,8 +355,6 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 }
             }
         }
-
-        JITDUMP("\n");
     };
 
     for (WasmInterval* iv : intervals)
