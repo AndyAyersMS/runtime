@@ -440,37 +440,34 @@ PhaseStatus Compiler::fgWasmControlFlow()
             activeIntervals.Pop();
         }
 
-        // Open intervals that start here
+        // Open intervals that start here or earlier
         //
         if (wasmCursor < intervals.size())
         {
             WasmInterval* interval = intervals[wasmCursor];
             WasmInterval* chain    = interval->Chain();
 
-            if (chain->Start() <= cursor)
+            while (chain->Start() <= cursor)
             {
                 if (interval == root)
                 {
                     JITDUMP("ENTER\n");
-                    wasmCursor++;
                 }
                 else
                 {
-                    while (chain->Start() <= cursor)
-                    {
-                        JITDUMP("%s (%u)\n", interval->IsLoop() ? "LOOP " : "BLOCK", interval->End());
-                        wasmCursor++;
-                        activeIntervals.Push(interval);
-
-                        if (wasmCursor >= intervals.size())
-                        {
-                            break;
-                        }
-
-                        interval = intervals[wasmCursor];
-                        chain    = interval->Chain();
-                    }
+                    JITDUMP("%s (%u)\n", interval->IsLoop() ? "LOOP " : "BLOCK", interval->End());
                 }
+
+                wasmCursor++;
+                activeIntervals.Push(interval);
+
+                if (wasmCursor >= intervals.size())
+                {
+                    break;
+                }
+
+                interval = intervals[wasmCursor];
+                chain    = interval->Chain();
             }
         }
 
