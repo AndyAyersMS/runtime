@@ -264,9 +264,9 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 continue;
             }
 
-            // Branch to next needs no block
+            // Branch to next needs no block, unless this is a switch
             //
-            if (succNum == (cursor + 1))
+            if ((succNum == (cursor + 1)) && !block->KindIs(BBJ_SWITCH))
             {
                 continue;
             }
@@ -473,52 +473,18 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
         JITDUMP("  " FMT_BB "\n", block->bbNum);
 
-        if (block->KindIs(BBJ_RETURN))
-        {
-            JITDUMP("RETURN\n");
-            continue;
-        }
-
-        if (block->KindIs(BBJ_THROW))
-        {
-            JITDUMP("THROW\n");
-            continue;
-        }
-
-        // Display branches
+        // Compute the depth of the block ending at targetNum
+        // or (if isBackege) ths loop starting at targetNum
         //
-        for (BasicBlock* const succ : block->Succs())
-        {
-            unsigned const succNum = succ->bbPreorderNum;
-
-            // Branch to next
-            //
-            if (succNum == (cursor + 1))
-            {
-                JITDUMP("FALLTHROUGH\n");
-                continue;
-            }
-
-            // Branch to cold block needs no block (presumably a finally invoke?)
-            //
-            if (succNum >= numHotBlocks)
-            {
-                continue;
-            }
-
-            // Assume we've modified branch so that the first succ is
-            // the conditional target...
-            //
-            int const  h        = activeIntervals.Height();
-            bool const wantLoop = succNum <= cursor;
-            bool       found    = false;
+        auto findDepth = [&activeIntervals](unsigned targetNum, bool isBackedge, unsigned& match) {
+            int const h = activeIntervals.Height();
 
             for (int i = 0; i < h; i++)
             {
-                WasmInterval* const ii    = activeIntervals.Top(i);
-                unsigned            match = 0;
+                WasmInterval* const ii = activeIntervals.Top(i);
+                match                  = 0;
 
-                if (wantLoop)
+                if (isBackedge)
                 {
                     // loops bind to start
                     match = ii->Start();
@@ -529,22 +495,157 @@ PhaseStatus Compiler::fgWasmControlFlow()
                     match = ii->End();
                 }
 
-                if ((match == succNum) && (wantLoop == ii->IsLoop()))
+                if ((match == targetNum) && (isBackedge == ii->IsLoop()))
                 {
-                    JITDUMP("BR%s %d (%u)%s\n",
-                            block->KindIs(BBJ_COND) && (block->GetTrueTarget() == succ) ? "_IF" : "   ", i, match,
-                            wantLoop ? " ; back edge" : "");
-                    found = true;
-                    break;
+                    return i;
                 }
             }
 
-            if (!found)
+            JITDUMP("Could not find %u%s in active control stack\n", targetNum, isBackedge ? " (backedge)" : "");
+            assert(!"Can't find target in control stack");
+
+            return ~0;
+        };
+
+        switch (block->GetKind())
+        {
+            case BBJ_RETURN:
+            case BBJ_EHFINALLYRET:
+            case BBJ_EHFAULTRET:
+            case BBJ_EHFILTERRET:
+            case BBJ_EHCATCHRET:
             {
-                JITDUMP("Eh? Could not find %u " FMT_BB " in active control stack\n", succNum, succ->bbNum);
+                JITDUMP("RETURN\n");
+                break;
             }
 
-            assert(found);
+            case BBJ_THROW:
+            {
+                JITDUMP("THROW\n");
+                break;
+            }
+
+            case BBJ_CALLFINALLY:
+            {
+                // no-op
+                break;
+            }
+
+            case BBJ_ALWAYS:
+            case BBJ_CALLFINALLYRET:
+            {
+                unsigned const succNum = block->GetTarget()->bbPreorderNum;
+
+                if (succNum == (cursor + 1))
+                {
+                    JITDUMP("FALLTHROUGH\n");
+                }
+                else if (succNum < numHotBlocks)
+                {
+                    bool const isBackedge = succNum <= cursor;
+                    unsigned   blockNum   = 0;
+                    unsigned   depth      = findDepth(succNum, isBackedge, blockNum);
+                    JITDUMP("BR %d (%u)%s\n", depth, blockNum, isBackedge ? "be" : "");
+                }
+
+                break;
+            }
+
+            case BBJ_COND:
+            {
+                const unsigned trueNum  = block->GetTrueTarget()->bbPreorderNum;
+                const unsigned falseNum = block->GetFalseTarget()->bbPreorderNum;
+
+                if (trueNum == falseNum)
+                {
+                    JITDUMP("FALLTHROUGH\n");
+                    break;
+                }
+
+                // If the true target is the next block, we are in a bind, since
+                // we need to branch to it, but may not have induced a block.
+                //
+                // We could anticipate this above and induce a block like we do for switches.
+                //
+                // Or we can just invert the branch condition here; I think this should be viable.
+                //
+                // Note there is a phase that runs later that does this, but it assumes
+                // we've put the blocks in order, which we have not done here (yet), and
+                // likely we won't run it for Wasm.
+                //
+                const bool invertCondition = trueNum == (cursor + 1);
+
+                if (invertCondition)
+                {
+                    // TODO: induce a block and avoid this case, or actually modify the IR
+                    //
+                    JITDUMP("FALLTHROUGH-inv\n");
+                }
+                else if (trueNum < numHotBlocks)
+                {
+                    bool const isBackedge = trueNum <= cursor;
+                    unsigned   blockNum   = 0;
+                    unsigned   depth      = findDepth(trueNum, isBackedge, blockNum);
+                    JITDUMP("BR_IF %d (%u)%s\n", depth, blockNum, isBackedge ? "be" : "");
+                }
+
+                if (falseNum == (cursor + 1))
+                {
+                    JITDUMP("FALLTHROUGH\n");
+                }
+                else if (falseNum < numHotBlocks)
+                {
+                    bool const isBackedge = falseNum <= cursor;
+                    unsigned   blockNum   = 0;
+                    unsigned   depth      = findDepth(falseNum, isBackedge, blockNum);
+                    JITDUMP("BR%s %d (%u)%s\n", invertCondition ? "_IF-inv" : "", depth, blockNum,
+                            isBackedge ? "be" : "");
+                }
+
+                break;
+            }
+
+            case BBJ_SWITCH:
+            {
+                BBswtDesc* const desc      = block->GetSwitchTargets();
+                unsigned const   caseCount = desc->GetCaseCount();
+
+                // We expect lower has made the default case check explicit
+                assert(!desc->HasDefaultCase());
+
+                if (caseCount == 0)
+                {
+                    JITDUMP("FALLTHROUGH\n");
+                    break;
+                }
+
+                JITDUMP("BR_TABLE");
+
+                for (unsigned caseNum = 0; caseNum < caseCount; caseNum++)
+                {
+                    BasicBlock* const caseTarget    = desc->GetCase(caseNum)->getDestinationBlock();
+                    unsigned const    caseTargetNum = caseTarget->bbPreorderNum;
+
+                    // We should have forced a block in this case, see above
+                    assert(caseTargetNum != (cursor + 1));
+
+                    if (caseTargetNum < numHotBlocks)
+                    {
+                        bool const isBackedge = caseTargetNum <= cursor;
+                        unsigned   blockNum   = 0;
+                        unsigned   depth      = findDepth(caseTargetNum, isBackedge, blockNum);
+                        JITDUMP("%s %d (%u)%s\n", caseNum > 0 ? "," : "", depth, blockNum, isBackedge ? "be" : "");
+                    }
+                }
+
+                JITDUMP("\n");
+                break;
+            }
+
+            default:
+            {
+                assert(!"Unexpected block kind");
+            }
         }
 
         JITDUMP("\n");
