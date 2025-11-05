@@ -163,7 +163,7 @@ public:
 //
 // Then we order on their conflict chain start and end extent, and so would emit c:[0,7], b:[0,6], a:[0,4]
 //
-// We then can use the pr operly ordered and nested intervals to track the control stack depth as we
+// We then can use the properly ordered and nested intervals to track the control stack depth as we
 // traverse the blocks in loop-aware RPO order, and emit the proper Wasm control flow.
 //
 PhaseStatus Compiler::fgWasmControlFlow()
@@ -181,12 +181,28 @@ PhaseStatus Compiler::fgWasmControlFlow()
         assert(m_loops != nullptr);
     }
 
+    // Bail out for now if there is any irreducible flow.
+    // TODO: run the irreducible flow fixing before this.
+
+    if (m_loops->ImproperLoopHeaders() > 0)
+    {
+        JITDUMP("\nThere are irreducible loops here, bailing\n");
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
     JITDUMP("\nCreating loop-aware RPO\n");
     BasicBlock** const initialLayout = new (this, CMK_Wasm) BasicBlock*[m_dfsTree->GetPostOrderCount()];
 
+    // TODO: extend this to cover all the funclets as well.
+    //
+    // The "DFS" we run above should skip from CALLFINALLY to CALLFINALLYRET, treat all funclet returns
+    // as having no successor, and add each funclet entry as a DFS seed. This will give us a disjoint DFS
+    // tree for the main method and each funclet, and the layout below will properly transform them all into
+    // Wasm control flow.
+
     unsigned numHotBlocks  = 0;
     auto     addToSequence = [this, initialLayout, &numHotBlocks](BasicBlock* block) {
-        // Skip funclets
+        // Skip funclets for now
         //
         if (block->hasHndIndex())
         {
@@ -257,10 +273,11 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 JITDUMP("Backedge " FMT_BB "[%u] -> " FMT_BB "[%u]\n", block->bbNum, cursor, succ->bbNum, succNum);
 
                 // The backedge target should be a loop header.
-                // (todo: scan loop stack to verify)
-                // (Unless we have not yet cleared up irreducible loops).
+                // (TODO: scan loop stack to verify the loop is on the stack?)
                 //
-                assert((m_loops->ImproperLoopHeaders() > 0) || (m_loops->GetLoopByHeader(succ) != nullptr));
+                // Note we currently bail out way above if there are any irreducible loops.
+                //
+                assert(m_loops->GetLoopByHeader(succ) != nullptr);
                 continue;
             }
 
@@ -422,7 +439,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     // (5) Create the wasm control flow operations
     //
-    // Now show (roughly) what the WASM control flow looks like
+    // Show (roughly) what the WASM control flow looks like
     //
     ArrayStack<WasmInterval*> activeIntervals(getAllocator(CMK_Wasm));
     unsigned                  wasmCursor = 0;
@@ -568,10 +585,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
                 // We could anticipate this above and induce a block like we do for switches.
                 //
                 // Or we can just invert the branch condition here; I think this should be viable.
-                //
-                // Note there is a phase that runs later that does this, but it assumes
-                // we've put the blocks in order, which we have not done here (yet), and
-                // likely we won't run it for Wasm.
+                // (eg invoke the core part of optOptimizePostLayout).
                 //
                 const bool invertCondition = trueNum == (cursor + 1);
 
