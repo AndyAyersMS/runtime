@@ -16,16 +16,11 @@ class WasmInterval
 {
 private:
 
-    WasmInterval* m_next;
-    WasmInterval* m_prev;
-
     // m_chain refers to the conflict set member with the lowest m_start.
     // (for "trivial" singlton conflict sets m_chain will be `this`)
-    //
     WasmInterval* m_chain;
 
     // Most nested loop containing this interval, or nullptr.
-    //
     FlowGraphNaturalLoop* m_containingLoop;
 
     // True index of start
@@ -38,15 +33,12 @@ private:
     unsigned m_chainEnd;
 
     // true if this is a loop interval (extents cannot change)
-    //
     bool m_isLoop;
 
 public:
 
     WasmInterval(unsigned start, unsigned end, FlowGraphNaturalLoop* loop, bool isLoop)
-        : m_next(nullptr)
-        , m_prev(nullptr)
-        , m_chain(nullptr)
+        : m_chain(nullptr)
         , m_containingLoop(loop)
         , m_start(start)
         , m_end(end)
@@ -71,16 +63,6 @@ public:
         return m_chainEnd;
     }
 
-    WasmInterval* Next() const
-    {
-        return m_next;
-    }
-
-    WasmInterval* Prev() const
-    {
-        return m_prev;
-    }
-
     WasmInterval* Chain()
     {
         if (m_chain == this)
@@ -101,19 +83,6 @@ public:
     FlowGraphNaturalLoop* ContainingLoop() const
     {
         return m_containingLoop;
-    }
-
-    void InsertAfter(WasmInterval* i)
-    {
-        WasmInterval* const iNext = i->Next();
-        i->m_next                 = this;
-        m_next                    = iNext;
-
-        this->m_prev = i;
-        if (iNext != nullptr)
-        {
-            iNext->m_prev = this;
-        }
     }
 
     void SetChain(WasmInterval* c)
@@ -164,21 +133,26 @@ public:
     }
 };
 
-// WASM Control Flow
+// Wasm Control Flow: naive algorithim (no if/else)
 //
-// Naive algorithim (no if/else)
+// * We consider only normal flow here, so eg callfinally just proceeds to the callfinally ret
+// * Funclets have been identified and separated (though this is not strictly required). With
+//   suitable RPO we can model funclet flow disjointly from main method flow
+// * A prior pass has removed all irreducible flow.
 //
-// Each loop creates a LOOP/END. Since loops are reducible and the body is compact the entry is the first lexical block
-// and the extent is the lexically last block (or, the end is at the start of the next block).
-// The only back-edges are loop back edges.
+// First we build a (normal flow) loop aware RPO.
 //
-// Each non-contiguous forward branch creates a block end. The trick is figuring out how to
-// arrange the block begins so we have proper nesting of wasm blocks and wasm loops.
+// Each loop creates a Wasm LOOP/END. Since all loops are reducible and the body is compact the entry
+// is the first lexical block and the extent is the lexically last block. The only back-edges are loop back edges.
+//
+// Each non-contiguous forward branch potentially creates a block. The only trick is figuring out how to
+// arrange the block begins so we have proper nesting of Wasm blocks and Wasm loops.
 //
 // Since we have linear order of basic blocks, each non-contiguous forward branch can be characterized
-// by the source and destination basic block indicies in the order. Eg [0, 4].
+// by the source and destination basic block indicies in the order. Eg [0, 4]. So an inteval begins at
+// the start of the first block and ends at the start of the second.
 //
-// Each basic block (begin) may be the end of some loops and /or a block. Or both. Note multiple
+// Each basic block start may be the end of some loops and /or a block. Or both. Note multiple
 // blocks that end at the same point are not necessary.
 //
 // We walk the LaRPO from front to back.
@@ -191,12 +165,21 @@ public:
 // Because we're walking front to back, we will have already recorded an interval that starts
 // earlier.
 //
-// We sort the intervals first by starting offset, then by ending offset. For each adjustable interval [a,b],
-// we see if any other interval starts after a and ends after b (say [c,d]). If so, we modify that interval
-// to be [a,d], placing it in the ordering as appropriate... repeat until closure.
+// We then scan the in non-decreasing start order, finding earlier intervals that contain the start
+// of the current inteval but not the end. When we find one, the start of the current interval will
+// need to increase so the earlier interval can nest inside. That is, if have a:[0, 4] and b:[2,6] we
+// will need to emit them as b:[0,6], a[0,4].
 //
-// We then annotate each interval with its nesting depth and associate it with the blocks in question.
-// During codegen we use this to emit the right opcodes and depth values.
+// To save some time we also create a union-find like setup to identify the first interval in a set of
+// conflicting intevals. Say we have a:[0,4] b:[2,6] c:[5,7]. When we see that b conflicts with a,
+// we note 'a' as the conflict "chain" for b, and also track the conflict extent in a. Then when
+// we scan intervals for c, we see it conflicts with the chain starting at a, and we add it to the chain.
+// The net result is a:[0,4(7)], b:[2,6]-->a, c:[5,7]-->a.
+//
+// Then we order on their conflict chain start and end extent, and so would emit c:[0,7], b:[0,6], a:[0,4]
+//
+// We then can use the pr operly ordered and nested intervals to track the control stack depth as we
+// traverse the blocks in loop-aware RPO order, and emit the proper Wasm control flow.
 //
 PhaseStatus Compiler::fgWasmControlFlow()
 {
@@ -235,21 +218,22 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     // (2) Build the intervals
     //
-    // Build the root
-    //
-    WasmInterval* root = WasmInterval::NewRoot(this, numHotBlocks);
-    WasmInterval* last = root;
-    JITDUMPEXEC(root->Dump());
 
     // Keep track of containing loops
     //
     FlowGraphNaturalLoop* containingLoop = nullptr;
 
-    // Allocate a scratch vector. Initially we'll use it to keep track of
+    // Allocate inteval and scratch vectors. We'll use the scratch vectort to keep track of
     // block intervals that end at a certain point.
     //
-    jitstd::vector<WasmInterval*> intervals(numHotBlocks, nullptr, getAllocator(CMK_Wasm));
-    JITDUMP("Scratch vector size %zu\n", intervals.size());
+    jitstd::vector<WasmInterval*> intervals(getAllocator(CMK_Wasm));
+    jitstd::vector<WasmInterval*> scratch(numHotBlocks, nullptr, getAllocator(CMK_Wasm));
+
+    // Build the root
+    //
+    WasmInterval* root = WasmInterval::NewRoot(this, numHotBlocks);
+    JITDUMPEXEC(root->Dump());
+    intervals.push_back(root);
 
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
@@ -279,8 +263,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
             // We assume here that a given block is only the header of one loop.
             //
-            loopInterval->InsertAfter(last);
-            last           = loopInterval;
+            intervals.push_back(loopInterval);
             containingLoop = loop;
         }
         else
@@ -330,7 +313,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
             // See if we already have a block that ends at this point and starts before.
             //
-            WasmInterval* const existingBlock = intervals[succNum];
+            WasmInterval* const existingBlock = scratch[succNum];
 
             if (existingBlock != nullptr)
             {
@@ -346,31 +329,40 @@ PhaseStatus Compiler::fgWasmControlFlow()
             WasmInterval* const branch = WasmInterval::NewBlock(this, block, initialLayout[succNum], containingLoop);
             JITDUMPEXEC(branch->Dump());
 
-            branch->InsertAfter(last);
-            intervals[succNum] = branch;
-            last               = branch;
+            intervals.push_back(branch);
+
+            // Remeber an interval end here
+            //
+            scratch[succNum] = branch;
         }
     }
 
     // Display the raw intervals...
     //
     JITDUMP("\n-------------- Initial set of wasm intervals\n");
-    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    for (WasmInterval* iv : intervals)
     {
         JITDUMPEXEC(iv->Dump());
     }
     JITDUMP("--------------\n\n");
 
+    // (3) Find intervals that overlap
+    //
     // See if this interval conflicts with any other. If so,
     // add the interval to that intervals conflict set, and return
     // the conflict set for futher resolution.
     //
-    auto resolve = [](WasmInterval* const iv, WasmInterval* const root) {
+    auto resolve = [&intervals](WasmInterval* const iv, WasmInterval* const root) {
         JITDUMP("Resolve ");
         JITDUMPEXEC(iv->Dump());
 
-        for (WasmInterval* ip = root; ip != iv; ip = ip->Next())
+        for (WasmInterval* ip : intervals)
         {
+            if (ip == iv)
+            {
+                break;
+            }
+
             // We should be walking in non-decreasing start order
             //
             assert(ip->Start() <= iv->Start());
@@ -404,29 +396,20 @@ PhaseStatus Compiler::fgWasmControlFlow()
         JITDUMP("\n");
     };
 
-    // Find conflict sets... note this is potentially
-    // quadratic, but union find should prevent that.
-    //
-    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    for (WasmInterval* iv : intervals)
     {
         resolve(iv, root);
     }
 
     JITDUMP("\n-------------- After finding conflicts\n");
-    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
+    for (WasmInterval* iv : intervals)
     {
         JITDUMPEXEC(iv->Dump());
     }
     JITDUMP("--------------\n\n");
 
-    // Now add all the intervals to the scratch vector
+    // (4) Sort to put intervals in proper nesting order
     //
-    intervals.clear();
-    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
-    {
-        intervals.push_back(iv);
-    }
-
     // Sort by chain start index (ascending) then actual end index (descending) then isLoop
     //
     auto comesBefore = [](WasmInterval* i1, WasmInterval* i2) {
@@ -467,12 +450,6 @@ PhaseStatus Compiler::fgWasmControlFlow()
         return false;
     };
 
-    intervals.clear();
-    for (WasmInterval* iv = root; iv != nullptr; iv = iv->Next())
-    {
-        intervals.push_back(iv);
-    }
-
     jitstd::sort(intervals.begin(), intervals.end(), comesBefore);
 
     JITDUMP("\n-------------- After sorting\n");
@@ -482,6 +459,8 @@ PhaseStatus Compiler::fgWasmControlFlow()
     }
     JITDUMP("--------------\n\n");
 
+    // (5) Create the wasm control flow operations
+    //
     // Now show (roughly) what the WASM control flow looks like
     //
     ArrayStack<WasmInterval*> activeIntervals(getAllocator(CMK_Wasm));
