@@ -262,9 +262,9 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
         // Now see where block branches to...
         //
-        if (block->isBBCallFinallyPair())
+        if (block->KindIs(BBJ_CALLFINALLY))
         {
-            // We ignore these and treat them as if they fall through to the tail.
+            // We ignore these and treat them as if they fall through to the tail (if there is a tail).
             // Since the tail cannot be a join we don't need a block.
             //
             continue;
