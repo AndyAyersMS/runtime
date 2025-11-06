@@ -82,12 +82,6 @@ public:
         c->m_chainEnd = max(c->m_chainEnd, m_chainEnd);
     }
 
-    static WasmInterval* NewRoot(Compiler* comp, unsigned numBlocks)
-    {
-        WasmInterval* root = new (comp, CMK_Wasm) WasmInterval(0, numBlocks, /* isLoop */ false);
-        return root;
-    }
-
     static WasmInterval* NewBlock(Compiler* comp, BasicBlock* start, BasicBlock* end)
     {
         WasmInterval* result =
@@ -183,15 +177,18 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     // Bail out for now if there is any irreducible flow.
     // TODO: run the irreducible flow fixing before this.
-
+    //
     if (m_loops->ImproperLoopHeaders() > 0)
     {
         JITDUMP("\nThere are irreducible loops here, bailing\n");
         return PhaseStatus::MODIFIED_NOTHING;
     }
 
+    // Our interval ends are at the starts of blcoks, so we need a block that
+    // comes after all existing blocks. So allocate one extra slot.
+    //
     JITDUMP("\nCreating loop-aware RPO\n");
-    BasicBlock** const initialLayout = new (this, CMK_Wasm) BasicBlock*[m_dfsTree->GetPostOrderCount()];
+    BasicBlock** const initialLayout = new (this, CMK_Wasm) BasicBlock*[m_dfsTree->GetPostOrderCount() + 1];
 
     // TODO: extend this to cover all the funclets as well.
     //
@@ -199,7 +196,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // as having no successor, and add each funclet entry as a DFS seed. This will give us a disjoint DFS
     // tree for the main method and each funclet, and the layout below will properly transform them all into
     // Wasm control flow.
-
+    //
     unsigned numHotBlocks  = 0;
     auto     addToSequence = [this, initialLayout, &numHotBlocks](BasicBlock* block) {
         // Skip funclets for now
@@ -218,6 +215,14 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
     fgVisitBlocksInLoopAwareRPO(m_dfsTree, m_loops, addToSequence);
 
+    // Splice in a fake BB0
+    //
+    BasicBlock bb0;
+    INDEBUG(bb0.bbNum = 0;);
+    bb0.bbPreorderNum           = numHotBlocks;
+    bb0.bbPostorderNum          = m_dfsTree->GetPostOrderCount();
+    initialLayout[numHotBlocks] = &bb0;
+
     // -----------------------------------------------
     // (2) Build the intervals
     //
@@ -226,11 +231,6 @@ PhaseStatus Compiler::fgWasmControlFlow()
     //
     jitstd::vector<WasmInterval*> intervals(getAllocator(CMK_Wasm));
     jitstd::vector<WasmInterval*> scratch(numHotBlocks, nullptr, getAllocator(CMK_Wasm));
-
-    // Build the root
-    //
-    WasmInterval* root = WasmInterval::NewRoot(this, numHotBlocks);
-    intervals.push_back(root);
 
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
@@ -245,14 +245,14 @@ PhaseStatus Compiler::fgWasmControlFlow()
             // Find the loop's lexical extent given our ordering
             // (maybe memoize this during loop finding...)
             //
+            // Note that cursor may end up pointing at BB0
+            //
             unsigned endCursor = cursor;
-            while (loop->ContainsBlock(initialLayout[endCursor]) && (endCursor < numHotBlocks))
+            while ((endCursor < numHotBlocks) && loop->ContainsBlock(initialLayout[endCursor]))
             {
                 endCursor++;
             }
 
-            // What if loop extends to end of method... hmmm
-            //
             WasmInterval* const loopInterval = WasmInterval::NewLoop(this, block, initialLayout[endCursor]);
 
             // We assume here that a block is only the header of one loop.
@@ -262,7 +262,6 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
         // Now see where block branches to...
         //
-
         if (block->isBBCallFinallyPair())
         {
             // We ignore these and treat them as if they fall through to the tail.
@@ -345,7 +344,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // add the interval to that intervals conflict set, and return
     // the conflict set for futher resolution.
     //
-    auto resolve = [&intervals](WasmInterval* const iv, WasmInterval* const root) {
+    auto resolve = [&intervals](WasmInterval* const iv) {
         for (WasmInterval* ip : intervals)
         {
             // We only need to consider intervals that start at the same point or earlier.
@@ -363,29 +362,31 @@ PhaseStatus Compiler::fgWasmControlFlow()
             // Find the head of that chain.
             //
             WasmInterval* const ic = ip->Chain();
+            assert(ic->Start() <= iv->Start());
 
             // See if the current interval starts at or inside
             // the chain interval and ends outside.
             //
-            if ((ic->Start() <= iv->Start()) && (iv->Start() < ic->ChainEnd()))
+            if ((iv->Start() < ic->ChainEnd()) && (iv->End() > ic->ChainEnd()))
             {
-                // This interval starts in the middle of a prior one.
-                // Does it end afterwards?
-                //
-                if (iv->End() > ic->ChainEnd())
-                {
-                    // Yes, add it to the conflict set
-                    //
-                    iv->SetChain(ic);
-                    break;
-                }
+                iv->SetChain(ic);
+                break;
+            }
+
+            // See if the current interval starts at or inside
+            // the latest interval and ends outside.
+            //
+            if ((iv->Start() < ip->End()) && (iv->End() > ip->End()))
+            {
+                iv->SetChain(ic);
+                break;
             }
         }
     };
 
     for (WasmInterval* iv : intervals)
     {
-        resolve(iv, root);
+        resolve(iv);
     }
 
     JITDUMP("\n-------------- After finding conflicts\n");
@@ -452,15 +453,28 @@ PhaseStatus Compiler::fgWasmControlFlow()
     //
     ArrayStack<WasmInterval*> activeIntervals(getAllocator(CMK_Wasm));
     unsigned                  wasmCursor = 0;
-    activeIntervals.Push(root);
 
     for (unsigned int cursor = 0; cursor < numHotBlocks; cursor++)
     {
         BasicBlock* const block = initialLayout[cursor];
 
+        JITDUMP("Before " FMT_BB " at %u stack is:", block->bbNum, cursor);
+        if (activeIntervals.Empty())
+        {
+            JITDUMP("empty");
+        }
+        else
+        {
+            for (int i = 0; i < activeIntervals.Height(); i++)
+            {
+                JITDUMP(" [%u,%u]", activeIntervals.Top(i)->Start(), activeIntervals.Top(i)->End());
+            }
+        }
+        JITDUMP("\n");
+
         // Close intervals that end here (at most two, block and/or loop)
         //
-        while (activeIntervals.Top()->End() == cursor)
+        while (!activeIntervals.Empty() && (activeIntervals.Top()->End() == cursor))
         {
             JITDUMP("END    (%u)%s\n", activeIntervals.Top()->End(), activeIntervals.Top()->IsLoop() ? " LOOP" : "");
             activeIntervals.Pop();
@@ -475,14 +489,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
             while (chain->Start() <= cursor)
             {
-                if (interval == root)
-                {
-                    JITDUMP("ENTER\n");
-                }
-                else
-                {
-                    JITDUMP("%s (%u)\n", interval->IsLoop() ? "LOOP " : "BLOCK", interval->End());
-                }
+                JITDUMP("%s (%u)\n", interval->IsLoop() ? "LOOP " : "BLOCK", interval->End());
 
                 wasmCursor++;
                 activeIntervals.Push(interval);
@@ -654,9 +661,6 @@ PhaseStatus Compiler::fgWasmControlFlow()
                     BasicBlock* const caseTarget    = desc->GetCase(caseNum)->getDestinationBlock();
                     unsigned const    caseTargetNum = caseTarget->bbPreorderNum;
 
-                    // We should have forced a block in this case, see above
-                    assert(caseTargetNum != (cursor + 1));
-
                     if (caseTargetNum < numHotBlocks)
                     {
                         bool const isBackedge = caseTargetNum <= cursor;
@@ -679,10 +683,18 @@ PhaseStatus Compiler::fgWasmControlFlow()
         JITDUMP("\n");
     }
 
+    // We should have closed out all intervals unless there are loops
+    // that end at the end of the method.
+    //
+    while (!activeIntervals.Empty())
+    {
+        WasmInterval* const i = activeIntervals.Pop();
+        JITDUMP("END    (%u)%s\n", i->End(), i->IsLoop() ? " LOOP" : "");
+    }
+
     // Ditto but in dot markup
     //
     activeIntervals.Reset();
-    activeIntervals.Push(root);
     wasmCursor = 0;
     JITDUMP("\ndigraph WASM {\n");
 
@@ -692,7 +704,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
 
         // Close intervals that end here (at most two, block and/or loop)
         //
-        while (activeIntervals.Top()->End() == cursor)
+        while (!activeIntervals.Empty() && (activeIntervals.Top()->End() == cursor))
         {
             JITDUMP("  }\n");
             activeIntervals.Pop();
@@ -705,47 +717,42 @@ PhaseStatus Compiler::fgWasmControlFlow()
             WasmInterval* interval = intervals[wasmCursor];
             WasmInterval* chain    = interval->Chain();
 
-            if (chain->Start() <= cursor)
+            while (chain->Start() <= cursor)
             {
+                JITDUMP("  subgraph cluster_%u_%u%s {\n", chain->Start(), interval->End(),
+                        interval->IsLoop() ? "_loop" : "");
 
-                if (interval == root)
+                if (interval->IsLoop())
                 {
-                    wasmCursor++;
+                    JITDUMP("    color=red;\n");
                 }
                 else
                 {
-                    while (chain->Start() <= cursor)
-                    {
-                        JITDUMP("  subgraph cluster_%u_%u%s {\n", chain->Start(), interval->End(),
-                                interval->IsLoop() ? "_loop" : "");
-
-                        FlowGraphNaturalLoop* const loop = m_loops->GetLoopByHeader(block);
-
-                        if (loop != nullptr)
-                        {
-                            JITDUMP("    color=red;\n");
-                        }
-                        else
-                        {
-                            JITDUMP("    color=black;\n");
-                        }
-
-                        wasmCursor++;
-                        activeIntervals.Push(interval);
-
-                        if (wasmCursor >= intervals.size())
-                        {
-                            break;
-                        }
-
-                        interval = intervals[wasmCursor];
-                        chain    = interval->Chain();
-                    }
+                    JITDUMP("    color=black;\n");
                 }
+
+                wasmCursor++;
+                activeIntervals.Push(interval);
+
+                if (wasmCursor >= intervals.size())
+                {
+                    break;
+                }
+
+                interval = intervals[wasmCursor];
+                chain    = interval->Chain();
             }
         }
 
         JITDUMP("    " FMT_BB ";\n", block->bbNum);
+    }
+
+    // Close remaining intervals
+    //
+    while (!activeIntervals.Empty())
+    {
+        activeIntervals.Pop();
+        JITDUMP("  }\n");
     }
 
     // Now list all the branches
