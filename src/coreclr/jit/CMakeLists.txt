@@ -115,7 +115,6 @@ set( JIT_SOURCES
   fgprofile.cpp
   fgprofilesynthesis.cpp
   fgstmt.cpp
-  fgwasm.cpp
   flowgraph.cpp
   forwardsub.cpp
   gcinfo.cpp
@@ -293,6 +292,7 @@ set( JIT_RISCV64_SOURCES
 set( JIT_WASM_SOURCES
   codegenwasm.cpp
   emitwasm.cpp
+  fgwasm.cpp
   lowerwasm.cpp
   regallocwasm.cpp
   targetwasm.cpp

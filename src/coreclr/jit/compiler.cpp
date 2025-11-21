@@ -4940,15 +4940,14 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     }
 #endif
 
-#ifdef DEBUG
-    // If we are going to simulate generating wasm control flow,
+    // If we are going to generating wasm control flow or want to
+    // simulate doing so in a non-wasm target,
     // transform any strongly connected components into reducible flow.
     //
-    if (JitConfig.JitWasmControlFlow() > 0)
-    {
-        DoPhase(this, PHASE_DFS_BLOCKS_WASM, &Compiler::fgDfsBlocksAndRemove);
-        DoPhase(this, PHASE_WASM_TRANSFORM_SCCS, &Compiler::fgWasmTransformSccs);
-    }
+
+#ifdef TARGET_WASM
+    DoPhase(this, PHASE_DFS_BLOCKS_WASM, &Compiler::fgDfsBlocksAndRemove);
+    DoPhase(this, PHASE_WASM_TRANSFORM_SCCS, &Compiler::fgWasmTransformSccs);
 #endif
 
     // rationalize trees
@@ -4993,16 +4992,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
 
     FinalizeEH();
 
-#ifdef DEBUG
-    // Optionally, simulate generating wasm control flow
-    // (eventually this will become part of the wasm target)
-    //
-    if (JitConfig.JitWasmControlFlow() > 0)
-    {
-        DoPhase(this, PHASE_WASM_CONTROL_FLOW, &Compiler::fgWasmControlFlow);
-    }
-#endif
-
     // We can not add any new tracked variables after this point.
     lvaTrackedFixed = true;
 
@@ -5016,6 +5005,11 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     // Copied from rpPredictRegUse()
     SetFullPtrRegMapRequired(codeGen->GetInterruptible() || !codeGen->isFramePointerUsed());
 
+#ifdef TARGET_WASM
+    // Reorder blocks for wasm and figure out wasm control flow nesting
+    //
+    DoPhase(this, PHASE_WASM_CONTROL_FLOW, &Compiler::fgWasmControlFlow);
+#else
     if (opts.OptimizationEnabled())
     {
         // We won't introduce new blocks from here on out,
@@ -5036,6 +5030,8 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     // Place loop alignment instructions
     DoPhase(this, PHASE_ALIGN_LOOPS, &Compiler::placeLoopAlignInstructions);
 #endif
+
+#endif // TAARGET_WASM
 
     // The common phase checks and dumps are no longer relevant past this point.
     //
