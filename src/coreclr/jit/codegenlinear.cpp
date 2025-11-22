@@ -108,6 +108,691 @@ void CodeGen::genInitialize()
     SetStackLevel(0);
 }
 
+#ifdef TARGET_WASM
+//------------------------------------------------------------------------
+// genCodeForBBlist: Generate code for all the blocks in a method
+//
+// Arguments:
+//    None
+//
+// Notes:
+//    This is the main method for linear codegen. It calls genCodeForTreeNode
+//    to generate the code for each node in each BasicBlock, and handles BasicBlock
+//    boundaries and branches.
+//
+void CodeGen::genCodeForBBlist()
+{
+    unsigned savedStkLvl;
+
+#ifdef DEBUG
+    genInterruptibleUsed = true;
+
+    // You have to be careful if you create basic blocks from now on
+    compiler->fgSafeBasicBlockCreation = false;
+#endif // DEBUG
+
+#if defined(DEBUG) && defined(TARGET_X86)
+
+    // Check stack pointer on call stress mode is not compatible with fully interruptible GC. REVIEW: why?
+    //
+    if (GetInterruptible() && compiler->opts.compStackCheckOnCall)
+    {
+        compiler->opts.compStackCheckOnCall = false;
+    }
+
+#endif // defined(DEBUG) && defined(TARGET_X86)
+
+#if defined(DEBUG) && defined(TARGET_XARCH)
+
+    // Check stack pointer on return stress mode is not compatible with fully interruptible GC. REVIEW: why?
+    // It is also not compatible with any function that makes a tailcall: we aren't smart enough to only
+    // insert the SP check in the non-tailcall returns.
+    //
+    if ((GetInterruptible() || compiler->compTailCallUsed) && compiler->opts.compStackCheckOnRet)
+    {
+        compiler->opts.compStackCheckOnRet = false;
+    }
+
+#endif // defined(DEBUG) && defined(TARGET_XARCH)
+
+    // genMarkLabelsForCodegen();
+
+    /* Initialize structures used in the block list iteration */
+    genInitialize();
+
+    /*-------------------------------------------------------------------------
+     *
+     *  Walk the basic blocks and generate code for each one
+     *
+     */
+
+    ArrayStack<WasmInterval*> activeIntervals(getAllocator(CMK_WasmCfgLowering));
+    unsigned                  wasmCursor = 0;
+
+    for (BasicBlock* const block : Blocks())
+    {
+        JITDUMP("\n=============== Generating ");
+        JITDUMPEXEC(block->dspBlockHeader(true, true));
+        JITDUMPEXEC(compiler->fgDispBBLiveness(block));
+
+        assert(LIR::AsRange(block).CheckLIR(compiler));
+
+        // Figure out which registers hold variables on entry to this block
+
+        regSet.ClearMaskVars();
+        gcInfo.gcRegGCrefSetCur = RBM_NONE;
+        gcInfo.gcRegByrefSetCur = RBM_NONE;
+
+        compiler->m_pLinearScan->recordVarLocationsAtStartOfBB(block);
+
+        // Updating variable liveness after last instruction of previous block was emitted
+        // and before first of the current block is emitted
+        genUpdateLife(block->bbLiveIn);
+
+        // Even if liveness didn't change, we need to update the registers containing GC references.
+        // genUpdateLife will update the registers live due to liveness changes. But what about registers that didn't
+        // change? We cleared them out above. Maybe we should just not clear them out, but update the ones that change
+        // here. That would require handling the changes in recordVarLocationsAtStartOfBB().
+
+        regMaskTP newLiveRegSet  = RBM_NONE;
+        regMaskTP newRegGCrefSet = RBM_NONE;
+        regMaskTP newRegByrefSet = RBM_NONE;
+#ifdef DEBUG
+        VARSET_TP removedGCVars(VarSetOps::MakeEmpty(compiler));
+        VARSET_TP addedGCVars(VarSetOps::MakeEmpty(compiler));
+#endif
+        VarSetOps::Iter iter(compiler, block->bbLiveIn);
+        unsigned        varIndex = 0;
+        while (iter.NextElem(&varIndex))
+        {
+            LclVarDsc* varDsc = compiler->lvaGetDescByTrackedIndex(varIndex);
+
+            if (varDsc->lvIsInReg())
+            {
+                newLiveRegSet |= varDsc->lvRegMask();
+                if (varDsc->lvType == TYP_REF)
+                {
+                    newRegGCrefSet |= varDsc->lvRegMask();
+                }
+                else if (varDsc->lvType == TYP_BYREF)
+                {
+                    newRegByrefSet |= varDsc->lvRegMask();
+                }
+                if (!varDsc->IsAlwaysAliveInMemory())
+                {
+#ifdef DEBUG
+                    if (verbose && VarSetOps::IsMember(compiler, gcInfo.gcVarPtrSetCur, varIndex))
+                    {
+                        VarSetOps::AddElemD(compiler, removedGCVars, varIndex);
+                    }
+#endif // DEBUG
+                    VarSetOps::RemoveElemD(compiler, gcInfo.gcVarPtrSetCur, varIndex);
+                }
+            }
+            if ((!varDsc->lvIsInReg() || varDsc->IsAlwaysAliveInMemory()) && compiler->lvaIsGCTracked(varDsc))
+            {
+#ifdef DEBUG
+                if (verbose && !VarSetOps::IsMember(compiler, gcInfo.gcVarPtrSetCur, varIndex))
+                {
+                    VarSetOps::AddElemD(compiler, addedGCVars, varIndex);
+                }
+#endif // DEBUG
+                VarSetOps::AddElemD(compiler, gcInfo.gcVarPtrSetCur, varIndex);
+            }
+        }
+
+        regSet.SetMaskVars(newLiveRegSet);
+
+#ifdef DEBUG
+        if (compiler->verbose)
+        {
+            if (!VarSetOps::IsEmpty(compiler, addedGCVars))
+            {
+                printf("\t\t\t\t\t\t\tAdded GCVars: ");
+                dumpConvertedVarSet(compiler, addedGCVars);
+                printf("\n");
+            }
+            if (!VarSetOps::IsEmpty(compiler, removedGCVars))
+            {
+                printf("\t\t\t\t\t\t\tRemoved GCVars: ");
+                dumpConvertedVarSet(compiler, removedGCVars);
+                printf("\n");
+            }
+        }
+#endif // DEBUG
+
+        gcInfo.gcMarkRegSetGCref(newRegGCrefSet DEBUGARG(true));
+        gcInfo.gcMarkRegSetByref(newRegByrefSet DEBUGARG(true));
+
+        /* Blocks with handlerGetsXcptnObj()==true use GT_CATCH_ARG to
+           represent the exception object (TYP_REF).
+           We mark REG_EXCEPTION_OBJECT as holding a GC object on entry
+           to the block,  it will be the first thing evaluated
+           (thanks to GTF_ORDER_SIDEEFF).
+         */
+
+        if (handlerGetsXcptnObj(block->bbCatchTyp))
+        {
+            for (GenTree* node : LIR::AsRange(block))
+            {
+                if (node->OperIs(GT_CATCH_ARG))
+                {
+                    gcInfo.gcMarkRegSetGCref(RBM_EXCEPTION_OBJECT);
+                    break;
+                }
+            }
+        }
+
+        /* Start a new code output block */
+
+        genLogLabel(block);
+
+        // Tell everyone which basic block we're working on
+
+        compiler->compCurBB = block;
+
+        block->bbEmitCookie = nullptr;
+
+        // If this block is a jump target or it requires a label then set 'needLabel' to true,
+        //
+        bool needLabel = block->HasFlag(BBF_HAS_LABEL);
+
+        // We won't do hot/cold splitting for wasm
+        assert(!block->IsFirstColdBlock(compiler));
+
+        // We also want to start a new Instruction group by calling emitAddLabel below,
+        // when we need accurate bbWeights for this block in the emitter.  We force this
+        // whenever our previous block was a BBJ_COND and it has a different weight than us.
+        //
+        // Note: We need to have set compCurBB before calling emitAddLabel
+        //
+        if (!block->IsFirst() && block->Prev()->KindIs(BBJ_COND) && (block->bbWeight != block->Prev()->bbWeight))
+        {
+            JITDUMP("Adding label due to BB weight difference: BBJ_COND " FMT_BB " with weight " FMT_WT
+                    " different from " FMT_BB " with weight " FMT_WT "\n",
+                    block->Prev()->bbNum, block->Prev()->bbWeight, block->bbNum, block->bbWeight);
+            needLabel = true;
+        }
+
+        if (needLabel)
+        {
+            // Mark a label and update the current set of live GC refs
+
+            block->bbEmitCookie = GetEmitter()->emitAddLabel(gcInfo.gcVarPtrSetCur, gcInfo.gcRegGCrefSetCur,
+                                                             gcInfo.gcRegByrefSetCur, block->Prev());
+        }
+
+
+        // Close intervals that end here (at most two, block and/or loop)
+        //
+        while (!activeIntervals.Empty() && (activeIntervals.Top()->End() == cursor))
+        {
+            instGen(INS_End);
+            activeIntervals.Pop();
+        }
+
+        // Open intervals that start here or earlier
+        //
+        if (wasmCursor < fgWasmIntervals->size())
+        {
+            WasmInterval* interval = fgWasmIntervals->at(wasmCursor);
+            WasmInterval* chain    = interval->Chain();
+
+            while (chain->Start() <= cursor)
+            {
+                if (interval->IsLoop())
+                {
+                    instGen(INS_Loop);
+                }
+                else
+                {
+                    instGen(INS_Block);
+                }
+
+                wasmCursor++;
+                activeIntervals.Push(interval);
+
+                if (wasmCursor >= fgWasmIntervals->size())
+                {
+                    break;
+                }
+
+                interval = fgWasmIntervals->at(wasmCursor);
+                chain    = interval->Chain();
+            }
+        }
+
+        // Both stacks are always empty on entry to a basic block.
+        assert(genStackLevel == 0);
+        genAdjustStackLevel(block);
+        savedStkLvl = genStackLevel;
+
+        // Needed when jitting debug code
+        siBeginBlock(block);
+
+        // BBF_INTERNAL blocks don't correspond to any single IL instruction.
+        // Add a NoMapping entry unless this is right after the prolog where it
+        // is unnecessary.
+        if (compiler->opts.compDbgInfo && block->HasFlag(BBF_INTERNAL) && !block->IsFirst())
+        {
+            genIPmappingAdd(IPmappingDscKind::NoMapping, DebugInfo(), true);
+        }
+
+        if (compiler->bbIsFuncletBeg(block))
+        {
+            genUpdateCurrentFunclet(block);
+            genReserveFuncletProlog(block);
+        }
+
+        // Clear compCurStmt and compCurLifeTree.
+        compiler->compCurStmt     = nullptr;
+        compiler->compCurLifeTree = nullptr;
+
+        // Emit poisoning into the init BB that comes right after prolog.
+        // We cannot emit this code in the prolog as it might make the prolog too large.
+        if (compiler->compShouldPoisonFrame() && block->IsFirst())
+        {
+            genPoisonFrame(newLiveRegSet);
+        }
+
+        // Traverse the block in linear order, generating code for each node as we
+        // as we encounter it.
+
+#ifdef DEBUG
+        // Set the use-order numbers for each node.
+        {
+            int useNum = 0;
+            for (GenTree* node : LIR::AsRange(block))
+            {
+                assert((node->gtDebugFlags & GTF_DEBUG_NODE_CG_CONSUMED) == 0);
+
+                node->gtUseNum = -1;
+                if (node->isContained() || node->IsCopyOrReload())
+                {
+                    continue;
+                }
+
+                for (GenTree* operand : node->Operands())
+                {
+                    genNumberOperandUse(operand, useNum);
+                }
+            }
+        }
+#endif // DEBUG
+
+        bool producedLabelMapping = false;
+        bool addRichMappings      = JitConfig.RichDebugInfo() != 0;
+
+        INDEBUG(addRichMappings |= JitConfig.JitDisasmWithDebugInfo() != 0);
+        INDEBUG(addRichMappings |= JitConfig.WriteRichDebugInfoFile() != nullptr);
+
+#if FALSE
+
+        DebugInfo currentDI;
+        for (GenTree* node : LIR::AsRange(block))
+        {
+            // Do we have a new IL offset?
+            if (node->OperIs(GT_IL_OFFSET))
+            {
+                GenTreeILOffset* ilOffset = node->AsILOffset();
+                DebugInfo        rootDI   = ilOffset->gtStmtDI.GetRoot();
+                if (rootDI.IsValid())
+                {
+                    genEnsureCodeEmitted(currentDI);
+                    currentDI = rootDI;
+
+                    // We need a tie breaker when we have multiple IL offsets that map to the same native offset.
+                    // Normally we pick the latest, but for block joins we pick the earliest to ensure end up with
+                    // a mapping to that IL offset. Async mappings should not participate in this -- they are
+                    // internally produced and never fall on the join point in the IL.
+                    // See genIPmappingGen for the tiebreaker.
+                    bool isLabel = !producedLabelMapping && !currentDI.GetLocation().IsAsync();
+                    genIPmappingAdd(IPmappingDscKind::Normal, currentDI, isLabel);
+                    producedLabelMapping |= isLabel;
+                }
+
+                if (addRichMappings && ilOffset->gtStmtDI.IsValid())
+                {
+                    genAddRichIPMappingHere(ilOffset->gtStmtDI);
+                }
+
+#ifdef DEBUG
+                assert(ilOffset->gtStmtLastILoffs <= compiler->info.compILCodeSize ||
+                       ilOffset->gtStmtLastILoffs == BAD_IL_OFFSET);
+
+                if (compiler->opts.dspCode && compiler->opts.dspInstrs && ilOffset->gtStmtLastILoffs != BAD_IL_OFFSET)
+                {
+                    while (genCurDispOffset <= ilOffset->gtStmtLastILoffs)
+                    {
+                        genCurDispOffset += dumpSingleInstr(compiler->info.compCode, genCurDispOffset, ">    ");
+                    }
+                }
+
+#endif // DEBUG
+            }
+
+            genCodeForTreeNode(node);
+            if (node->gtHasReg(compiler) && node->IsUnusedValue())
+            {
+                genConsumeReg(node);
+            }
+        } // end for each node in block
+
+#endif
+
+#ifdef DEBUG
+        // The following set of register spill checks and GC pointer tracking checks used to be
+        // performed at statement boundaries. Now, with LIR, there are no statements, so they are
+        // performed at the end of each block.
+        // TODO: could these checks be performed more frequently? E.g., at each location where
+        // the register allocator says there are no live non-variable registers. Perhaps this could
+        // be done by using the map maintained by LSRA (operandToLocationInfoMap) to mark a node
+        // somehow when, after the execution of that node, there will be no live non-variable registers.
+
+        regSet.rsSpillChk();
+
+        // Make sure we didn't bungle pointer register tracking
+
+        regMaskTP ptrRegs       = gcInfo.gcRegGCrefSetCur | gcInfo.gcRegByrefSetCur;
+        regMaskTP nonVarPtrRegs = ptrRegs & ~regSet.GetMaskVars();
+
+        // If this is a return block then we expect some live GC regs. Clear those.
+        if (compiler->compMethodReturnsRetBufAddr())
+        {
+            nonVarPtrRegs &= ~RBM_INTRET;
+        }
+        else
+        {
+            const ReturnTypeDesc& retTypeDesc = compiler->compRetTypeDesc;
+            const unsigned        regCount    = retTypeDesc.GetReturnRegCount();
+
+            for (unsigned i = 0; i < regCount; ++i)
+            {
+                regNumber reg = retTypeDesc.GetABIReturnReg(i, compiler->info.compCallConv);
+                nonVarPtrRegs &= ~genRegMask(reg);
+            }
+        }
+
+        if (compiler->compIsAsync())
+        {
+            nonVarPtrRegs &= ~RBM_ASYNC_CONTINUATION_RET;
+        }
+
+        // For a tailcall arbitrary argument registers may be live into the
+        // epilog. Skip validating those.
+        if (block->HasFlag(BBF_HAS_JMP))
+        {
+            nonVarPtrRegs &= ~fullIntArgRegMask(CorInfoCallConvExtension::Managed);
+        }
+
+        if (nonVarPtrRegs)
+        {
+            printf("Regset after " FMT_BB " gcr=", block->bbNum);
+            printRegMaskInt(gcInfo.gcRegGCrefSetCur & ~regSet.GetMaskVars());
+            compiler->GetEmitter()->emitDispRegSet(gcInfo.gcRegGCrefSetCur & ~regSet.GetMaskVars());
+            printf(", byr=");
+            printRegMaskInt(gcInfo.gcRegByrefSetCur & ~regSet.GetMaskVars());
+            compiler->GetEmitter()->emitDispRegSet(gcInfo.gcRegByrefSetCur & ~regSet.GetMaskVars());
+            printf(", regVars=");
+            printRegMaskInt(regSet.GetMaskVars());
+            compiler->GetEmitter()->emitDispRegSet(regSet.GetMaskVars());
+            printf("\n");
+        }
+
+        noway_assert(nonVarPtrRegs == RBM_NONE);
+#endif // DEBUG
+
+        // It is possible to reach the end of the block without generating code for the current IL offset.
+        // For example, if the following IR ends the current block, no code will have been generated for
+        // offset 21:
+        //
+        //          (  0,  0) [000040] ------------                il_offset void   IL offset: 21
+        //
+        //     N001 (  0,  0) [000039] ------------                nop       void
+        //
+        // This can lead to problems when debugging the generated code. To prevent these issues, make sure
+        // we've generated code for the last IL offset we saw in the block.
+        genEnsureCodeEmitted(currentDI);
+
+        /* Is this the last block, and are there any open scopes left ? */
+
+        bool isLastBlockProcessed;
+        if (block->isBBCallFinallyPair())
+        {
+            isLastBlockProcessed = block->Next()->IsLast();
+        }
+        else
+        {
+            isLastBlockProcessed = block->IsLast();
+        }
+
+        if (compiler->opts.compDbgInfo && isLastBlockProcessed)
+        {
+            varLiveKeeper->siEndAllVariableLiveRange(compiler->compCurLife);
+        }
+
+        if (compiler->opts.compScopeInfo && (compiler->info.compVarScopesCount > 0))
+        {
+            siEndBlock(block);
+        }
+
+        SubtractStackLevel(savedStkLvl);
+
+#ifdef DEBUG
+        // compCurLife should be equal to the liveOut set, except that we don't keep
+        // it up to date for vars that are not register candidates
+        // (it would be nice to have a xor set function)
+
+        VARSET_TP mismatchLiveVars(VarSetOps::Diff(compiler, block->bbLiveOut, compiler->compCurLife));
+        VarSetOps::UnionD(compiler, mismatchLiveVars,
+                          VarSetOps::Diff(compiler, compiler->compCurLife, block->bbLiveOut));
+        VarSetOps::Iter mismatchLiveVarIter(compiler, mismatchLiveVars);
+        unsigned        mismatchLiveVarIndex  = 0;
+        bool            foundMismatchedRegVar = false;
+        while (mismatchLiveVarIter.NextElem(&mismatchLiveVarIndex))
+        {
+            LclVarDsc* varDsc = compiler->lvaGetDescByTrackedIndex(mismatchLiveVarIndex);
+            if (varDsc->lvIsRegCandidate())
+            {
+                if (!foundMismatchedRegVar)
+                {
+                    JITDUMP("Mismatched live reg vars after " FMT_BB ":", block->bbNum);
+                    foundMismatchedRegVar = true;
+                }
+                JITDUMP(" V%02u", compiler->lvaTrackedIndexToLclNum(mismatchLiveVarIndex));
+            }
+        }
+        if (foundMismatchedRegVar)
+        {
+            JITDUMP("\n");
+            assert(!"Found mismatched live reg var(s) after block");
+        }
+#endif
+
+        /* Both stacks should always be empty on exit from a basic block */
+        noway_assert(genStackLevel == 0);
+
+        /* Do we need to generate a jump or return? */
+
+        bool removedJmp = false;
+        switch (block->GetKind())
+        {
+            case BBJ_RETURN:
+                instGen(INS_Return);
+                // genExitCode(block);
+                break;
+
+            case BBJ_THROW:
+                instGen(INS_UNREACHED);
+                break;
+
+            case BBJ_CALLFINALLY:
+                block = genCallFinally(block);
+                break;
+
+            case BBJ_EHCATCHRET:
+                assert(compiler->UsesFunclets());
+                genEHCatchRet(block);
+                FALLTHROUGH;
+
+            case BBJ_EHFINALLYRET:
+            case BBJ_EHFAULTRET:
+            case BBJ_EHFILTERRET:
+                if (compiler->UsesFunclets())
+                {
+                    genReserveFuncletEpilog(block);
+                }
+#if defined(FEATURE_EH_WINDOWS_X86)
+                else
+                {
+                    genEHFinallyOrFilterRet(block);
+                }
+#endif // FEATURE_EH_WINDOWS_X86
+                break;
+
+            case BBJ_SWITCH:
+                // Work to do...
+
+                break;
+
+            case BBJ_ALWAYS:
+            {
+#ifdef DEBUG
+                GenTree* call = block->lastNode();
+                if ((call != nullptr) && call->OperIs(GT_CALL))
+                {
+                    // At this point, BBJ_ALWAYS should never end with a call that doesn't return.
+                    assert(!call->AsCall()->IsNoReturn());
+                }
+#endif // DEBUG
+
+                // If this block jumps to the next one, we might be able to skip emitting the jump
+                if (block->CanRemoveJumpToNext(compiler))
+                {
+#ifdef TARGET_AMD64
+                    if (emitNopBeforeEHRegion)
+                    {
+                        instGen(INS_nop);
+                    }
+#endif // TARGET_AMD64
+
+                    removedJmp = true;
+                    break;
+                }
+#ifdef TARGET_XARCH
+                // Do not remove a jump between hot and cold regions.
+                bool isRemovableJmpCandidate = !compiler->fgInDifferentRegions(block, block->GetTarget());
+
+                inst_JMP(EJ_jmp, block->GetTarget(), isRemovableJmpCandidate);
+#else
+                inst_JMP(EJ_jmp, block->GetTarget());
+#endif // TARGET_XARCH
+            }
+
+#if FEATURE_LOOP_ALIGN
+                SetLoopAlignBackEdge(block, block->GetTarget());
+#endif // FEATURE_LOOP_ALIGN
+                break;
+
+            case BBJ_COND:
+
+#if FEATURE_LOOP_ALIGN
+                // Either true or false target of BBJ_COND can induce a loop.
+                SetLoopAlignBackEdge(block, block->GetTrueTarget());
+                SetLoopAlignBackEdge(block, block->GetFalseTarget());
+#endif // FEATURE_LOOP_ALIGN
+
+                break;
+
+            default:
+                noway_assert(!"Unexpected bbKind");
+                break;
+        }
+
+#if FEATURE_LOOP_ALIGN
+        if (block->hasAlign())
+        {
+            // If this block has 'align' instruction in the end (identified by BBF_HAS_ALIGN),
+            // then need to add align instruction in the current "block".
+            //
+            // For non-adaptive alignment, add alignment instruction of size depending on the
+            // compJitAlignLoopBoundary.
+            // For adaptive alignment, alignment instruction will always be of 15 bytes for xarch
+            // and 16 bytes for arm64.
+
+            assert(ShouldAlignLoops());
+            assert(!block->isBBCallFinallyPairTail());
+            assert(!block->KindIs(BBJ_CALLFINALLY));
+
+            GetEmitter()->emitLoopAlignment(DEBUG_ARG1(block->KindIs(BBJ_ALWAYS) && !removedJmp));
+        }
+
+        if (!block->IsLast() && block->Next()->isLoopAlign())
+        {
+            if (compiler->opts.compJitHideAlignBehindJmp)
+            {
+                // The current IG is the one that is just before the IG having loop start.
+                // Establish a connection of recent align instruction emitted to the loop
+                // it actually is aligning using 'idaLoopHeadPredIG'.
+                GetEmitter()->emitConnectAlignInstrWithCurIG();
+            }
+        }
+#endif // FEATURE_LOOP_ALIGN
+
+#ifdef DEBUG
+        if (compiler->verbose)
+        {
+            varLiveKeeper->dumpBlockVariableLiveRanges(block);
+        }
+        compiler->compCurBB = nullptr;
+#endif // DEBUG
+    }  //------------------ END-FOR each block of the method -------------------
+
+#if defined(FEATURE_EH_WINDOWS_X86)
+    // If this is a synchronized method on x86, and we generated all the code without
+    // generating the "exit monitor" call, then we must have deleted the single return block
+    // with that call because it was dead code. We still need to report the monitor range
+    // to the VM in the GC info, so create a label at the very end so we have a marker for
+    // the monitor end range.
+    //
+    // Do this before cleaning the GC refs below; we don't want to create an IG that clears
+    // the `this` pointer for lvaKeepAliveAndReportThis.
+
+    if (!compiler->UsesFunclets() && (compiler->info.compFlags & CORINFO_FLG_SYNCH) &&
+        (compiler->syncEndEmitCookie == nullptr))
+    {
+        JITDUMP("Synchronized method with missing exit monitor call; adding final label\n");
+        compiler->syncEndEmitCookie =
+            GetEmitter()->emitAddLabel(gcInfo.gcVarPtrSetCur, gcInfo.gcRegGCrefSetCur, gcInfo.gcRegByrefSetCur);
+        noway_assert(compiler->syncEndEmitCookie != nullptr);
+    }
+#endif
+
+    // There could be variables alive at this point. For example see lvaKeepAliveAndReportThis.
+    // This call is for cleaning the GC refs
+    genUpdateLife(VarSetOps::MakeEmpty(compiler));
+
+    // Finalize the spill  tracking logic
+
+    regSet.rsSpillEnd();
+
+    // Finalize the temp   tracking logic
+
+    regSet.tmpEnd();
+
+#ifdef DEBUG
+    if (compiler->verbose)
+    {
+        printf("\n# ");
+        printf("compCycleEstimate = %6d, compSizeEstimate = %5d ", compiler->compCycleEstimate,
+               compiler->compSizeEstimate);
+        printf("%s\n", compiler->info.compFullName);
+    }
+#endif
+}
+
+
+#else
 //------------------------------------------------------------------------
 // genCodeForBBlist: Generate code for all the blocks in a method
 //
@@ -906,6 +1591,7 @@ void CodeGen::genCodeForBBlist()
     }
 #endif
 }
+#endif // TARGET_WASM
 
 //------------------------------------------------------------------------
 // genRecordAsyncResume:

@@ -4940,12 +4940,9 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     }
 #endif
 
-    // If we are going to generating wasm control flow or want to
-    // simulate doing so in a non-wasm target,
-    // transform any strongly connected components into reducible flow.
-    //
-
 #ifdef TARGET_WASM
+    // Transform any strongly connected components into reducible flow.
+    //
     DoPhase(this, PHASE_DFS_BLOCKS_WASM, &Compiler::fgDfsBlocksAndRemove);
     DoPhase(this, PHASE_WASM_TRANSFORM_SCCS, &Compiler::fgWasmTransformSccs);
 #endif
