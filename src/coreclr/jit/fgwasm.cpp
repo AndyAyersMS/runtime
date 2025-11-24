@@ -1148,6 +1148,7 @@ public:
 // * Rethink need for BB0 (have m_end refer to end of last block in range, not start of first block after)
 // * We do not branch with operands on the wasm stack, so we need to add suitable (void?) types to branches
 // * During LaRPO formation, remember the position of the last block in the loop
+// * Settle on ordering of WasmSccTransform / Lower / LSRA / WasmControlFlow (LSRA can introduce blocks)
 //
 PhaseStatus Compiler::fgWasmControlFlow()
 {
