@@ -4940,13 +4940,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     }
 #endif
 
-#ifdef TARGET_WASM
-    // Transform any strongly connected components into reducible flow.
-    //
-    DoPhase(this, PHASE_DFS_BLOCKS_WASM, &Compiler::fgDfsBlocksAndRemove);
-    DoPhase(this, PHASE_WASM_TRANSFORM_SCCS, &Compiler::fgWasmTransformSccs);
-#endif
-
     // rationalize trees
     Rationalizer rat(this); // PHASE_RATIONALIZE
     rat.Run();
@@ -4970,6 +4963,13 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
         DoPhase(this, PHASE_ASYNC, &Compiler::TransformAsync);
     }
 
+#ifdef TARGET_WASM
+    // Transform any strongly connected components into reducible flow.
+    //
+    DoPhase(this, PHASE_DFS_BLOCKS_WASM, &Compiler::fgDfsBlocksAndRemove);
+    DoPhase(this, PHASE_WASM_TRANSFORM_SCCS, &Compiler::fgWasmTransformSccs);
+#endif
+
     // Assign registers to variables, etc.
 
     // Create the RA before Lowering, so that Lowering can call RA methods for
@@ -4988,16 +4988,6 @@ void Compiler::compCompile(void** methodCodePtr, uint32_t* methodCodeSize, JitFl
     m_pLowering->FinalizeOutgoingArgSpace();
 
     FinalizeEH();
-
-#ifdef DEBUG
-    // Optionally, simulate generating wasm control flow
-    // (eventually this will become part of the wasm target)
-    //
-    if (JitConfig.JitWasmControlFlow() > 0)
-    {
-        DoPhase(this, PHASE_WASM_CONTROL_FLOW, &Compiler::fgWasmControlFlow);
-    }
-#endif
 
     // We can not add any new tracked variables after this point.
     lvaTrackedFixed = true;

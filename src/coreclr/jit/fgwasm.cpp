@@ -966,121 +966,6 @@ PhaseStatus Compiler::fgWasmTransformSccs()
 }
 
 //------------------------------------------------------------------------
-// WasmInterval
-//
-// Represents a Wasm BLOCK/END or LOOP/END
-//
-class WasmInterval
-{
-private:
-
-    // m_chain refers to the conflict set member with the lowest m_start.
-    // (for "trivial" singleton conflict sets m_chain will be `this`)
-    WasmInterval* m_chain;
-
-    // True index of start
-    unsigned m_start;
-
-    // True index of end; interval ends just before this block
-    unsigned m_end;
-
-    // Largest end index of any chained interval
-    unsigned m_chainEnd;
-
-    // true if this is a loop interval (extents cannot change)
-    bool m_isLoop;
-
-public:
-
-    WasmInterval(unsigned start, unsigned end, bool isLoop)
-        : m_chain(nullptr)
-        , m_start(start)
-        , m_end(end)
-        , m_chainEnd(end)
-        , m_isLoop(isLoop)
-    {
-        m_chain = this;
-    }
-
-    unsigned Start() const
-    {
-        return m_start;
-    }
-
-    unsigned End() const
-    {
-        return m_end;
-    }
-
-    unsigned ChainEnd() const
-    {
-        return m_chainEnd;
-    }
-
-    // Call while resolving intervals when building chains.
-    WasmInterval* FetchAndUpdateChain()
-    {
-        if (m_chain == this)
-        {
-            return this;
-        }
-
-        WasmInterval* chain = m_chain->FetchAndUpdateChain();
-        m_chain             = chain;
-        return chain;
-    }
-
-    // Call after intervals are resolved and chains are fixed.
-    WasmInterval* Chain() const
-    {
-        assert((m_chain == this) || (m_chain == m_chain->Chain()));
-        return m_chain;
-    }
-
-    bool IsLoop() const
-    {
-        return m_isLoop;
-    }
-
-    void SetChain(WasmInterval* c)
-    {
-        m_chain       = c;
-        c->m_chainEnd = max(c->m_chainEnd, m_chainEnd);
-    }
-
-    static WasmInterval* NewBlock(Compiler* comp, BasicBlock* start, BasicBlock* end)
-    {
-        WasmInterval* result =
-            new (comp, CMK_WasmCfgLowering) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, /* isLoop */ false);
-        return result;
-    }
-
-    static WasmInterval* NewLoop(Compiler* comp, BasicBlock* start, BasicBlock* end)
-    {
-        WasmInterval* result =
-            new (comp, CMK_WasmCfgLowering) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, /* isLoop */ true);
-        return result;
-    }
-
-#ifdef DEBUG
-    void Dump(bool chainExtent = false)
-    {
-        printf("[%03u,%03u]%s", m_start, chainExtent ? m_chainEnd : m_end, m_isLoop && !chainExtent ? " L" : "");
-
-        if (m_chain != this)
-        {
-            printf(" --> ");
-            m_chain->Dump(true);
-        }
-        else
-        {
-            printf("\n");
-        }
-    }
-#endif
-};
-
-//------------------------------------------------------------------------
 // fgWasmControlFlow: determine how to emit control flow instructions for wasm
 //
 // Notes:
@@ -1139,16 +1024,9 @@ public:
 // Still TODO
 // * Blocks only reachable via EH
 // * proper handling of BR_TABLE defaults
-// * branch inversion
-// * actual block reordering
-// * instruction emission
 // * tail calls (RETURN_CALL)
-// * throw helpers -- late introduced branches
-// * UNREACHED in more places (eg noreturn calls)
 // * Rethink need for BB0 (have m_end refer to end of last block in range, not start of first block after)
-// * We do not branch with operands on the wasm stack, so we need to add suitable (void?) types to branches
 // * During LaRPO formation, remember the position of the last block in the loop
-// * Settle on ordering of WasmSccTransform / Lower / LSRA / WasmControlFlow (LSRA can introduce blocks)
 //
 PhaseStatus Compiler::fgWasmControlFlow()
 {
@@ -1468,7 +1346,7 @@ PhaseStatus Compiler::fgWasmControlFlow()
     // and if there is a block that is both try entry and loop header,
     // which is nested in which.
     //
-    JITDUMP("Reordering block list\n");
+    JITDUMP("Reordering block list, yo!\n");
     BasicBlock* lastBlock = nullptr;
 
     for (unsigned int cursor = 0; cursor < numBlocks; cursor++)
@@ -1479,12 +1357,53 @@ PhaseStatus Compiler::fgWasmControlFlow()
         {
             assert(block == fgFirstBB);
             lastBlock = block;
-            continue;
+        }
+        else
+        {
+            fgUnlinkBlock(block);
+            fgInsertBBafter(lastBlock, block);
+            lastBlock = block;
         }
 
-        fgUnlinkBlock(block);
-        fgInsertBBafter(lastBlock, block);
-        lastBlock = block;
+        // If BBJ_COND true target is branch to next,
+        // reverse the condition
+        //
+        if (block->KindIs(BBJ_COND))
+        {
+            const unsigned trueNum  = block->GetTrueTarget()->bbPreorderNum;
+            const unsigned falseNum = block->GetFalseTarget()->bbPreorderNum;
+
+            // We don't expect degenerate BBJ_COND
+            //
+            assert(trueNum != falseNum);
+
+            // If the true target is the next block, reverse the branch
+            //
+            const bool reverseCondition = trueNum == (cursor + 1);
+
+            if (reverseCondition)
+            {
+                JITDUMP("Reversing condition in " FMT_BB " to allow fall through to " FMT_BB "\n", block->bbNum,
+                        block->GetTrueTarget()->bbNum);
+
+                GenTree* const test = block->GetLastLIRNode();
+                assert(test->OperIs(GT_JTRUE));
+                {
+                    GenTree* const cond = gtReverseCond(test->AsOp()->gtOp1);
+                    // Ensure `gtReverseCond` did not create a new node.
+                    assert(cond == test->AsOp()->gtOp1);
+                    test->AsOp()->gtOp1 = cond;
+                }
+
+                // Rewire the flow
+                //
+                std::swap(block->TrueEdgeRef(), block->FalseEdgeRef());
+            }
+            else
+            {
+                JITDUMP("NOT Reversing condition in " FMT_BB "\n", block->bbNum);
+            }
+        }
     }
 
     JITDUMPEXEC(fgDumpWasmControlFlow());
@@ -1664,15 +1583,13 @@ void Compiler::fgDumpWasmControlFlow()
                 //
                 // We could anticipate this above and induce a block like we do for switches.
                 //
-                // Or we can just invert the branch condition here; I think this should be viable.
+                // Or we can just reverse the branch condition here; I think this should be viable.
                 // (eg invoke the core part of optOptimizePostLayout).
                 //
-                const bool invertCondition = trueNum == (cursor + 1);
+                const bool reverseCondition = trueNum == (cursor + 1);
 
-                if (invertCondition)
+                if (reverseCondition)
                 {
-                    // TODO: induce a block and avoid this case, or actually modify the IR
-                    //
                     JITDUMP("FALLTHROUGH-inv\n");
                 }
                 else
@@ -1692,7 +1609,7 @@ void Compiler::fgDumpWasmControlFlow()
                     bool const isBackedge = falseNum <= cursor;
                     unsigned   blockNum   = 0;
                     unsigned   depth      = findDepth(falseNum, isBackedge, blockNum);
-                    JITDUMP("BR%s %d (%u)%s\n", invertCondition ? "_IF-inv" : "", depth, blockNum,
+                    JITDUMP("BR%s %d (%u)%s\n", reverseCondition ? "_IF-inv" : "", depth, blockNum,
                             isBackedge ? "be" : "");
                 }
 

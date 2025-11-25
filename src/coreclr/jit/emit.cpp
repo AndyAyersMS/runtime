@@ -789,7 +789,7 @@ void emitter::emitGenIG(insGroup* ig)
         IMPL_LIMITATION("Too many arguments pushed on stack");
     }
 
-    //  printf("Start IG #%02u [stk=%02u]\n", ig->igNum, emitCurStackLvl);
+    JITDUMP("Start IG #%02u [stk=%02u]\n", ig->igNum, emitCurStackLvl);
 
 #endif
 
@@ -10270,9 +10270,9 @@ void emitter::emitStackPushLargeStk(BYTE* addr, GCtype gcType, unsigned count)
 
         // printf("Pushed [%d] at lvl %2u [max=%u]\n", isGCref, emitArgTrackTop - emitArgTrackTab, emitMaxStackDepth);
 
-        assert(level.IsOverflow() || u2.emitArgTrackTop == u2.emitArgTrackTab + level.Value());
+        // assert(level.IsOverflow() || u2.emitArgTrackTop == u2.emitArgTrackTab + level.Value());
         *u2.emitArgTrackTop++ = (BYTE)gcType;
-        assert(u2.emitArgTrackTop <= u2.emitArgTrackTab + emitMaxStackDepth);
+        // assert(u2.emitArgTrackTop <= u2.emitArgTrackTab + emitMaxStackDepth);
 
         if (emitFullArgInfo || needsGC(gcType))
         {

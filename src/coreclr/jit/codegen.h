@@ -1343,6 +1343,9 @@ public:
     void instGen(instruction ins);
 #if defined(TARGET_XARCH)
     void inst_JMP(emitJumpKind jmp, BasicBlock* tgtBlock, bool isRemovableJmpCandidate = false);
+#elif defined(TARGET_WASM)
+    void inst_JMP(emitJumpKind jmp, unsigned depth);
+    void inst_LABEL(unsigned depth);
 #else
     void inst_JMP(emitJumpKind jmp, BasicBlock* tgtBlock);
 #endif
@@ -1619,11 +1622,11 @@ public:
     void inst_JCC(GenCondition condition, BasicBlock* target);
     void inst_SETCC(GenCondition condition, var_types type, regNumber dstReg);
 
-#if !defined(TARGET_LOONGARCH64) && !defined(TARGET_RISCV64)
+#if !defined(TARGET_LOONGARCH64) && !defined(TARGET_RISCV64) && !defined(TARGET_WASM)
     void genCodeForJcc(GenTreeCC* tree);
     void genCodeForSetcc(GenTreeCC* setcc);
     void genCodeForJTrue(GenTreeOp* jtrue);
-#endif // !TARGET_LOONGARCH64 && !TARGET_RISCV64
+#endif // !TARGET_LOONGARCH64 && !TARGET_RISCV64 && !TARGET_WASM
 };
 
 // A simple phase that just invokes a method on the codegen instance
