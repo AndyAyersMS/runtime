@@ -8014,6 +8014,13 @@ GenTree* Lowering::LowerAdd(GenTreeOp* node)
     }
 #endif
 
+#if defined(TARGET_WASM)
+    if (node->OperIs(GT_ADD))
+    {
+        return LowerBinaryArithmetic(node);
+    }
+#endif
+
     if (node->OperIs(GT_ADD))
     {
         ContainCheckBinary(node);
