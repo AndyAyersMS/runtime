@@ -210,6 +210,25 @@ std::string GetResultFileName(const std::string& folderPath,
                               const std::string& fileName,
                               const std::string& extension)
 {
+    // Resolve folderPath to an absolute path so the MAX_PATH calculation
+    // accounts for the full path length, not just a short relative path.
+    std::string resolvedFolderPath = folderPath;
+#ifdef TARGET_WINDOWS
+    {
+        char fullPath[MAX_PATH];
+        DWORD len = ::GetFullPathNameA(folderPath.c_str(), MAX_PATH, fullPath, nullptr);
+        if (len > 0 && len < MAX_PATH)
+        {
+            resolvedFolderPath.assign(fullPath, len);
+        }
+        else if (len >= MAX_PATH)
+        {
+            LogError("GetResultFileName - resolved folder path '%s' exceeds MAX_PATH", folderPath.c_str());
+            return "";
+        }
+    }
+#endif
+
     // Append a random string to improve uniqueness.
     //
     uint32_t randomNumber = 0;
@@ -219,10 +238,10 @@ std::string GetResultFileName(const std::string& folderPath,
     std::string suffix = ss.str() + extension;
 
     // Limit the total file name length to MAX_PATH - 50
-    int usableLength = MAX_PATH - 50 - (int)folderPath.size() - (int)suffix.size();
+    int usableLength = MAX_PATH - 50 - (int)resolvedFolderPath.size() - (int)suffix.size();
     if (usableLength < 0)
     {
-        LogError("GetResultFileName - folder path '%s' length + minimal file name exceeds limit %d", folderPath.c_str(), MAX_PATH - 50);
+        LogError("GetResultFileName - folder path '%s' length + minimal file name exceeds limit %d", resolvedFolderPath.c_str(), MAX_PATH - 50);
         return "";
     }
 
@@ -233,7 +252,7 @@ std::string GetResultFileName(const std::string& folderPath,
     }
 
     ReplaceIllegalCharacters(copy);
-    return folderPath + DIRECTORY_SEPARATOR_CHAR_A + copy + suffix;
+    return resolvedFolderPath + DIRECTORY_SEPARATOR_CHAR_A + copy + suffix;
 }
 
 #ifdef TARGET_AMD64
