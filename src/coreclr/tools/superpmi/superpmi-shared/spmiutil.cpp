@@ -177,7 +177,7 @@ void ReplaceIllegalCharacters(std::string& fileName)
     //  - Convert non-ASCII to ASCII for simplicity
     //  - Remove any illegal or annoying characters from the file name by
     // converting them to underscores.
-    //  - Replace any quotes in the file name with spaces.
+    //  - Replace any quotes in the file name with underscores.
 
     for (char& quote : fileName)
     {
@@ -197,7 +197,7 @@ void ReplaceIllegalCharacters(std::string& fileName)
                     quote = '_';
                     break;
                 case '"':
-                    quote = ' ';
+                    quote = '_';
                     break;
                 default:
                     break;
