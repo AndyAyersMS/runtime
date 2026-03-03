@@ -225,7 +225,9 @@ extern void notYetImplemented(const char* msg, const char* file, unsigned line);
 #define NYI_ARM64(msg)  do { } while (0)
 #define NYI_LOONGARCH64(msg) do { } while (0)
 #define NYI_RISCV64(msg) do { } while (0)
-#define NYI_WASM(msg) NYIRAW("NYI_WASM: " msg)
+#define NYI_WASM(msg)                 implReadyToRunUnsupported()
+
+// NYIRAW("NYI_WASM: " msg)
 
 #else
 
