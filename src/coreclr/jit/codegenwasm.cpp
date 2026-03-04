@@ -2628,13 +2628,14 @@ void CodeGen::genCodeForCpObj(GenTreeBlk* cpObjNode)
     //  reg representing the operand of a GT_IND, or the frame pointer for LCL_VAR/LCL_FLD.
     if (source->OperIs(GT_IND))
     {
-        source = source->gtGetOp1();
+        bool doNullCheck = (source->gtFlags & GTF_IND_NONFAULTING) == 0;
+        source           = source->gtGetOp1();
         assert(!source->isContained());
         srcAddrType = source->TypeGet();
         srcReg      = GetMultiUseOperandReg(source);
         srcOffset   = 0;
 
-        if (m_compiler->fgAddrCouldBeNull(source))
+        if (doNullCheck)
         {
             genEmitNullCheck(srcReg);
         }
@@ -2666,7 +2667,7 @@ void CodeGen::genCodeForCpObj(GenTreeBlk* cpObjNode)
 
     emitter* emit = GetEmitter();
 
-    if (m_compiler->fgAddrCouldBeNull(dstAddr))
+    if ((cpObjNode->gtFlags & GTF_IND_NONFAULTING) == 0)
     {
         genEmitNullCheck(dstReg);
     }
