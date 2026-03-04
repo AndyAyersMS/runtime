@@ -637,6 +637,10 @@ void CodeGen::genCodeForTreeNode(GenTree* treeNode)
             // TODO-WASM-CQ re-establish the global stack pointer here?
             break;
 
+        case GT_CATCH_ARG:
+            NYI_WASM("GT_CATCH_ARG not yet implemented");
+            break;
+
         default:
 #ifdef DEBUG
             NYIRAW(GenTree::OpName(treeNode->OperGet()));
