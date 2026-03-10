@@ -61,16 +61,6 @@ internal partial class MockDescriptors
         ]
     };
 
-    private static readonly TypeFields ArrayClassFields = new TypeFields()
-    {
-        DataType = DataType.ArrayClass,
-        Fields =
-        [
-            new(nameof(Data.ArrayClass.Rank), DataType.uint8),
-        ],
-        BaseTypeFields = EEClassFields
-    };
-
     private static readonly TypeFields ObjectFields = new TypeFields()
     {
         DataType = DataType.Object,
@@ -101,12 +91,23 @@ internal partial class MockDescriptors
         BaseTypeFields = ObjectFields
     };
 
+    private static readonly TypeFields SyncBlockCacheFields = new TypeFields()
+    {
+        DataType = DataType.SyncBlockCache,
+        Fields =
+        [
+            new(nameof(Data.SyncBlockCache.FreeSyncTableIndex), DataType.uint32),
+            new(nameof(Data.SyncBlockCache.CleanupBlockList), DataType.pointer),
+        ]
+    };
+
     private static readonly TypeFields SyncTableEntryFields = new TypeFields()
     {
         DataType = DataType.SyncTableEntry,
         Fields =
         [
             new(nameof(Data.SyncTableEntry.SyncBlock), DataType.pointer),
+            new(nameof(Data.SyncTableEntry.Object), DataType.pointer),
         ]
     };
 
@@ -116,6 +117,9 @@ internal partial class MockDescriptors
         Fields =
         [
             new(nameof(Data.SyncBlock.InteropInfo), DataType.pointer),
+            new(nameof(Data.SyncBlock.Lock), DataType.pointer),
+            new(nameof(Data.SyncBlock.ThinLock), DataType.uint32),
+            new(nameof(Data.SyncBlock.LinkNext), DataType.pointer),
         ]
     };
 
@@ -126,6 +130,7 @@ internal partial class MockDescriptors
         [
             new(nameof(Data.InteropSyncBlockInfo.RCW), DataType.pointer),
             new(nameof(Data.InteropSyncBlockInfo.CCW), DataType.pointer),
+            new(nameof(Data.InteropSyncBlockInfo.CCF), DataType.pointer),
         ]
     };
 
@@ -153,6 +158,7 @@ internal partial class MockDescriptors
             new(nameof(Data.Module.TypeDefToMethodTableMap), DataType.pointer),
             new(nameof(Data.Module.TypeRefToMethodTableMap), DataType.pointer),
             new(nameof(Data.Module.MethodDefToILCodeVersioningStateMap), DataType.pointer),
+            new(nameof(Data.Module.DynamicILBlobTable), DataType.pointer),
         ]
     };
 
@@ -163,9 +169,10 @@ internal partial class MockDescriptors
         [
             new(nameof(Data.Assembly.Module), DataType.pointer),
             new(nameof(Data.Assembly.IsCollectible), DataType.uint8),
+            new(nameof(Data.Assembly.IsDynamic), DataType.uint8),
             new(nameof(Data.Assembly.Error), DataType.pointer),
             new(nameof(Data.Assembly.NotifyFlags), DataType.uint32),
-            new(nameof(Data.Assembly.Level), DataType.uint32),
+            new(nameof(Data.Assembly.IsLoaded), DataType.uint8),
         ]
     };
 
@@ -175,7 +182,8 @@ internal partial class MockDescriptors
         Fields =
         [
             new(nameof(Data.ExceptionInfo.PreviousNestedInfo), DataType.pointer),
-            new(nameof(Data.ExceptionInfo.ThrownObject), DataType.pointer),
+            new(nameof(Data.ExceptionInfo.ThrownObjectHandle), DataType.pointer),
+            new(nameof(Data.ExceptionInfo.ExceptionWatsonBucketTrackerBuckets), DataType.pointer),
         ]
     };
 
@@ -190,11 +198,14 @@ internal partial class MockDescriptors
             new(nameof(Data.Thread.PreemptiveGCDisabled), DataType.uint32),
             new(nameof(Data.Thread.RuntimeThreadLocals), DataType.pointer),
             new(nameof(Data.Thread.Frame), DataType.pointer),
+            new(nameof(Data.Thread.CachedStackBase), DataType.pointer),
+            new(nameof(Data.Thread.CachedStackLimit), DataType.pointer),
             new(nameof(Data.Thread.TEB), DataType.pointer),
             new(nameof(Data.Thread.LastThrownObject), DataType.pointer),
             new(nameof(Data.Thread.LinkNext), DataType.pointer),
             new(nameof(Data.Thread.ExceptionTracker), DataType.pointer),
             new(nameof(Data.Thread.ThreadLocalDataPtr), DataType.pointer),
+            new(nameof(Data.Thread.UEWatsonBucketTrackerBuckets), DataType.pointer),
         ]
     };
 

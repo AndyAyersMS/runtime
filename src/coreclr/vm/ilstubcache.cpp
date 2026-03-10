@@ -118,18 +118,19 @@ namespace
 
         switch (type)
         {
-            case DynamicMethodDesc::StubCLRToNativeInterop: return "IL_STUB_PInvoke";
+            case DynamicMethodDesc::StubPInvoke:
+            case DynamicMethodDesc::StubPInvokeDelegate:
+            case DynamicMethodDesc::StubPInvokeCalli:
+            case DynamicMethodDesc::StubPInvokeVarArg:      return "IL_STUB_PInvoke";
+            case DynamicMethodDesc::StubReversePInvoke:     return "IL_STUB_ReversePInvoke";
             case DynamicMethodDesc::StubCLRToCOMInterop:    return "IL_STUB_CLRtoCOM";
-            case DynamicMethodDesc::StubNativeToCLRInterop: return "IL_STUB_ReversePInvoke";
             case DynamicMethodDesc::StubCOMToCLRInterop:    return "IL_STUB_COMtoCLR";
             case DynamicMethodDesc::StubStructMarshalInterop: return "IL_STUB_StructMarshal";
             case DynamicMethodDesc::StubArrayOp:            return "IL_STUB_Array";
             case DynamicMethodDesc::StubMulticastDelegate:  return "IL_STUB_MulticastDelegate_Invoke";
             case DynamicMethodDesc::StubDelegateInvokeMethod:  return "IL_STUB_Delegate_Invoke";
-#ifdef FEATURE_INSTANTIATINGSTUB_AS_IL
             case DynamicMethodDesc::StubUnboxingIL:         return "IL_STUB_UnboxingStub";
             case DynamicMethodDesc::StubInstantiating:      return "IL_STUB_InstantiatingStub";
-#endif
             case DynamicMethodDesc::StubWrapperDelegate:    return "IL_STUB_WrapperDelegate_Invoke";
             case DynamicMethodDesc::StubTailCallStoreArgs:  return "IL_STUB_StoreTailCallArgs";
             case DynamicMethodDesc::StubTailCallCallTarget: return "IL_STUB_CallTailCallTarget";
@@ -179,8 +180,8 @@ MethodDesc* ILStubCache::CreateNewMethodDesc(LoaderHeap* pCreationHeap, MethodTa
     if (isAsync)
     {
         pMD->SetHasAsyncMethodData();
-        // Async stubs are standalone methods that do not form async/task-returning variant pairs.
-        pMD->GetAddrOfAsyncMethodData()->kind = AsyncMethodKind::AsyncExplicitImpl;
+        // Async stubs are standalone AsyncCall methods that do not form variant pairs.
+        pMD->GetAddrOfAsyncMethodData()->flags = AsyncMethodFlags::AsyncCall;
     }
 
     //
@@ -240,7 +241,6 @@ MethodDesc* ILStubCache::CreateNewMethodDesc(LoaderHeap* pCreationHeap, MethodTa
         pMD->SetILStubType(DynamicMethodDesc::StubWrapperDelegate);
     }
     else
-#ifdef FEATURE_INSTANTIATINGSTUB_AS_IL
     if (SF_IsUnboxingILStub(dwStubFlags))
     {
         pMD->SetILStubType(DynamicMethodDesc::StubUnboxingIL);
@@ -251,7 +251,6 @@ MethodDesc* ILStubCache::CreateNewMethodDesc(LoaderHeap* pCreationHeap, MethodTa
         pMD->SetILStubType(DynamicMethodDesc::StubInstantiating);
     }
     else
-#endif
     if (SF_IsTailCallStoreArgsStub(dwStubFlags))
     {
         pMD->SetILStubType(DynamicMethodDesc::StubTailCallStoreArgs);
@@ -304,19 +303,26 @@ MethodDesc* ILStubCache::CreateNewMethodDesc(LoaderHeap* pCreationHeap, MethodTa
         // mark certain types of stub MDs with random flags so ILStubManager recognizes them
         if (SF_IsReverseStub(dwStubFlags))
         {
-            pMD->SetILStubType(DynamicMethodDesc::StubNativeToCLRInterop);
+            pMD->SetILStubType(DynamicMethodDesc::StubReversePInvoke);
         }
         else
         {
             if (SF_IsDelegateStub(dwStubFlags))
             {
-                pMD->SetFlags(DynamicMethodDesc::FlagIsDelegate);
+                pMD->SetILStubType(DynamicMethodDesc::StubPInvokeDelegate);
             }
             else if (SF_IsCALLIStub(dwStubFlags))
             {
-                pMD->SetFlags(DynamicMethodDesc::FlagIsCALLI);
+                pMD->SetILStubType(DynamicMethodDesc::StubPInvokeCalli);
             }
-            pMD->SetILStubType(DynamicMethodDesc::StubCLRToNativeInterop);
+            else if (SF_IsVarArgStub(dwStubFlags))
+            {
+                pMD->SetILStubType(DynamicMethodDesc::StubPInvokeVarArg);
+            }
+            else
+            {
+                pMD->SetILStubType(DynamicMethodDesc::StubPInvoke);
+            }
         }
     }
 

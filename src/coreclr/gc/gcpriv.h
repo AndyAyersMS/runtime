@@ -1547,6 +1547,8 @@ class gc_heap
 
     friend class mark_queue_t;
 
+    friend struct ::cdac_data<gc_heap>;
+
 #ifdef MULTIPLE_HEAPS
     typedef void (gc_heap::* card_fn) (uint8_t**, int);
 #define call_fn(this_arg,fn) (this_arg->*fn)
@@ -1690,10 +1692,7 @@ private:
     PER_HEAP_METHOD void set_region_sweep_in_plan (heap_segment* region);
     PER_HEAP_METHOD void clear_region_sweep_in_plan (heap_segment* region);
     PER_HEAP_METHOD void clear_region_demoted (heap_segment* region);
-    PER_HEAP_METHOD void decide_on_demotion_pin_surv (heap_segment* region,
-                                                      int* no_pinned_surv_region_count,
-                                                      bool promote_gen1_pins_p,
-                                                      bool large_pins_p);
+    PER_HEAP_METHOD void decide_on_demotion_pin_surv (heap_segment* region, int* no_pinned_surv_region_count);
     PER_HEAP_METHOD void skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_num);
     PER_HEAP_METHOD void process_last_np_surv_region (generation* consing_gen,
                                       int current_plan_gen_num,
@@ -2624,15 +2623,6 @@ private:
 #ifndef USE_REGIONS
     PER_HEAP_METHOD generation*  ensure_ephemeral_heap_segment (generation* consing_gen);
 #endif //!USE_REGIONS
-
-    PER_HEAP_ISOLATED_METHOD bool decide_on_gen1_pin_promotion (float pin_frag_ratio, float pin_surv_ratio);
-
-    PER_HEAP_METHOD void attribute_pin_higher_gen_alloc (
-#ifdef USE_REGIONS
-                                                        heap_segment* seg, int to_gen_number,
-#endif
-                                                        uint8_t* plug, size_t len);
-
     PER_HEAP_METHOD uint8_t* allocate_in_condemned_generations (generation* gen,
                                              size_t size,
                                              int from_gen_number,
@@ -2654,8 +2644,6 @@ private:
     PER_HEAP_METHOD size_t get_promoted_bytes();
 
 #ifdef USE_REGIONS
-    PER_HEAP_METHOD void attribute_pin_higher_gen_alloc (int frgn, int togn, size_t len);
-
     PER_HEAP_ISOLATED_METHOD void sync_promoted_bytes();
 
     PER_HEAP_ISOLATED_METHOD void set_heap_for_contained_basic_regions (heap_segment* region, gc_heap* hp);
@@ -3474,6 +3462,8 @@ private:
 
     PER_HEAP_ISOLATED_METHOD BOOL dt_high_memory_load_p();
 
+    PER_HEAP_ISOLATED_METHOD bool compute_hard_limit_from_heap_limits();
+
     PER_HEAP_ISOLATED_METHOD bool compute_hard_limit();
 
     PER_HEAP_ISOLATED_METHOD bool compute_memory_settings(bool is_initialization, uint32_t& nhp, uint32_t nhp_from_config, size_t& seg_size_from_config,
@@ -3536,8 +3526,6 @@ private:
     //
     // Set during a GC and checked by allocator after that GC
     PER_HEAP_FIELD_SINGLE_GC BOOL sufficient_gen0_space_p;
-
-    PER_HEAP_FIELD_SINGLE_GC BOOL decide_promote_gen1_pins_p;
 
     PER_HEAP_FIELD_SINGLE_GC bool no_gc_oom_p;
     PER_HEAP_FIELD_SINGLE_GC heap_segment* saved_loh_segment_no_gc;
@@ -3678,6 +3666,7 @@ private:
 
     PER_HEAP_FIELD_SINGLE_GC uint8_t* demotion_low;
     PER_HEAP_FIELD_SINGLE_GC uint8_t* demotion_high;
+    PER_HEAP_FIELD_SINGLE_GC BOOL demote_gen1_p;
     PER_HEAP_FIELD_SINGLE_GC uint8_t* last_gen1_pin_end;
 
     PER_HEAP_FIELD_SINGLE_GC BOOL ephemeral_promotion;
@@ -3775,6 +3764,8 @@ private:
     PER_HEAP_FIELD_SINGLE_GC_ALLOC BOOL last_gc_before_oom;
 
 #ifdef MULTIPLE_HEAPS
+    // approximate alloc_context_count. This is updated by multiple threads without locking; the
+    // increments/decrements are non-interlocked so the value is only approximate.
     PER_HEAP_FIELD_SINGLE_GC_ALLOC VOLATILE(int) alloc_context_count;
 
     // Init-ed during a GC and updated by allocator after that GC
@@ -4387,6 +4378,18 @@ private:
     {
         float target_tcp = 2.0;
         float target_gen2_tcp = 10.0;
+
+        // The following 3 constants are used in the computation for the total gen0 budget relative to the stable soh size.
+        // 
+        // By default DATAS computes a multiplier (gen0_growth_soh_ratio) that scales the size. This multiplier follows
+        // a power decay curve where the multiplier decreases rapidly as the size increases. We cap it at 10x at the low
+        // end and 10% at the high end.
+        //
+        // You can choose to modify these by specifying gen0_growth_factor_percent to reduce or increase this multiplier
+        // and the min/max multipliers.
+        float gen0_growth_soh_ratio_percent = 1.0;
+        float gen0_growth_soh_ratio_min = 0.1f;
+        float gen0_growth_soh_ratio_max = 10.0;
 
         static const int recorded_adjustment_size = 4;
         static const int sample_size = 3;
@@ -5069,23 +5072,23 @@ private:
         // time in msl).
         //
 
-        size_t          max_gen0_new_allocation;
-        size_t          min_gen0_new_allocation;
+        size_t max_gen0_new_allocation = 64 * 1024 * 1024;
+        size_t min_gen0_new_allocation = 0;
 
         size_t compute_total_gen0_budget (size_t total_soh_stable_size)
         {
             assert (total_soh_stable_size > 0);
 
-            float factor = (float)(20 - conserve_mem_setting);
-            double old_gen_growth_factor = factor / sqrt ((double)total_soh_stable_size / 1000.0 / 1000.0);
-            double saved_old_gen_growth_factor = old_gen_growth_factor;
-            old_gen_growth_factor = min (10.0, old_gen_growth_factor);
-            old_gen_growth_factor = max (0.1, old_gen_growth_factor);
+            float factor = (float)(20 - conserve_mem_setting) * gen0_growth_soh_ratio_percent;
+            double gen0_growth_soh_ratio = factor / sqrt ((double)total_soh_stable_size / 1000.0 / 1000.0);
+            double saved_gen0_growth_soh_ratio = gen0_growth_soh_ratio;
+            gen0_growth_soh_ratio = min ((double)gen0_growth_soh_ratio_max, gen0_growth_soh_ratio);
+            gen0_growth_soh_ratio = max ((double)gen0_growth_soh_ratio_min, gen0_growth_soh_ratio);
 
-            size_t total_new_allocation_old_gen = (size_t)(old_gen_growth_factor * (double)total_soh_stable_size);
+            size_t total_new_allocation_old_gen = (size_t)(gen0_growth_soh_ratio * (double)total_soh_stable_size);
             dprintf (6666, ("stable soh %Id (%.3fmb), factor %.3f=>%.3f -> total gen0 new_alloc %Id (%.3fmb)",
                 total_soh_stable_size, ((double)total_soh_stable_size / 1000.0 / 1000.0),
-                saved_old_gen_growth_factor, old_gen_growth_factor, total_new_allocation_old_gen,
+                saved_gen0_growth_soh_ratio, gen0_growth_soh_ratio, total_new_allocation_old_gen,
                 ((double)total_new_allocation_old_gen  / 1000.0 / 1000.0)));
             return total_new_allocation_old_gen;
         }
@@ -5666,6 +5669,7 @@ class CFinalize
 {
 
     friend class CFinalizeStaticAsserts;
+    friend struct ::cdac_data<CFinalize>;
 
 private:
 

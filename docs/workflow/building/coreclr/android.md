@@ -1,6 +1,6 @@
-# Experimental support of CoreCLR on Android
+# CoreCLR on Android
 
-This is the internal documentation which outlines experimental support of CoreCLR on Android.
+This documentation outlines developer workflows for CoreCLR on Android platforms.
 
 ## Table of Contents
 
@@ -74,6 +74,9 @@ To build CoreCLR runtime NuGet packages, run the following command from `<repo-r
 
 > [!NOTE]
 > The runtime packages will be located at: `<repo-root>/artifacts/packages/<configuration>/Shipping/`
+
+> [!NOTE]
+> The static CoreCLR runtime for static linking (`libcoreclr_static.a`) is available in inner build artifacts but is not yet shipped in NuGet packages.
 
 ### Windows + WSL2
 

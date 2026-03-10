@@ -200,7 +200,7 @@ namespace System.Reflection.Emit
                     AssemblyBuilderAccess.Run, AssemblyLoadContext.Default, null);
 
                 // this always gets the internal module.
-                s_anonymouslyHostedDynamicMethodsModule = assembly.ManifestModule!;
+                s_anonymouslyHostedDynamicMethodsModule = assembly.ManifestModule;
             }
 
             return s_anonymouslyHostedDynamicMethodsModule;
@@ -242,7 +242,7 @@ namespace System.Reflection.Emit
             }
             else
             {
-                _parameterTypes = Array.Empty<RuntimeType>();
+                _parameterTypes = [];
             }
 
             // check and store the return value
