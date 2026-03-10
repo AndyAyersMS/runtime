@@ -3078,8 +3078,7 @@ AGAIN:
 
         case GT_SELECT:
             return Compare(op1->AsConditional()->gtCond, op2->AsConditional()->gtCond) &&
-                   Compare(op1->AsOp()->gtOp1, op2->AsOp()->gtOp1) &&
-                   Compare(op1->AsOp()->gtOp2, op2->AsOp()->gtOp2);
+                   Compare(op1->AsOp()->gtOp1, op2->AsOp()->gtOp1) && Compare(op1->AsOp()->gtOp2, op2->AsOp()->gtOp2);
 
         default:
             assert(!"unexpected operator");
