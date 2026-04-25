@@ -97,6 +97,10 @@ PhaseStatus Compiler::optRedundantBranches()
 
                 madeChanges |= madeChangesThisBlock;
             }
+            else if (block->KindIs(BBJ_RETURN))
+            {
+                madeChanges |= m_compiler->optReturnPhiRelopFold(block);
+            }
         }
     };
 
@@ -1126,6 +1130,492 @@ bool Compiler::optRedundantDominatingBranch(BasicBlock* const block)
     }
 
     return madeChanges;
+}
+
+//------------------------------------------------------------------------
+// optRelopReturnSafeToClone: check whether a relop tree from a dominator
+//   block can be safely cloned and evaluated at another (dominated) block.
+//
+// Arguments:
+//   relop - candidate relop tree from a dominator
+//
+// Returns:
+//   True if the tree may be cloned without altering observable behavior.
+//
+// Notes:
+//   We require:
+//     - integral relop (no floating-point compares),
+//     - no exceptions, side effects, or global references in the tree,
+//     - operands are simple leaves (LCL_VAR or constant) so that any new
+//       use we introduce in another block remains well-formed under SSA.
+//
+static bool optRelopReturnSafeToClone(GenTree* relop)
+{
+    if (!relop->OperIsCompare())
+    {
+        return false;
+    }
+
+    if (varTypeIsFloating(relop->gtGetOp1()))
+    {
+        return false;
+    }
+
+    if ((relop->gtFlags & (GTF_EXCEPT | GTF_GLOB_REF | GTF_SIDE_EFFECT)) != 0)
+    {
+        return false;
+    }
+
+    for (GenTree* op : {relop->gtGetOp1(), relop->gtGetOp2()})
+    {
+        if (op->OperIs(GT_LCL_VAR))
+        {
+            // Must be SSA-tracked so the SSA def of this use is identifiable
+            // (and so dominates the new use point).
+            if (op->AsLclVar()->GetSsaNum() == SsaConfig::RESERVED_SSA_NUM)
+            {
+                return false;
+            }
+        }
+        else if (!op->OperIs(GT_CNS_INT, GT_CNS_LNG))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+//------------------------------------------------------------------------
+// optReturnPhiRelopFold: try to simplify a relop in a BBJ_RETURN block
+//   whose value is determined per-predecessor by a local phi.
+//
+// Arguments:
+//   block - BBJ_RETURN block to consider
+//
+// Returns:
+//   true if any change was made.
+//
+// Notes:
+//   This handles the post-inlining shape of `x.CompareTo(y) <op> 0` for
+//   primitive types: a phi joins the {-1, 0, 1} result of CompareTo at the
+//   return block, and the return expression contains a relop on that phi
+//   against zero.
+//
+//   The optimization works as follows:
+//     1. Find a relop tree inside the return whose VN is a func of two
+//        operands, with at least one of those operands being a PhiDef in
+//        `block` (this mirrors `optJumpThreadPhi`).
+//     2. For each predecessor of `block`, substitute the predecessor's phi
+//        argument VN into the relop VN. If the result is constant for every
+//        predecessor we have a clean bipartition into "true" and "false"
+//        predecessors.
+//     3. If all predecessors are in one set, the relop is replaced with the
+//        common constant.
+//     4. Otherwise walk the immediate dominator chain. For the first
+//        dominator `D` ending in BBJ_COND whose relop is safe to clone, use
+//        `optReachable` to classify each predecessor as reachable through
+//        `D`'s true side or false side. If the partition matches the
+//        true/false predicate sets (or is the uniform inversion thereof),
+//        clone `D`'s relop into the return tree (negating if necessary).
+//
+bool Compiler::optReturnPhiRelopFold(BasicBlock* const block)
+{
+    if (!block->KindIs(BBJ_RETURN))
+    {
+        return false;
+    }
+
+    if (block->lastStmt() == nullptr)
+    {
+        return false;
+    }
+
+    // Handler entry blocks can have unusual phi argument shapes.
+    if (bbIsHandlerBeg(block))
+    {
+        return false;
+    }
+
+    Statement* const lastStmt = block->lastStmt();
+    GenTree* const   root     = lastStmt->GetRootNode();
+
+    if (!root->OperIs(GT_RETURN, GT_RETFILT, GT_SWIFT_ERROR_RET))
+    {
+        return false;
+    }
+
+    // Find the first candidate relop inside the return tree.
+    // The relop must be integer-typed, not floating, with a known liberal VN
+    // that destructures into a 2-arg func app whose args include a PhiDef.
+    //
+    GenTree** relopUse     = nullptr;
+    ValueNum  relopNormVN  = ValueNumStore::NoVN;
+    VNFuncApp relopFuncApp = {};
+
+    auto isCandidateRelop = [&](GenTree* node) -> bool {
+        if (!node->OperIsCompare())
+        {
+            return false;
+        }
+        if (varTypeIsFloating(node->gtGetOp1()))
+        {
+            return false;
+        }
+        ValueNum vn = node->GetVN(VNK_Liberal);
+        if (vn == ValueNumStore::NoVN)
+        {
+            return false;
+        }
+        ValueNum normVN, excVN;
+        vnStore->VNUnpackExc(vn, &normVN, &excVN);
+        if (vnStore->IsVNConstant(normVN))
+        {
+            return false;
+        }
+        VNFuncApp fapp;
+        if (!vnStore->GetVNFunc(normVN, &fapp) || (fapp.m_arity != 2))
+        {
+            return false;
+        }
+        VNPhiDef phiDef;
+        for (int i = 0; i < 2; i++)
+        {
+            if (vnStore->GetPhiDef(fapp.m_args[i], &phiDef))
+            {
+                relopNormVN  = normVN;
+                relopFuncApp = fapp;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Manual pre-order walk over the return tree.
+    //
+    auto walkSlot = [&](GenTree** slot, auto& self) -> bool {
+        GenTree* node = *slot;
+        if (isCandidateRelop(node))
+        {
+            relopUse = slot;
+            return true;
+        }
+        if (node->OperIsBinary())
+        {
+            if ((node->AsOp()->gtOp1 != nullptr) && self(&node->AsOp()->gtOp1, self))
+                return true;
+            if ((node->AsOp()->gtOp2 != nullptr) && self(&node->AsOp()->gtOp2, self))
+                return true;
+        }
+        else if (node->OperIsUnary() && (node->AsOp()->gtOp1 != nullptr))
+        {
+            if (self(&node->AsOp()->gtOp1, self))
+                return true;
+        }
+        return false;
+    };
+
+    if (root->OperIsUnary() && (root->AsOp()->gtOp1 != nullptr))
+    {
+        walkSlot(&root->AsOp()->gtOp1, walkSlot);
+    }
+
+    if (relopUse == nullptr)
+    {
+        return false;
+    }
+
+    GenTree* const relop = *relopUse;
+
+    JITDUMP("\n--- Trying RBO RETURN-PHI fold in " FMT_BB " on [%06u]\n", block->bbNum, dspTreeID(relop));
+
+    // Identify the phi defs in `block` matching the relop's VN func args.
+    //
+    unsigned funcArgToPhiLocalMap[]   = {BAD_VAR_NUM, BAD_VAR_NUM};
+    GenTree* funcArgToPhiDefNodeMap[] = {nullptr, nullptr};
+    bool     foundPhiDef              = false;
+
+    for (int i = 0; i < 2; i++)
+    {
+        VNPhiDef phiDef;
+        if (!vnStore->GetPhiDef(relopFuncApp.m_args[i], &phiDef))
+        {
+            continue;
+        }
+
+        const unsigned lclNum    = phiDef.LclNum;
+        const unsigned ssaDefNum = phiDef.SsaDef;
+
+        for (Statement* const stmt : block->Statements())
+        {
+            if (!stmt->IsPhiDefnStmt())
+            {
+                break;
+            }
+            GenTreeLclVar* const phiDefNode = stmt->GetRootNode()->AsLclVar();
+            assert(phiDefNode->IsPhiDefn());
+            if (phiDefNode->GetLclNum() == lclNum)
+            {
+                if (phiDefNode->GetSsaNum() == ssaDefNum)
+                {
+                    funcArgToPhiLocalMap[i]   = lclNum;
+                    funcArgToPhiDefNodeMap[i] = phiDefNode;
+                    foundPhiDef               = true;
+                }
+                break;
+            }
+        }
+    }
+
+    if (!foundPhiDef)
+    {
+        JITDUMP(" no usable PhiDef in " FMT_BB "\n", block->bbNum);
+        return false;
+    }
+
+    // For each pred, substitute phi args into the relop VN and require a constant.
+    //
+    const unsigned maxPreds = 8;
+    BasicBlock*    truePreds[maxPreds];
+    BasicBlock*    falsePreds[maxPreds];
+    unsigned       numTrue  = 0;
+    unsigned       numFalse = 0;
+    unsigned       numPreds = 0;
+
+    for (BasicBlock* const predBlock : block->PredBlocks())
+    {
+        numPreds++;
+        if (numPreds > maxPreds)
+        {
+            JITDUMP(" too many preds; bail\n");
+            return false;
+        }
+
+        ValueNum newRelopArgs[] = {relopFuncApp.m_args[0], relopFuncApp.m_args[1]};
+        bool     updatedArg     = false;
+
+        for (int i = 0; i < 2; i++)
+        {
+            if (funcArgToPhiLocalMap[i] == BAD_VAR_NUM)
+            {
+                continue;
+            }
+
+            GenTreePhi* const phi = funcArgToPhiDefNodeMap[i]->AsLclVar()->Data()->AsPhi();
+            for (GenTreePhi::Use& use : phi->Uses())
+            {
+                GenTreePhiArg* const phiArgNode = use.GetNode()->AsPhiArg();
+                if (phiArgNode->gtPredBB == predBlock)
+                {
+                    ValueNum phiArgVN = phiArgNode->GetVN(VNK_Liberal);
+                    if (phiArgVN != ValueNumStore::NoVN)
+                    {
+                        newRelopArgs[i] = phiArgVN;
+                        updatedArg      = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (!updatedArg)
+        {
+            JITDUMP(" pred " FMT_BB " is ambiguous; bail\n", predBlock->bbNum);
+            return false;
+        }
+
+        const ValueNum substVN =
+            vnStore->VNForFunc(relop->TypeGet(), relopFuncApp.m_func, newRelopArgs[0], newRelopArgs[1]);
+
+        if (!vnStore->IsVNConstant(substVN))
+        {
+            JITDUMP(" pred " FMT_BB " substituted VN " FMT_VN " not constant; bail\n", predBlock->bbNum, substVN);
+            return false;
+        }
+
+        const bool relopIsTrue = (substVN != vnStore->VNZeroForType(TYP_INT));
+        if (relopIsTrue)
+        {
+            truePreds[numTrue++] = predBlock;
+        }
+        else
+        {
+            falsePreds[numFalse++] = predBlock;
+        }
+        JITDUMP(" pred " FMT_BB " => relop = %s\n", predBlock->bbNum, relopIsTrue ? "true" : "false");
+    }
+
+    if ((numTrue == 0) || (numFalse == 0))
+    {
+        // All preds agree: replace with the constant.
+        JITDUMP(" all preds give same value; replacing with constant %d\n", numTrue > 0 ? 1 : 0);
+        GenTree* newConst = gtNewIconNode(numTrue > 0 ? 1 : 0, TYP_INT);
+        newConst->SetVNs(ValueNumPair{vnStore->VNZeroForType(TYP_INT), vnStore->VNZeroForType(TYP_INT)});
+        if (numTrue > 0)
+        {
+            ValueNum oneVN = vnStore->VNOneForType(TYP_INT);
+            newConst->SetVNs(ValueNumPair{oneVN, oneVN});
+        }
+        DEBUG_DESTROY_NODE(relop);
+        *relopUse = newConst;
+        gtSetStmtInfo(lastStmt);
+        fgSetStmtSeq(lastStmt);
+        return true;
+    }
+
+    // Walk dominators looking for a discriminator BBJ_COND.
+    //
+    const unsigned domLimit = 4;
+    unsigned       domSteps = 0;
+    BasicBlock*    domBlock = block->bbIDom;
+
+    while ((domBlock != nullptr) && (domSteps < domLimit))
+    {
+        domSteps++;
+
+        if (!domBlock->KindIs(BBJ_COND))
+        {
+            domBlock = domBlock->bbIDom;
+            continue;
+        }
+
+        Statement* const domStmt = domBlock->lastStmt();
+        if ((domStmt == nullptr) || !domStmt->GetRootNode()->OperIs(GT_JTRUE))
+        {
+            domBlock = domBlock->bbIDom;
+            continue;
+        }
+
+        GenTree* const domRelop = domStmt->GetRootNode()->AsOp()->gtGetOp1();
+        if (!optRelopReturnSafeToClone(domRelop))
+        {
+            JITDUMP(" dom " FMT_BB " relop is not safe to clone\n", domBlock->bbNum);
+            domBlock = domBlock->bbIDom;
+            continue;
+        }
+
+        BasicBlock* const trueSucc  = domBlock->GetTrueTarget();
+        BasicBlock* const falseSucc = domBlock->GetFalseTarget();
+
+        if (trueSucc == falseSucc)
+        {
+            domBlock = domBlock->bbIDom;
+            continue;
+        }
+
+        // Classify each pred's polarity at domBlock.
+        //
+        // We use optReachable to determine which side of domBlock reaches each pred,
+        // requiring exactly one side to be reachable for an unambiguous classification.
+        //
+        bool     allClassified = true;
+        bool     trueSideIsTruePreds = false;
+        bool     polaritySet = false;
+
+        auto classifyPred = [&](BasicBlock* const pred) -> int {
+            // Returns 1 if reachable only via true side, 0 if only via false side, -1 otherwise.
+            const bool tReach =
+                (pred == trueSucc) || optReachable(trueSucc, pred, domBlock);
+            const bool fReach =
+                (pred == falseSucc) || optReachable(falseSucc, pred, domBlock);
+            if (tReach && !fReach)
+                return 1;
+            if (!tReach && fReach)
+                return 0;
+            return -1;
+        };
+
+        for (unsigned i = 0; i < numTrue && allClassified; i++)
+        {
+            int side = classifyPred(truePreds[i]);
+            if (side < 0)
+            {
+                allClassified = false;
+                break;
+            }
+            const bool predOnTrueSide = (side == 1);
+            if (!polaritySet)
+            {
+                trueSideIsTruePreds = predOnTrueSide;
+                polaritySet         = true;
+            }
+            else if (predOnTrueSide != trueSideIsTruePreds)
+            {
+                allClassified = false;
+            }
+        }
+        for (unsigned i = 0; i < numFalse && allClassified; i++)
+        {
+            int side = classifyPred(falsePreds[i]);
+            if (side < 0)
+            {
+                allClassified = false;
+                break;
+            }
+            const bool predOnTrueSide = (side == 1);
+            if (!polaritySet)
+            {
+                trueSideIsTruePreds = !predOnTrueSide;
+                polaritySet         = true;
+            }
+            else if (predOnTrueSide == trueSideIsTruePreds)
+            {
+                allClassified = false;
+            }
+        }
+
+        if (!allClassified || !polaritySet)
+        {
+            JITDUMP(" dom " FMT_BB " did not cleanly partition preds\n", domBlock->bbNum);
+            domBlock = domBlock->bbIDom;
+            continue;
+        }
+
+        // Found it. Clone domRelop and substitute. Negate if T-preds are on dom's false side.
+        //
+        GenTree* newRelop = gtCloneExpr(domRelop);
+        if (newRelop == nullptr)
+        {
+            return false;
+        }
+
+        if (!trueSideIsTruePreds)
+        {
+            // T-preds came from dom's false side, so the wanted predicate is the negation.
+            // gtReverseCond reverses the relop in place.
+            gtReverseCond(newRelop);
+        }
+
+        // The cloned tree carries the dom-block VN, which equals the desired value
+        // semantically, but the relop's old VN was different. To avoid stale VN
+        // confusion in any later RBO retries, rebuild this subtree's VN.
+        //
+        ValueNum lhsVN = newRelop->gtGetOp1()->GetVN(VNK_Liberal);
+        ValueNum rhsVN = newRelop->gtGetOp2()->GetVN(VNK_Liberal);
+        if ((lhsVN != ValueNumStore::NoVN) && (rhsVN != ValueNumStore::NoVN))
+        {
+            VNFunc const newFunc = GetVNFuncForNode(newRelop);
+            ValueNum     newVN   = vnStore->VNForFunc(newRelop->TypeGet(), newFunc, lhsVN, rhsVN);
+            newRelop->SetVNs(ValueNumPair{newVN, newVN});
+        }
+
+        JITDUMP(" RBO RETURN-PHI fold in " FMT_BB " using dominator " FMT_BB " (negated=%d)\n", block->bbNum,
+                domBlock->bbNum, !trueSideIsTruePreds);
+        DISPTREE(relop);
+        JITDUMP(" -->\n");
+        DISPTREE(newRelop);
+
+        DEBUG_DESTROY_NODE(relop);
+        *relopUse = newRelop;
+        gtSetStmtInfo(lastStmt);
+        fgSetStmtSeq(lastStmt);
+
+        Metrics.RedundantBranchesEliminated++;
+        return true;
+    }
+
+    JITDUMP(" no suitable dominator found\n");
+    return false;
 }
 
 //------------------------------------------------------------------------
