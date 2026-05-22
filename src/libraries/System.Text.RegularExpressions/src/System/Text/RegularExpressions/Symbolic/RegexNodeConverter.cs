@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace System.Text.RegularExpressions.Symbolic
 {
@@ -325,17 +324,53 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <returns>A BDD that, when queried with a char, answers whether that char is in the specified set.</returns>
         private unsafe BDD CreateBDDFromSetString(string set)
         {
-            // If we're too deep on the stack, continue any recursion on another thread.
-            if (!StackHelper.TryEnsureSufficientExecutionStack())
-            {
-                return StackHelper.CallOnEmptyStack(CreateBDDFromSetString, set);
-            }
-
             // Lazily-initialize the set cache on first use, since some expressions may not have character classes in them.
             _setBddCache ??= new Dictionary<string, BDD>();
 
-            // Try to get the cached BDD for the set key.
-            // If one doesn't yet exist, compute and populate it.
+            // If already cached, return immediately.
+            if (_setBddCache.TryGetValue(set, out BDD? cached))
+            {
+                return cached;
+            }
+
+            // Walk the subtraction chain iteratively and pre-cache from innermost to outermost.
+            // This avoids deep recursion (via StackHelper.CallOnEmptyStack) that can exhaust address
+            // space on 32-bit processes when nesting is very deep.
+            List<string>? chain = null;
+            string current = set;
+            while (true)
+            {
+                int subtractionPos = RegexCharClass.SetStartIndex + current[RegexCharClass.SetLengthIndex] + current[RegexCharClass.CategoryLengthIndex];
+                if (current.Length <= subtractionPos)
+                {
+                    break;
+                }
+
+                string subtractor = current.Substring(subtractionPos);
+                if (_setBddCache.ContainsKey(subtractor))
+                {
+                    break;
+                }
+
+                chain ??= new List<string>();
+                chain.Add(subtractor);
+                current = subtractor;
+            }
+
+            // Process from innermost to outermost so each subtractor BDD is cached before its parent needs it.
+            if (chain is not null)
+            {
+                for (int j = chain.Count - 1; j >= 0; j--)
+                {
+                    ref BDD? r = ref CollectionsMarshal.GetValueRefOrAddDefault(_setBddCache, chain[j], out bool exists);
+                    if (!exists)
+                    {
+                        r = Compute(chain[j]);
+                    }
+                }
+            }
+
+            // Now compute the outermost set. Its subtractor, if any, is already cached.
             ref BDD? result = ref CollectionsMarshal.GetValueRefOrAddDefault(_setBddCache, set, out _);
             return result ??= Compute(set);
 
