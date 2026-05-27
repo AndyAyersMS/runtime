@@ -2531,6 +2531,30 @@ bool GenTreeCall::Equals(GenTreeCall* c1, GenTreeCall* c2)
         {
             return false;
         }
+
+        // For cast helpers, the per-site IL offset must agree so that GDV expansion
+        // consults the right class profile (see Compiler::impIsCastHelperMayHaveProfileData).
+        if (c1->IsHelperCall())
+        {
+            switch (Compiler::eeGetHelperNum(c1->gtCallMethHnd))
+            {
+                case CORINFO_HELP_ISINSTANCEOFINTERFACE:
+                case CORINFO_HELP_ISINSTANCEOFARRAY:
+                case CORINFO_HELP_ISINSTANCEOFCLASS:
+                case CORINFO_HELP_ISINSTANCEOFANY:
+                case CORINFO_HELP_CHKCASTINTERFACE:
+                case CORINFO_HELP_CHKCASTARRAY:
+                case CORINFO_HELP_CHKCASTCLASS:
+                case CORINFO_HELP_CHKCASTANY:
+                    if (c1->gtCastHelperILOffset != c2->gtCastHelperILOffset)
+                    {
+                        return false;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
     }
     else
     {
