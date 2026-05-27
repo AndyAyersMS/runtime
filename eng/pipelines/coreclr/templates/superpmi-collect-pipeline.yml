@@ -2,8 +2,17 @@
 # and is used by the SuperPMI pipeline definitions.
 
 extends:
-  template:  /eng/pipelines/common/templates/pipeline-with-resources.yml
+  # TEMPORARY: bypass pipeline-with-resources.yml to avoid declaring Linux
+  # container resources.  The wasm-only SPMI collection matrix has only
+  # windows_x64 jobs which don't use containers, and the container
+  # declarations cause "Initialize containers" to fail on Windows agents
+  # that lack Docker.  Restore the original extends target when the full
+  # platform matrix is re-enabled:
+  #   template: /eng/pipelines/common/templates/pipeline-with-resources.yml
+  template: /eng/pipelines/common/templates/templateDispatch.yml
   parameters:
+    templatePath: templatePublic.yml
+    containers: {}
     stages:
     - stage: Build
       jobs:
