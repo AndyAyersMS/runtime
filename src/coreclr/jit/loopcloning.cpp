@@ -2459,9 +2459,49 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
         return false;
     }
 
+    BasicBlock* const preheader = loop->EntryEdge(0)->getSourceBlock();
+    if (!preheader->KindIs(BBJ_ALWAYS) || !preheader->TargetIs(loop->GetHeader()))
+    {
+        JITDUMP("Unswitch: " FMT_LP " has non-canonical preheader " FMT_BB "\n", loop->GetIndex(), preheader->bbNum);
+        return false;
+    }
+
     if (!loop->ContainsBlock(invariantCondBlock))
     {
         JITDUMP("Unswitch: candidate " FMT_BB " is not in " FMT_LP "\n", invariantCondBlock->bbNum, loop->GetIndex());
+        return false;
+    }
+
+    // Bail on degenerate BBJ_COND where both successors are the same block.
+    if (invariantCondBlock->GetTrueTarget() == invariantCondBlock->GetFalseTarget())
+    {
+        JITDUMP("Unswitch: candidate " FMT_BB " has identical true/false targets\n", invariantCondBlock->bbNum);
+        return false;
+    }
+
+    // Refuse loops with any try/handler region for the initial implementation.
+    // This avoids EH region bookkeeping and CanDuplicateWithEH coordination.
+    bool sawEH = false;
+    loop->VisitLoopBlocks([&](BasicBlock* block) {
+        if (block->hasTryIndex() || block->hasHndIndex())
+        {
+            sawEH = true;
+            return BasicBlockVisit::Abort;
+        }
+        return BasicBlockVisit::Continue;
+    });
+    if (sawEH)
+    {
+        JITDUMP("Unswitch: " FMT_LP " contains EH-region blocks\n", loop->GetIndex());
+        return false;
+    }
+
+    // Must be structurally duplicable.
+    INDEBUG(const char* reason = nullptr;)
+    if (!loop->CanDuplicate(INDEBUG(&reason)))
+    {
+        JITDUMP("Unswitch: " FMT_LP " cannot be duplicated: %s\n", loop->GetIndex(),
+                reason == nullptr ? "(no reason)" : reason);
         return false;
     }
 
@@ -2498,11 +2538,203 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
 //   STUB: currently only logs the intent. Real transform follows in
 //   a subsequent change.
 //
+//------------------------------------------------------------------------
+// optUnswitchLoop: Perform loop unswitching on the specified loop,
+//   using 'invariantCondBlock' as the BBJ_COND to lift to the
+//   dispatcher.
+//
+// Arguments:
+//   loop                - the loop to unswitch
+//   invariantCondBlock  - the BBJ_COND block whose test will be hoisted
+//
+// Return Value:
+//   true if the transform was performed; false otherwise.
+//
+// Notes:
+//   The transform produces:
+//
+//      [preheader]
+//      dispatcher (lifted cond)  -- true --> fastPreheader --> originalHeader
+//                                   false --> slowPreheader --> clonedHeader
+//
+//   The invariant BBJ_COND inside each copy is pruned: in the original it
+//   unconditionally branches to its former true successor; in the clone
+//   it unconditionally branches to its former false successor.
+//   Subsequent passes can DCE the now-unreachable code in each arm.
+//
+//   The condition tree is cloned with gtCloneExpr. Soundness for hoisting
+//   is established by the caller: optTreeIsStructurallyLoopInvariant
+//   forbids GTF_GLOB_EFFECT (assignments, calls, may-throws, global
+//   memory reads), and requires every local read to be loop-invariant.
+//
+//   Profile weights are scaled by the dispatcher's true/false
+//   probabilities, taken from the original BBJ_COND's edge likelihoods.
+//   This is heuristic (the likelihoods are iteration-weighted, not
+//   per-loop-entry), so the caller marks PGO inconsistent after the
+//   transform.
+//
 bool Compiler::optUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock)
 {
-    JITDUMP("Unswitch (stub): would unswitch " FMT_LP " on invariant BBJ_COND in " FMT_BB "\n", loop->GetIndex(),
-            invariantCondBlock->bbNum);
-    return false;
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("\nUnswitching ");
+        FlowGraphNaturalLoop::Dump(loop);
+        printf("On invariant condition in " FMT_BB ":\n", invariantCondBlock->bbNum);
+        gtDispTree(invariantCondBlock->lastStmt()->GetRootNode());
+    }
+#endif
+
+    assert(loop->EntryEdges().size() == 1);
+    BasicBlock* const preheader = loop->EntryEdge(0)->getSourceBlock();
+    assert(preheader->KindIs(BBJ_ALWAYS));
+    assert(preheader->TargetIs(loop->GetHeader()));
+
+    // Capture the lifted condition expression and the cond block's outgoing
+    // edges before doing any CFG surgery.
+    Statement* const origJTrueStmt = invariantCondBlock->lastStmt();
+    assert(origJTrueStmt != nullptr);
+    GenTree* const origJTrue = origJTrueStmt->GetRootNode();
+    assert(origJTrue->OperIs(GT_JTRUE));
+    GenTree* const liftedCond = gtCloneExpr(origJTrue->gtGetOp1());
+    assert(liftedCond != nullptr);
+
+    FlowEdge* const origTrueEdge  = invariantCondBlock->GetTrueEdge();
+    FlowEdge* const origFalseEdge = invariantCondBlock->GetFalseEdge();
+    BasicBlock*     trueTarget    = origTrueEdge->getDestinationBlock();
+    BasicBlock*     falseTarget   = origFalseEdge->getDestinationBlock();
+    weight_t        pTrue         = origTrueEdge->getLikelihood();
+    weight_t        pFalse        = max(0.0, 1.0 - pTrue);
+
+    // ---- 1. Build a new preheader for the "fast" (true-arm) copy. ----
+    JITDUMP("Unswitch: create fast preheader\n");
+    BasicBlock* fastPreheader = fgNewBBafter(BBJ_ALWAYS, preheader, /*extendRegion*/ true);
+    JITDUMP("  Added " FMT_BB " after " FMT_BB "\n", fastPreheader->bbNum, preheader->bbNum);
+    fastPreheader->inheritWeight(preheader);
+    fastPreheader->scaleBBWeight(pTrue);
+
+    FlowEdge* const oldEntryEdge = preheader->GetTargetEdge();
+    fgReplacePred(oldEntryEdge, fastPreheader);
+    fastPreheader->SetTargetEdge(oldEntryEdge);
+
+    // ---- 2. Build a new preheader for the "slow" (false-arm) copy. ----
+    BasicBlock* bottom              = loop->GetLexicallyBottomMostBlock();
+    BasicBlock* beforeSlowPreheader = bottom;
+
+    bool           inTry           = false;
+    unsigned const enclosingRegion = ehGetMostNestedRegionIndex(preheader, &inTry);
+    if (!BasicBlock::sameEHRegion(beforeSlowPreheader, preheader))
+    {
+        beforeSlowPreheader = fgFindInsertPoint(enclosingRegion, inTry, bottom, /* endBlk */ nullptr,
+                                                /* nearBlk */ bottom, /* jumpBlk */ nullptr, /* runRarely */ false);
+    }
+
+    JITDUMP("Unswitch: create slow preheader\n");
+    const bool  extendRegion  = BasicBlock::sameEHRegion(beforeSlowPreheader, preheader);
+    BasicBlock* slowPreheader = fgNewBBafter(BBJ_ALWAYS, beforeSlowPreheader, extendRegion);
+    JITDUMP("  Added " FMT_BB " after " FMT_BB "\n", slowPreheader->bbNum, beforeSlowPreheader->bbNum);
+    slowPreheader->inheritWeight(preheader);
+    slowPreheader->scaleBBWeight(pFalse);
+
+    if (!extendRegion)
+    {
+        slowPreheader->copyEHRegion(preheader);
+
+        if (enclosingRegion != 0)
+        {
+            EHblkDsc* const ebd = ehGetDsc(enclosingRegion - 1);
+            for (EHblkDsc* const HBtab : EHClauses(this, ebd))
+            {
+                if (HBtab->ebdTryLast == bottom)
+                {
+                    fgSetTryEnd(HBtab, slowPreheader);
+                }
+                if (HBtab->ebdHndLast == bottom)
+                {
+                    fgSetHndEnd(HBtab, slowPreheader);
+                }
+            }
+        }
+    }
+
+    // ---- 3. Clone the loop body. The cloned blocks form the slow path. ----
+    BlockToBlockMap* blockMap = new (getAllocator(CMK_LoopClone)) BlockToBlockMap(getAllocator(CMK_LoopClone));
+    BasicBlock*      newPred  = slowPreheader;
+    loop->Duplicate(&newPred, blockMap, pFalse);
+
+    // Scale original blocks by the true probability.
+    loop->VisitLoopBlocks([=](BasicBlock* block) {
+        block->scaleBBWeight(pTrue);
+        return BasicBlockVisit::Continue;
+    });
+
+    BasicBlock* slowHeader = nullptr;
+    bool        foundIt    = blockMap->Lookup(loop->GetHeader(), &slowHeader);
+    assert(foundIt && (slowHeader != nullptr));
+
+    assert(slowPreheader->KindIs(BBJ_ALWAYS));
+    assert(!slowPreheader->HasInitializedTarget());
+    {
+        FlowEdge* const newEdge = fgAddRefPred(slowHeader, slowPreheader);
+        slowPreheader->SetTargetEdge(newEdge);
+    }
+    JITDUMP("Unswitch: " FMT_BB " -> " FMT_BB "\n", slowPreheader->bbNum, slowHeader->bbNum);
+
+    BasicBlock* clonedCondBlock = nullptr;
+    foundIt                     = blockMap->Lookup(invariantCondBlock, &clonedCondBlock);
+    assert(foundIt && (clonedCondBlock != nullptr));
+
+    // ---- 4. Prune the invariant condition in each copy. ----
+
+    // Helper: convert a BBJ_COND to a BBJ_ALWAYS that targets 'keepEdge',
+    // removing the JTRUE statement and the edge to the dropped successor.
+    auto pruneTo = [this](BasicBlock* block, FlowEdge* keepEdge, FlowEdge* dropEdge) {
+        Statement* lastStmt = block->lastStmt();
+        assert(lastStmt != nullptr && lastStmt->GetRootNode()->OperIs(GT_JTRUE));
+        fgRemoveStmt(block, lastStmt);
+        fgRemoveRefPred(dropEdge);
+        block->SetKindAndTargetEdge(BBJ_ALWAYS, keepEdge);
+        keepEdge->setLikelihood(1.0);
+    };
+
+    JITDUMP("Unswitch: pruning original cond " FMT_BB " -> " FMT_BB " (true)\n", invariantCondBlock->bbNum,
+            trueTarget->bbNum);
+    pruneTo(invariantCondBlock, origTrueEdge, origFalseEdge);
+
+    BasicBlock* clonedFalseTarget = nullptr;
+    (void)blockMap->Lookup(falseTarget, &clonedFalseTarget); // may be unchanged if falseTarget is outside the loop
+    JITDUMP("Unswitch: pruning cloned cond " FMT_BB " (false arm)\n", clonedCondBlock->bbNum);
+    pruneTo(clonedCondBlock, clonedCondBlock->GetFalseEdge(), clonedCondBlock->GetTrueEdge());
+
+    // ---- 5. Build the dispatcher between preheader and fastPreheader. ----
+    JITDUMP("Unswitch: create dispatcher\n");
+    BasicBlock* dispatcher = fgNewBBafter(BBJ_COND, preheader, /*extendRegion*/ true);
+    dispatcher->inheritWeight(preheader);
+    JITDUMP("  Added " FMT_BB " after " FMT_BB "\n", dispatcher->bbNum, preheader->bbNum);
+
+    // Redirect preheader -> fastPreheader to preheader -> dispatcher.
+    //
+    // Note: step 1's fgReplacePred repointed the original preheader->header
+    // edge to have fastPreheader as its source, so preheader is in a
+    // transient state where its bbTargetEdge field is stale. We avoid
+    // reading it here and overwrite it directly with the new edge.
+    FlowEdge* const preToDispatcher = fgAddRefPred(dispatcher, preheader);
+    preheader->SetTargetEdge(preToDispatcher);
+
+    // Dispatcher: true -> fastPreheader, false -> slowPreheader.
+    FlowEdge* const dispToFast = fgAddRefPred(fastPreheader, dispatcher);
+    FlowEdge* const dispToSlow = fgAddRefPred(slowPreheader, dispatcher);
+    dispToFast->setLikelihood(pTrue);
+    dispToSlow->setLikelihood(pFalse);
+    dispatcher->SetCond(dispToFast, dispToSlow);
+
+    // Drop the lifted cond into the dispatcher as a JTRUE statement.
+    GenTree* const   newJTrue = gtNewOperNode(GT_JTRUE, TYP_VOID, liftedCond);
+    Statement* const newStmt  = fgNewStmtFromTree(newJTrue, origJTrueStmt->GetDebugInfo());
+    fgInsertStmtAtEnd(dispatcher, newStmt);
+
+    JITDUMP("Unswitch of " FMT_LP " complete\n", loop->GetIndex());
+    return true;
 }
 
 //---------------------------------------------------------------------------------------------------------------
@@ -3595,13 +3827,15 @@ PhaseStatus Compiler::optCloneLoops()
     // candidates today (most commonly because the loop has no recognizable
     // counted induction variable). Gated off by default behind
     // DOTNET_JitDoLoopUnswitching.
+    //
+    // We do at most one unswitch per call to optCloneLoops: the CFG
+    // surgery invalidates the natural-loop iterator we are walking.
     if (JitConfig.JitDoLoopUnswitching() != 0)
     {
         for (FlowGraphNaturalLoop* loop : m_loops->InReversePostOrder())
         {
             // Skip loops we already cloned this pass; their CFG has changed
-            // under our feet and the natural-loop iterator data may be stale
-            // for them.
+            // under our feet.
             if (context.GetLoopOptInfo(loop->GetIndex()) != nullptr)
             {
                 continue;
@@ -3628,10 +3862,11 @@ PhaseStatus Compiler::optCloneLoops()
             }
 
             Metrics.LoopsUnswitched++;
+            break;
         }
     }
 
-    if (Metrics.LoopsCloned > 0)
+    if ((Metrics.LoopsCloned > 0) || (Metrics.LoopsUnswitched > 0))
     {
         fgInvalidateDfsTree();
         m_dfsTree = fgComputeDfs();
