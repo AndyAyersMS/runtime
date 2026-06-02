@@ -77,6 +77,15 @@ RELEASE_CONFIG_INTEGER(JitCloneLoopsMinPerCallRatio, "JitCloneLoopsMinPerCallRat
                                                                                         // disables the gate.
 CONFIG_INTEGER(JitDebugLogLoopCloning, "JitDebugLogLoopCloning", 0) // In debug builds log places where loop cloning
                                                                     // optimizations are performed on the fast path.
+CONFIG_INTEGER(JitDoLoopUnswitching, "JitDoLoopUnswitching", 0)     // If 1, enable loop unswitching: clone loops
+                                                                    // around a loop-invariant BBJ_COND so each copy
+                                                                    // takes only one arm. Currently off by default.
+CONFIG_INTEGER(JitLoopUnswitchingPolicy, "JitLoopUnswitchingPolicy", 0) // Policy gate for loop unswitching. 0 means
+                                                                       // "clone every candidate that passes the
+                                                                       // soundness gate" (absurdly permissive,
+                                                                       // intended for measurement). Non-zero values
+                                                                       // are reserved for a future benefit-based
+                                                                       // heuristic.
 CONFIG_INTEGER(JitDefaultFill, "JitDefaultFill", 0xdd) // In debug builds, initialize the memory allocated by the nra
                                                        // with this byte.
 

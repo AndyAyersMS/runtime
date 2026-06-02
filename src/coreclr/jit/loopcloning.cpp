@@ -2256,6 +2256,255 @@ bool Compiler::optIsStackLocalInvariant(FlowGraphNaturalLoop* loop, unsigned lcl
     return true;
 }
 
+//------------------------------------------------------------------------
+// StructuralInvarianceWalkData: Callback state used by
+//   optCheckLocalStructurallyInvariantVisitor to confirm that every local
+//   read in a tree is structurally loop-invariant.
+//
+struct StructuralInvarianceWalkData
+{
+    Compiler*             comp;
+    FlowGraphNaturalLoop* loop;
+    bool                  invariant;
+};
+
+//------------------------------------------------------------------------
+// optCheckLocalStructurallyInvariantVisitor: fgWalkTreePre callback that
+//   rejects any local read whose local is not structurally invariant
+//   (per optIsStackLocalInvariant) in the loop being analyzed.
+//
+// static
+Compiler::fgWalkResult Compiler::optCheckLocalStructurallyInvariantVisitor(GenTree** use, fgWalkData* data)
+{
+    StructuralInvarianceWalkData* d    = (StructuralInvarianceWalkData*)data->pCallbackData;
+    GenTree*                      tree = *use;
+    if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD, GT_LCL_ADDR))
+    {
+        unsigned         lclNum = tree->AsLclVarCommon()->GetLclNum();
+        LclVarDsc* const dsc    = d->comp->lvaGetDesc(lclNum);
+        // optIsStackLocalInvariant -> FlowGraphNaturalLoop::HasDef asserts
+        // !dsc->lvPromoted (the loop-def query is only valid on promoted
+        // fields, not parents). Treat a promoted parent reference as
+        // conservatively non-invariant for the purposes of this analysis.
+        if (dsc->lvPromoted || !d->comp->optIsStackLocalInvariant(d->loop, lclNum))
+        {
+            d->invariant = false;
+            return WALK_ABORT;
+        }
+    }
+    return WALK_CONTINUE;
+}
+
+//------------------------------------------------------------------------
+// optTreeIsStructurallyLoopInvariant: Lightweight pre-SSA/VN check for
+//   whether a tree is loop-invariant in 'loop'.
+//
+// Arguments:
+//   loop - the loop to check invariance in
+//   tree - the tree to inspect
+//
+// Return Value:
+//   true if every local read in the tree refers to a non-address-exposed
+//   local with no def in the loop, and the tree contains no assignments,
+//   calls, may-throw operations, or global memory references.
+//
+// Notes:
+//   This is intentionally conservative. In particular it rejects every
+//   tree carrying GTF_GLOB_REF or GTF_EXCEPT, so common invariant
+//   constructs like `arr.Length > i` (which read mutable memory and may
+//   throw on null) are not recognized. A VN-based check would catch more.
+//
+bool Compiler::optTreeIsStructurallyLoopInvariant(FlowGraphNaturalLoop* loop, GenTree* tree)
+{
+    // Reject anything with side effects, calls, may-throws, or global memory refs.
+    // GTF_GLOB_EFFECT == GTF_ASG | GTF_CALL | GTF_EXCEPT | GTF_GLOB_REF.
+    if ((tree->gtFlags & GTF_GLOB_EFFECT) != 0)
+    {
+        return false;
+    }
+
+    StructuralInvarianceWalkData d{this, loop, true};
+    fgWalkTreePre(&tree, optCheckLocalStructurallyInvariantVisitor, &d);
+    return d.invariant;
+}
+
+//------------------------------------------------------------------------
+// optFindUnswitchCandidate: Find the most-dominating loop-invariant
+//   BBJ_COND inside 'loop' that dominates every back-edge source.
+//
+// Arguments:
+//   loop - the natural loop to analyze
+//
+// Return Value:
+//   The BasicBlock containing the candidate BBJ_COND, or nullptr if
+//   no candidate exists.
+//
+// Notes:
+//   The candidate's BBJ_COND tests a tree that is structurally
+//   invariant (no defs of any referenced local inside the loop, no
+//   side effects or global memory reads). The most-dominating such
+//   candidate is selected: every other qualifying candidate is
+//   dominated by it. This is the test we would hoist to the
+//   dispatcher when unswitching.
+//
+//   Builds the dominator tree lazily if it hasn't been built yet
+//   (loop cloning runs before PHASE_COMPUTE_DOMINATORS).
+//
+BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
+{
+    // Cloning runs before PHASE_COMPUTE_DOMINATORS, so m_domTree may be null.
+    // Build it lazily here.
+    if (m_domTree == nullptr)
+    {
+        m_domTree = FlowGraphDominatorTree::Build(m_dfsTree);
+    }
+
+    ArrayStack<BasicBlock*> candidates(getAllocator(CMK_LoopClone));
+
+    loop->VisitLoopBlocks([&](BasicBlock* block) {
+        if (!block->KindIs(BBJ_COND))
+        {
+            return BasicBlockVisit::Continue;
+        }
+
+        Statement* lastStmt = block->lastStmt();
+        if ((lastStmt == nullptr) || !lastStmt->GetRootNode()->OperIs(GT_JTRUE))
+        {
+            return BasicBlockVisit::Continue;
+        }
+
+        GenTree* cond = lastStmt->GetRootNode()->gtGetOp1();
+        if (!optTreeIsStructurallyLoopInvariant(loop, cond))
+        {
+            return BasicBlockVisit::Continue;
+        }
+
+        // Must dominate every back-edge source.
+        for (FlowEdge* const edge : loop->BackEdges())
+        {
+            if (!m_domTree->Dominates(block, edge->getSourceBlock()))
+            {
+                return BasicBlockVisit::Continue;
+            }
+        }
+
+        candidates.Push(block);
+        return BasicBlockVisit::Continue;
+    });
+
+    if (candidates.Empty())
+    {
+        return nullptr;
+    }
+
+    // Among the candidates, pick the single one that dominates every other
+    // candidate -- i.e., the candidate nearest the loop header on the dom
+    // chain. This element is unique: every candidate dominates every
+    // back-edge source, so for any back-edge source S all candidates are
+    // ancestors of S in the dom tree and therefore pairwise comparable.
+    for (int i = 0; i < candidates.Height(); i++)
+    {
+        BasicBlock* b         = candidates.Bottom(i);
+        bool        isMostDom = true;
+        for (int j = 0; j < candidates.Height(); j++)
+        {
+            if (i == j)
+            {
+                continue;
+            }
+            if (!m_domTree->Dominates(b, candidates.Bottom(j)))
+            {
+                isMostDom = false;
+                break;
+            }
+        }
+        if (isMostDom)
+        {
+            return b;
+        }
+    }
+
+    // Defensive: should not happen by the argument above, but if some
+    // assumption is violated we'd rather skip than crash.
+    return nullptr;
+}
+
+//------------------------------------------------------------------------
+// optCanUnswitchLoop: Decide whether a loop with a known invariant
+//   BBJ_COND is structurally safe to unswitch.
+//
+// Arguments:
+//   loop                - the natural loop to consider
+//   invariantCondBlock  - the BBJ_COND block whose test would be
+//                         hoisted to the dispatcher
+//
+// Return Value:
+//   true if it's safe to clone and unswitch; false otherwise.
+//
+// Notes:
+//   Minimal soundness gate. Refuse if:
+//   - The loop's preheader does not exist or is not a single entry.
+//   - The candidate block is not actually inside the loop.
+//   - The loop body exceeds the existing JitCloneLoopsSizeLimit.
+//
+//   We deliberately do NOT require an induction variable here --
+//   unswitching does not need one. EH handling and other concerns
+//   are deferred to the transform itself.
+//
+bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock)
+{
+    if (loop->EntryEdges().size() != 1)
+    {
+        JITDUMP("Unswitch: " FMT_LP " has no unique entry/preheader\n", loop->GetIndex());
+        return false;
+    }
+
+    if (!loop->ContainsBlock(invariantCondBlock))
+    {
+        JITDUMP("Unswitch: candidate " FMT_BB " is not in " FMT_LP "\n", invariantCondBlock->bbNum, loop->GetIndex());
+        return false;
+    }
+
+    // Reuse the cloning size cap as a safety net.
+    const int sizeLimit = JitConfig.JitCloneLoopsSizeLimit();
+    if (sizeLimit >= 0)
+    {
+        auto countNode = [](GenTree* tree) -> unsigned {
+            return 1;
+        };
+        if (optLoopComplexityExceeds(loop, (unsigned)sizeLimit, countNode))
+        {
+            JITDUMP("Unswitch: " FMT_LP " exceeds size limit %d\n", loop->GetIndex(), sizeLimit);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+//------------------------------------------------------------------------
+// optUnswitchLoop: Perform loop unswitching on the specified loop,
+//   using 'invariantCondBlock' as the BBJ_COND to lift to the
+//   dispatcher.
+//
+// Arguments:
+//   loop                - the loop to unswitch
+//   invariantCondBlock  - the BBJ_COND block whose test will be hoisted
+//
+// Return Value:
+//   true if the transform was performed; false otherwise.
+//
+// Notes:
+//   STUB: currently only logs the intent. Real transform follows in
+//   a subsequent change.
+//
+bool Compiler::optUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock)
+{
+    JITDUMP("Unswitch (stub): would unswitch " FMT_LP " on invariant BBJ_COND in " FMT_BB "\n", loop->GetIndex(),
+            invariantCondBlock->bbNum);
+    return false;
+}
+
 //---------------------------------------------------------------------------------------------------------------
 //  optExtractArrIndex: Try to extract the array index from "tree".
 //
@@ -3256,11 +3505,15 @@ PhaseStatus Compiler::optCloneLoops()
     LoopCloneContext context((unsigned)m_loops->NumLoops(), getAllocator(CMK_LoopClone));
 
     // Obtain array optimization candidates in the context.
-    if (!optObtainLoopCloningOpts(&context))
+    bool haveClassicalCandidates = optObtainLoopCloningOpts(&context);
+    if (!haveClassicalCandidates)
     {
         JITDUMP("  No clonable loops\n");
-        // TODO: if we can verify that the IR was not modified, we can return PhaseStatus::MODIFIED_NOTHING
-        return PhaseStatus::MODIFIED_EVERYTHING;
+        if (JitConfig.JitDoLoopUnswitching() == 0)
+        {
+            // TODO: if we can verify that the IR was not modified, we can return PhaseStatus::MODIFIED_NOTHING
+            return PhaseStatus::MODIFIED_EVERYTHING;
+        }
     }
 
     unsigned optStaticallyOptimizedLoops = 0;
@@ -3334,6 +3587,47 @@ PhaseStatus Compiler::optCloneLoops()
             context.OptimizeConditions(loop->GetIndex() DEBUGARG(verbose));
             context.OptimizeBlockConditions(loop->GetIndex() DEBUGARG(verbose));
             optCloneLoop(loop, &context);
+        }
+    }
+
+    // Second pass: try unswitching loops that the cloner left alone. This
+    // covers loops with a loop-invariant BBJ_COND whose body has no opt-info
+    // candidates today (most commonly because the loop has no recognizable
+    // counted induction variable). Gated off by default behind
+    // DOTNET_JitDoLoopUnswitching.
+    if (JitConfig.JitDoLoopUnswitching() != 0)
+    {
+        for (FlowGraphNaturalLoop* loop : m_loops->InReversePostOrder())
+        {
+            // Skip loops we already cloned this pass; their CFG has changed
+            // under our feet and the natural-loop iterator data may be stale
+            // for them.
+            if (context.GetLoopOptInfo(loop->GetIndex()) != nullptr)
+            {
+                continue;
+            }
+
+            BasicBlock* candidate = optFindUnswitchCandidate(loop);
+            if (candidate == nullptr)
+            {
+                continue;
+            }
+
+            Metrics.LoopsConsideredForUnswitching++;
+
+            if (!optCanUnswitchLoop(loop, candidate))
+            {
+                Metrics.LoopsRejectedForUnswitching++;
+                continue;
+            }
+
+            if (!optUnswitchLoop(loop, candidate))
+            {
+                Metrics.LoopsRejectedForUnswitching++;
+                continue;
+            }
+
+            Metrics.LoopsUnswitched++;
         }
     }
 

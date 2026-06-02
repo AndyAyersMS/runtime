@@ -7569,6 +7569,7 @@ public:
     PhaseStatus optCloneLoops();
     PhaseStatus optRangeCheckCloning();
     void optCloneLoop(FlowGraphNaturalLoop* loop, LoopCloneContext* context);
+    bool optUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock);
     PhaseStatus optUnrollLoops(); // Unrolls loops (needs to have cost info)
     bool optTryUnrollLoop(FlowGraphNaturalLoop* loop, bool* changedIR);
     void optRedirectPrevUnrollIteration(FlowGraphNaturalLoop* loop, BasicBlock* prevTestBlock, BasicBlock* target);
@@ -9227,6 +9228,10 @@ public:
     };
 
     bool optIsStackLocalInvariant(FlowGraphNaturalLoop* loop, unsigned lclNum);
+    bool optTreeIsStructurallyLoopInvariant(FlowGraphNaturalLoop* loop, GenTree* tree);
+    BasicBlock* optFindUnswitchCandidate(FlowGraphNaturalLoop* loop);
+    bool optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock);
+    static fgWalkPreFn optCheckLocalStructurallyInvariantVisitor;
     bool optCloningHeuristic(FlowGraphNaturalLoop* loop, LoopCloneContext* context);
     bool optExtractArrIndex(GenTree* tree, ArrIndex* result, unsigned lhsNum, bool* topLevelIsFinal);
     bool optExtractSpanIndex(GenTree* tree, SpanIndex* result);
