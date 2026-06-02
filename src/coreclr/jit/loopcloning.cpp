@@ -2443,65 +2443,43 @@ BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
 //
 // Notes:
 //   Minimal soundness gate. Refuse if:
-//   - The loop's preheader does not exist or is not a single entry.
-//   - The candidate block is not actually inside the loop.
+//   - The candidate's true/false targets are identical (degenerate cond).
+//   - The loop is not structurally duplicable (CanDuplicateWithEH).
 //   - The loop body exceeds the existing JitCloneLoopsSizeLimit.
 //
 //   We deliberately do NOT require an induction variable here --
-//   unswitching does not need one. EH handling and other concerns
-//   are deferred to the transform itself.
+//   unswitching does not need one. EH-bearing loops are accepted via
+//   CanDuplicateWithEH/DuplicateWithEH, matching the main cloner.
 //
 bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock)
 {
-    if (loop->EntryEdges().size() != 1)
-    {
-        JITDUMP("Unswitch: " FMT_LP " has no unique entry/preheader\n", loop->GetIndex());
-        return false;
-    }
-
+    // Natural loops are single-entry by definition and preheader canonicalization
+    // (optCanonicalizeLoops) has already run, so a unique BBJ_ALWAYS preheader
+    // is guaranteed.
+    assert(loop->EntryEdges().size() == 1);
     BasicBlock* const preheader = loop->EntryEdge(0)->getSourceBlock();
-    if (!preheader->KindIs(BBJ_ALWAYS) || !preheader->TargetIs(loop->GetHeader()))
-    {
-        JITDUMP("Unswitch: " FMT_LP " has non-canonical preheader " FMT_BB "\n", loop->GetIndex(), preheader->bbNum);
-        return false;
-    }
+    assert(preheader->KindIs(BBJ_ALWAYS) && preheader->TargetIs(loop->GetHeader()));
 
-    if (!loop->ContainsBlock(invariantCondBlock))
-    {
-        JITDUMP("Unswitch: candidate " FMT_BB " is not in " FMT_LP "\n", invariantCondBlock->bbNum, loop->GetIndex());
-        return false;
-    }
+    assert(loop->ContainsBlock(invariantCondBlock));
 
-    // Bail on degenerate BBJ_COND where both successors are the same block.
+    // optFindUnswitchCandidate should already filter degenerate BBJ_COND whose
+    // arms point at the same block; defensive check kept for cheap robustness.
     if (invariantCondBlock->GetTrueTarget() == invariantCondBlock->GetFalseTarget())
     {
         JITDUMP("Unswitch: candidate " FMT_BB " has identical true/false targets\n", invariantCondBlock->bbNum);
+        Metrics.LoopsRejectedForUnswitchingDegenerate++;
         return false;
     }
 
-    // Refuse loops with any try/handler region for the initial implementation.
-    // This avoids EH region bookkeeping and CanDuplicateWithEH coordination.
-    bool sawEH = false;
-    loop->VisitLoopBlocks([&](BasicBlock* block) {
-        if (block->hasTryIndex() || block->hasHndIndex())
-        {
-            sawEH = true;
-            return BasicBlockVisit::Abort;
-        }
-        return BasicBlockVisit::Continue;
-    });
-    if (sawEH)
-    {
-        JITDUMP("Unswitch: " FMT_LP " contains EH-region blocks\n", loop->GetIndex());
-        return false;
-    }
-
-    // Must be structurally duplicable.
+    // Must be structurally duplicable. Use the EH-aware variant so loops
+    // containing try/handler regions are eligible, matching the main cloner's
+    // default policy.
     INDEBUG(const char* reason = nullptr;)
-    if (!loop->CanDuplicate(INDEBUG(&reason)))
+    if (!loop->CanDuplicateWithEH(INDEBUG(&reason)))
     {
         JITDUMP("Unswitch: " FMT_LP " cannot be duplicated: %s\n", loop->GetIndex(),
                 reason == nullptr ? "(no reason)" : reason);
+        Metrics.LoopsRejectedForUnswitchingCannotDup++;
         return false;
     }
 
@@ -2515,6 +2493,7 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
         if (optLoopComplexityExceeds(loop, (unsigned)sizeLimit, countNode))
         {
             JITDUMP("Unswitch: " FMT_LP " exceeds size limit %d\n", loop->GetIndex(), sizeLimit);
+            Metrics.LoopsRejectedForUnswitchingTooLarge++;
             return false;
         }
     }
@@ -2660,7 +2639,7 @@ bool Compiler::optUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariant
     // ---- 3. Clone the loop body. The cloned blocks form the slow path. ----
     BlockToBlockMap* blockMap = new (getAllocator(CMK_LoopClone)) BlockToBlockMap(getAllocator(CMK_LoopClone));
     BasicBlock*      newPred  = slowPreheader;
-    loop->Duplicate(&newPred, blockMap, pFalse);
+    loop->DuplicateWithEH(&newPred, blockMap, pFalse);
 
     // Scale original blocks by the true probability.
     loop->VisitLoopBlocks([=](BasicBlock* block) {
@@ -3832,15 +3811,21 @@ PhaseStatus Compiler::optCloneLoops()
     // surgery invalidates the natural-loop iterator we are walking.
     if (JitConfig.JitDoLoopUnswitching() != 0)
     {
+        // If the cloner first pass modified the CFG, m_dfsTree and m_loops
+        // are stale. Rebuild before iterating, because optFindUnswitchCandidate
+        // lazily builds a dom tree from m_dfsTree and the new blocks added by
+        // cloning would fail dominator construction. Also drop any stale
+        // m_domTree so it gets rebuilt against the fresh DFS.
+        if (Metrics.LoopsCloned > 0)
+        {
+            fgInvalidateDfsTree();
+            m_dfsTree = fgComputeDfs();
+            m_loops   = FlowGraphNaturalLoops::Find(m_dfsTree);
+            m_domTree = nullptr;
+        }
+
         for (FlowGraphNaturalLoop* loop : m_loops->InReversePostOrder())
         {
-            // Skip loops we already cloned this pass; their CFG has changed
-            // under our feet.
-            if (context.GetLoopOptInfo(loop->GetIndex()) != nullptr)
-            {
-                continue;
-            }
-
             BasicBlock* candidate = optFindUnswitchCandidate(loop);
             if (candidate == nullptr)
             {
