@@ -3206,7 +3206,7 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
                 case NI_Throw_PlatformNotSupportedException:
                 {
                     return impUnsupportedNamedIntrinsic(CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED, method, sig,
-                                                        mustExpand);
+                                                        mustExpand, /* canExpandToThrowHelper */ true);
                 }
 
                 case NI_Vector_GetCount:
@@ -11974,44 +11974,78 @@ NamedIntrinsic Compiler::lookupPrimitiveIntNamedIntrinsic(CORINFO_METHOD_HANDLE 
 // impUnsupportedNamedIntrinsic: Throws an exception for an unsupported named intrinsic
 //
 // Arguments:
-//    helper     - JIT helper ID for the exception to be thrown
-//    method     - method handle of the intrinsic function.
-//    sig        - signature of the intrinsic call
-//    mustExpand - true if the intrinsic must return a GenTree*; otherwise, false
+//    helper                 - JIT helper ID for the exception to be thrown
+//    method                 - method handle of the intrinsic function.
+//    sig                    - signature of the intrinsic call
+//    mustExpand             - true if the intrinsic must return a GenTree*; otherwise, false
+//    canExpandToThrowHelper - true if the caller has determined the intrinsic call would deterministically throw
+//                             a PlatformNotSupportedException, so it is safe to replace a would-be call with the
+//                             throw helper when optimizing; otherwise, false
 //
 // Return Value:
-//    a gtNewMustThrowException if mustExpand is true; otherwise, nullptr
+//    a gtNewMustThrowException if the intrinsic is expanded; otherwise, nullptr
 //
 GenTree* Compiler::impUnsupportedNamedIntrinsic(unsigned              helper,
                                                 CORINFO_METHOD_HANDLE method,
                                                 CORINFO_SIG_INFO*     sig,
-                                                bool                  mustExpand)
+                                                bool                  mustExpand,
+                                                bool                  canExpandToThrowHelper)
 {
     // We've hit some error case and may need to return a node for the given error.
     //
     // When `mustExpand=false`, we are attempting to inline the intrinsic directly into another method. In this
-    // scenario, we need to return `nullptr` so that a GT_CALL to the intrinsic is emitted instead. This is to
+    // scenario, we generally return `nullptr` so that a GT_CALL to the intrinsic is emitted instead. This is to
     // ensure that everything continues to behave correctly when optimizations are enabled (e.g. things like the
     // inliner may expect the node we return to have a certain signature, and the `MustThrowException` node won't
     // match that).
+    //
+    // The exception is a deterministically-unsupported platform throw (`canExpandToThrowHelper`). When optimizing,
+    // we expand it directly to a `CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED` helper call rather than leaving a call
+    // to the throwing intrinsic. The throwing intrinsic calls differ by their arguments, so they cannot be
+    // tail-merged and the code after them cannot be removed. Expanding to the (argument-less, no-return) helper
+    // makes these throw paths identical, so they can be tail-merged and the unreachable code following them can be
+    // pruned.
     //
     // When `mustExpand=true`, we are in a GT_CALL to the intrinsic and are attempting to JIT it. This will generally
     // be in response to an indirect call (e.g. done via reflection) or in response to an earlier attempt returning
     // `nullptr` (under `mustExpand=false`). In that scenario, we are safe to return the `MustThrowException` node.
 
-    if (mustExpand)
+    bool expandToThrowHelper = false;
+
+    if (!mustExpand)
     {
-        for (unsigned i = 0; i < sig->numArgs; i++)
+        if (!canExpandToThrowHelper || !opts.OptimizationEnabled())
         {
-            impPopStack();
+            return nullptr;
         }
 
-        return gtNewMustThrowException(helper, JITtype2varType(sig->retType), sig->retTypeClass);
+        assert(helper == CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED);
+        expandToThrowHelper = true;
     }
-    else
+
+    GenTree* result = gtNewMustThrowException(helper, JITtype2varType(sig->retType), sig->retTypeClass);
+
+    // Pop the arguments. When we expand a would-be call to the throw helper the arguments are caller-side
+    // expressions whose side effects must still be evaluated before the throw (a caught exception could observe
+    // them), so preserve them in left-to-right order ahead of the throw. Otherwise the arguments are the intrinsic's
+    // own incoming parameters and have no caller-visible side effects, so they can simply be discarded.
+    for (unsigned i = 0; i < sig->numArgs; i++)
     {
-        return nullptr;
+        GenTree* arg = impPopStack().val;
+
+        if (expandToThrowHelper)
+        {
+            GenTree* sideEffects = nullptr;
+            gtExtractSideEffList(arg, &sideEffects, GTF_SIDE_EFFECT);
+
+            if (sideEffects != nullptr)
+            {
+                result = gtNewOperNode(GT_COMMA, result->TypeGet(), sideEffects, result);
+            }
+        }
     }
+
+    return result;
 }
 
 //------------------------------------------------------------------------

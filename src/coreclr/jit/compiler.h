@@ -5241,7 +5241,8 @@ protected:
     GenTree* impUnsupportedNamedIntrinsic(unsigned              helper,
                                           CORINFO_METHOD_HANDLE method,
                                           CORINFO_SIG_INFO*     sig,
-                                          bool                  mustExpand);
+                                          bool                  mustExpand,
+                                          bool                  canExpandToThrowHelper = false);
 
     GenTree* impSRCSUnsafeIntrinsic(NamedIntrinsic        intrinsic,
                                     CORINFO_CLASS_HANDLE  clsHnd,
