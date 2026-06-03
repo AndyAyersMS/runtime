@@ -636,7 +636,9 @@ namespace Microsoft.Diagnostics.Tools.Pgo
 
                     List<int> typeHandleHistogramCallSites =
                         prof1.SchemaData.Concat(prof2.SchemaData)
-                        .Where(e => e.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass || e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes)
+                        .Where(e => e.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass ||
+                                    e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes ||
+                                    e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
                         .Select(e => e.ILOffset)
                         .Distinct()
                         .ToList();
@@ -846,9 +848,12 @@ namespace Microsoft.Diagnostics.Tools.Pgo
             PrintOutput($"# Methods with 64-bit edge counts: {profiledMethods.Count(spd => spd.SchemaData.Any(elem => elem.InstrumentationKind == PgoInstrumentationKind.EdgeLongCount))}");
             int numTypeHandleHistograms = profiledMethods.Sum(spd => spd.SchemaData.Count(elem => elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes));
             int methodsWithTypeHandleHistograms = profiledMethods.Count(spd => spd.SchemaData.Any(elem => elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes));
+            int numTypeHandleHistogramsWithCaller = profiledMethods.Sum(spd => spd.SchemaData.Count(elem => elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller));
+            int methodsWithTypeHandleHistogramsWithCaller = profiledMethods.Count(spd => spd.SchemaData.Any(elem => elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller));
             int numValueHistograms = profiledMethods.Sum(spd => spd.SchemaData.Count(elem => elem.InstrumentationKind == PgoInstrumentationKind.ValueHistogram));
             int methodsWithValueHistograms = profiledMethods.Count(spd => spd.SchemaData.Any(elem => elem.InstrumentationKind == PgoInstrumentationKind.ValueHistogram));
             PrintOutput($"# Type handle histograms: {numTypeHandleHistograms} in {methodsWithTypeHandleHistograms} methods");
+            PrintOutput($"# Context-sensitive type handle histograms: {numTypeHandleHistogramsWithCaller} in {methodsWithTypeHandleHistogramsWithCaller} methods");
             PrintOutput($"# Value histograms: {numValueHistograms} in {methodsWithValueHistograms} methods");
             int numGetLikelyClass = profiledMethods.Sum(spd => spd.SchemaData.Count(elem => elem.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass));
             int methodsWithGetLikelyClass = profiledMethods.Count(spd => spd.SchemaData.Any(elem => elem.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass));
@@ -859,7 +864,9 @@ namespace Microsoft.Diagnostics.Tools.Pgo
             {
                 var sites =
                     mpd.SchemaData
-                    .Where(e => e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes || e.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass)
+                    .Where(e => e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes ||
+                                e.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller ||
+                                e.InstrumentationKind == PgoInstrumentationKind.GetLikelyClass)
                     .Select(e => e.ILOffset)
                     .Distinct();
 
@@ -959,6 +966,10 @@ namespace Microsoft.Diagnostics.Tools.Pgo
                     elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramIntCount ||
                     elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramLongCount;
 
+                bool isWithCallerHistogramCount =
+                    elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramWithCallerIntCount ||
+                    elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramWithCallerLongCount;
+
                 if (isHistogramCount && elem.Count == 1 && i + 1 < schema.Length && schema[i + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes)
                 {
                     var handles = (TypeSystemEntityOrUnknown[])schema[i + 1].DataObject;
@@ -978,6 +989,42 @@ namespace Microsoft.Diagnostics.Tools.Pgo
                     int likelihood = best.Count() * 100 / totalCount;
                     // The threshold is different for interfaces and classes.
                     // A flag in the Other field of the TypeHandleHistogram*Count entry indicates which kind of call site this is.
+                    bool isInterface = (elem.Other & (uint)ClassProfileFlags.IsInterface) != 0;
+                    int threshold = isInterface ? 25 : 30;
+                    return new GetLikelyClassResult
+                    {
+                        Type = best.Key.AsType,
+                        Likelihood = likelihood,
+                        Devirtualizes = likelihood >= threshold,
+                    };
+                }
+
+                if (isWithCallerHistogramCount && elem.Count == 1 && i + 1 < schema.Length &&
+                    schema[i + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
+                {
+                    // Interleaved (type, caller) layout in an object[]; even slots are types,
+                    // odd slots are caller methods. For the aggregate "GetLikelyClass" view
+                    // we ignore the caller dimension.
+                    var data = (object[])schema[i + 1].DataObject;
+                    var typeSlots = new List<TypeSystemEntityOrUnknown>(data.Length / 2);
+                    for (int k = 0; k < data.Length; k += 2)
+                    {
+                        if (data[k] is TypeSystemEntityOrUnknown te && !te.IsNull)
+                            typeSlots.Add(te);
+                    }
+
+                    var histogram = typeSlots.GroupBy(e => e).ToList();
+                    if (histogram.Count == 0)
+                        return new GetLikelyClassResult { IsNull = true };
+
+                    int totalCount = histogram.Sum(g => g.Count());
+                    histogram.RemoveAll(e => e.Key.IsNull || e.Key.IsUnknown);
+                    if (histogram.Count == 0)
+                        return new GetLikelyClassResult { IsUnknown = true };
+
+                    var best = histogram.OrderByDescending(h => h.Count()).First();
+                    Trace.Assert(best.Key.AsType != null);
+                    int likelihood = best.Count() * 100 / totalCount;
                     bool isInterface = (elem.Other & (uint)ClassProfileFlags.IsInterface) != 0;
                     int threshold = isInterface ? 25 : 30;
                     return new GetLikelyClassResult

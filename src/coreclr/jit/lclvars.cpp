@@ -3742,6 +3742,45 @@ void Compiler::lvaAllocOutgoingArgSpaceVar()
 #endif // FEATURE_FIXED_OUT_ARGS
 }
 
+//------------------------------------------------------------------------
+// lvaEnsureRetAddrVar:
+//   Allocate (or return existing) lvaRetAddrVar -- a TYP_I_IMPL local
+//   marked address-exposed so its stack offset is reserved at the slot
+//   holding the caller's return address.
+//
+//   lvaAssignFrameOffsets positions this slot per-arch:
+//     - xarch: at negative offset (just below initial SP) where the call
+//       instruction pushed the return address.
+//     - arm32: at the top of the pushed callee-saved registers (where LR
+//       is saved during the prolog).
+//     - arm64 / loongarch64 / riscv64: at FP+REGSIZE_BYTES (where LR/RA is
+//       saved adjacent to FP).
+//
+//   Reading this local (gtNewLclvNode) loads the caller's return address.
+//   Taking its address (gtNewLclVarAddrNode) gives the slot pointer used
+//   by tail-call dispatch.
+//
+// Arguments:
+//   forTailCallDispatch - true if the request comes from the helper-based
+//                         tail-call dispatch path (used for the debug
+//                         address-exposed reason annotation only)
+//
+// Return Value:
+//   The local variable number.
+//
+unsigned Compiler::lvaEnsureRetAddrVar(bool forTailCallDispatch)
+{
+    if (lvaRetAddrVar == BAD_VAR_NUM)
+    {
+        lvaRetAddrVar                  = lvaGrabTemp(false DEBUGARG("Return address"));
+        lvaTable[lvaRetAddrVar].lvType = TYP_I_IMPL;
+        lvaSetVarAddrExposed(lvaRetAddrVar DEBUGARG(forTailCallDispatch
+                                                        ? AddressExposedReason::DISPATCH_RET_BUF
+                                                        : AddressExposedReason::PGO_CALLER_RETURN_ADDR));
+    }
+    return lvaRetAddrVar;
+}
+
 inline void Compiler::lvaIncrementFrameSize(unsigned size)
 {
     if (size > MAX_FrameSize || compLclFrameSize + size > MAX_FrameSize)

@@ -117,7 +117,7 @@ namespace Internal.JitInterface
         }
 
         [DllImport(JitLibrary)]
-        private static extern uint getLikelyClasses(LikelyClassMethodRecord* pLikelyClasses, uint maxLikelyClasses, PgoInstrumentationSchema* schema, uint countSchemaItems, byte*pInstrumentationData, int ilOffset);
+        private static extern uint getLikelyClasses(LikelyClassMethodRecord* pLikelyClasses, uint maxLikelyClasses, PgoInstrumentationSchema* schema, uint countSchemaItems, byte*pInstrumentationData, int ilOffset, IntPtr callerMethodHandle);
 
         [DllImport(JitLibrary)]
         private static extern uint getLikelyMethods(LikelyClassMethodRecord* pLikelyMethods, uint maxLikelyMethods, PgoInstrumentationSchema* schema, uint countSchemaItems, byte* pInstrumentationData, int ilOffset);
@@ -196,7 +196,8 @@ namespace Internal.JitInterface
             foreach (var elem in pgoData)
             {
                 if (elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes ||
-                    elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramMethods)
+                    elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramMethods ||
+                    elem.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
                 {
                     // found histogram
                     hasHistogram = true;
@@ -236,6 +237,22 @@ namespace Internal.JitInterface
                         i++; // The histogram is two entries long, so skip an extra entry
                         continue;
                     }
+
+                    if ((i + 1 < pgoData.Length) &&
+                        (pgoData[i].InstrumentationKind == PgoInstrumentationKind.HandleHistogramWithCallerIntCount ||
+                         pgoData[i].InstrumentationKind == PgoInstrumentationKind.HandleHistogramWithCallerLongCount) &&
+                        pgoData[i + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
+                    {
+                        // Context-sensitive class histogram. crossgen2 has no caller context,
+                        // so compress to GetLikelyClass aggregating over all callers.
+                        PgoSchemaElem? newElem = ComputeLikelyClassMethod(i, handleToObject, nativeSchema, instrumentationData, compilationModuleGroup);
+                        if (newElem.HasValue)
+                        {
+                            yield return newElem.Value;
+                        }
+                        i++; // The histogram is two entries long, so skip an extra entry
+                        continue;
+                    }
                     yield return pgoData[i];
                 }
 
@@ -259,7 +276,8 @@ namespace Internal.JitInterface
             if (index > (nativeSchema.Length - 2))
                 return null;
 
-            bool isType = nativeSchema[index + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes;
+            bool isType = nativeSchema[index + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypes ||
+                          nativeSchema[index + 1].InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller;
 
             fixed (PgoInstrumentationSchema* pSchema = &nativeSchema[index])
             {
@@ -270,7 +288,9 @@ namespace Internal.JitInterface
                     uint numberOfRecords;
                     if (isType)
                     {
-                        numberOfRecords = getLikelyClasses(likelyClassMethods, 1, pSchema, 2, pInstrumentationData, nativeSchema[index].ILOffset);
+                        // crossgen2 has no caller context, so pass IntPtr.Zero to disable
+                        // caller filtering and aggregate over all callers.
+                        numberOfRecords = getLikelyClasses(likelyClassMethods, 1, pSchema, 2, pInstrumentationData, nativeSchema[index].ILOffset, IntPtr.Zero);
                     }
                     else
                     {

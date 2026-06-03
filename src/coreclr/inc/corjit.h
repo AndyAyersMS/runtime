@@ -308,6 +308,44 @@ public:
         intptr_t ValueTable[HandleHistogram32::SIZE];
     };
 
+    // Context-sensitive (caller-aware) class histogram for shared generic methods.
+    //
+    // Each entry is a (handle, caller) pair. The caller slot is initially the raw
+    // return address captured by the JIT helper; the EE PgoManager resolves it to
+    // a CORINFO_METHOD_HANDLE of the calling method when serving the data to the
+    // JIT or persisting it. Updates use true reservoir sampling (no fixed sample
+    // interval) since the table is larger and we want unbiased coverage of all
+    // (caller, receiver type) combinations.
+    //
+    struct HandleHistogramWithCaller32
+    {
+        enum
+        {
+            SIZE = 128,    // number of (handle, caller) pairs
+            CLASS_FLAG     = 0x80000000,
+            INTERFACE_FLAG = 0x40000000,
+            DELEGATE_FLAG  = 0x20000000,
+            OFFSET_MASK    = 0x0FFFFFFF
+        };
+
+        uint32_t Count;
+        struct
+        {
+            void* Handle;
+            void* Caller;
+        } Entries[SIZE];
+    };
+
+    struct HandleHistogramWithCaller64
+    {
+        uint64_t Count;
+        struct
+        {
+            void* Handle;
+            void* Caller;
+        } Entries[HandleHistogramWithCaller32::SIZE];
+    };
+
     enum class PgoInstrumentationKind
     {
         // This must be kept in sync with PgoInstrumentationKind in PgoFormat.cs
@@ -350,6 +388,16 @@ public:
         ValueHistogramIntCount = (DescriptorMin * 8) | FourByte | AlignPointer,
         ValueHistogramLongCount = (DescriptorMin * 8) | EightByte,
         ValueHistogram = (DescriptorMin * 9) | EightByte,
+
+        // Context-sensitive class histogram for shared generic methods.
+        // The table interleaves (TypeHandle, MethodHandle) pairs: Count is
+        // 2 * HandleHistogramWithCaller32::SIZE. Even indices are the observed
+        // receiver type, odd indices are the calling method handle.
+        // MarshalMask is TypeHandle (both slots are pointer-sized; the odd-slot
+        // method handles are marshaled as type-handle-style pointers).
+        HandleHistogramWithCallerIntCount  = (DescriptorMin * 10) | FourByte | AlignPointer,
+        HandleHistogramWithCallerLongCount = (DescriptorMin * 10) | EightByte,
+        HandleHistogramTypesWithCaller     = (DescriptorMin * 11) | TypeHandle,
     };
 
     struct PgoInstrumentationSchema

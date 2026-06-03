@@ -7319,13 +7319,20 @@ void Compiler::pickGDV(GenTreeCall*           call,
     //
     PgoInfo pgoInfo(call->gtInlineContext);
 
+    // For context-sensitive class histograms, filter by the method whose IL
+    // literally contains this call (the immediate inline parent). PGO
+    // captured the caller as the standalone-compiled MethodDesc that hosted
+    // the call site at runtime, which corresponds to gtInlineContext->GetCallee().
+    //
+    INT_PTR callerMethodHandle = (INT_PTR)(call->gtInlineContext->GetCallee());
+
     const int               maxLikelyClasses = MAX_GDV_TYPE_CHECKS;
     LikelyClassMethodRecord likelyClasses[maxLikelyClasses];
     unsigned                numberOfClasses = 0;
     if (call->IsVirtualStub() || call->IsVirtualVtable() || call->IsHelperCall())
     {
         numberOfClasses = getLikelyClasses(likelyClasses, maxLikelyClasses, pgoInfo.PgoSchema, pgoInfo.PgoSchemaCount,
-                                           pgoInfo.PgoData, ilOffset);
+                                           pgoInfo.PgoData, ilOffset, callerMethodHandle);
     }
 
     const int               maxLikelyMethods = MAX_GDV_TYPE_CHECKS;
@@ -9341,7 +9348,7 @@ void Compiler::impTransformDevirtualizedCall(GenTreeCall*            call,
         LikelyClassMethodRecord likelyClasses[maxLikelyClasses];
 
         UINT32 numberOfClasses = getLikelyClasses(likelyClasses, maxLikelyClasses, fgPgoSchema, fgPgoSchemaCount,
-                                                  fgPgoData, dcInfo->ilOffset);
+                                                  fgPgoData, dcInfo->ilOffset, (INT_PTR)info.compMethodHnd);
         UINT32 likelihood      = likelyClasses[0].likelihood;
 
         CORINFO_CLASS_HANDLE likelyClass = (CORINFO_CLASS_HANDLE)likelyClasses[0].handle;
@@ -9668,6 +9675,40 @@ Compiler::GDVProbeType Compiler::compClassifyGDVProbeType(GenTreeCall* call)
     }
 
     return GDVProbeType::None;
+}
+
+//------------------------------------------------------------------------
+// compInstrumentForContextSensitiveClasses:
+//   Returns true when caller-sensitive (context-sensitive) class histograms
+//   should be emitted for this method's class probes.
+//
+//   Currently gated by:
+//     - DOTNET_TieredPGO_ContextSensitive must be set
+//     - The (root) method must be a shared generic instantiation
+//     - We are not currently compiling an inlinee (inlinees do not own
+//       their own probe sites once inlined into the root)
+//
+bool Compiler::compInstrumentForContextSensitiveClasses()
+{
+    if (JitConfig.TieredPGO_ContextSensitive() == 0)
+    {
+        return false;
+    }
+
+    if (compIsForInlining())
+    {
+        return false;
+    }
+
+    // CORINFO_FLG_SHAREDINST on the method (or its owning class) indicates
+    // the code is shared across generic instantiations.
+    if ((info.compFlags & CORINFO_FLG_SHAREDINST) == 0 &&
+        (info.compClassAttr & CORINFO_FLG_SHAREDINST) == 0)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 //------------------------------------------------------------------------

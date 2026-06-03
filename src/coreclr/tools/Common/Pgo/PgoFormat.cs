@@ -54,6 +54,14 @@ namespace Internal.Pgo
         ValueHistogramIntCount = (DescriptorMin * 8) | FourByte | AlignPointer,
         ValueHistogramLongCount = (DescriptorMin * 8) | EightByte,
         ValueHistogram = (DescriptorMin * 9) | EightByte,
+
+        // Context-sensitive (caller-aware) class histogram for shared generic methods.
+        // The HandleHistogramTypesWithCaller table interleaves (TypeHandle, MethodHandle)
+        // pairs: Count is 2 * HandleHistogramWithCaller32::SIZE in corjit.h. Even indices
+        // hold the observed receiver type, odd indices hold the caller method handle.
+        HandleHistogramWithCallerIntCount = (DescriptorMin * 10) | FourByte | AlignPointer,
+        HandleHistogramWithCallerLongCount = (DescriptorMin * 10) | EightByte,
+        HandleHistogramTypesWithCaller = (DescriptorMin * 11) | TypeHandle,
     }
 
     public interface IPgoSchemaDataLoader<TType, TMethod>
@@ -255,39 +263,66 @@ namespace Internal.Pgo
                     else
                     {
                         int dataIndex = curSchema.Count - dataCountToRead;
-                        switch (curSchema.InstrumentationKind & PgoInstrumentationKind.MarshalMask)
+
+                        // HandleHistogramTypesWithCaller: interleaved (type, method) layout.
+                        // Override per-slot parsing based on slot index parity.
+                        //
+                        if (curSchema.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
                         {
-                            case PgoInstrumentationKind.FourByte:
-                                if (longsAreCompressed)
-                                    lastDataValue += value;
-                                else
-                                    lastDataValue = value;
-                                ((int[])curSchema.DataObject)[dataIndex] = checked((int)lastDataValue);
-                                break;
-
-                            case PgoInstrumentationKind.EightByte:
-                                if (longsAreCompressed)
-                                    lastDataValue += value;
-                                else
-                                    lastDataValue = value;
-                                ((long[])curSchema.DataObject)[dataIndex] = lastDataValue;
-                                break;
-
-                            case PgoInstrumentationKind.TypeHandle:
+                            object[] data = (object[])curSchema.DataObject;
+                            if ((dataIndex & 1) == 0)
+                            {
                                 if (longsAreCompressed)
                                     lastTypeValue += value;
                                 else
                                     lastTypeValue = value;
-                                ((TType[])curSchema.DataObject)[dataIndex] = dataProvider.TypeFromLong(lastTypeValue);
-                                break;
-
-                            case PgoInstrumentationKind.MethodHandle:
+                                data[dataIndex] = dataProvider.TypeFromLong(lastTypeValue);
+                            }
+                            else
+                            {
                                 if (longsAreCompressed)
                                     lastMethodValue += value;
                                 else
                                     lastMethodValue = value;
-                                ((TMethod[])curSchema.DataObject)[dataIndex] = dataProvider.MethodFromLong(lastMethodValue);
-                                break;
+                                data[dataIndex] = dataProvider.MethodFromLong(lastMethodValue);
+                            }
+                        }
+                        else
+                        {
+                            switch (curSchema.InstrumentationKind & PgoInstrumentationKind.MarshalMask)
+                            {
+                                case PgoInstrumentationKind.FourByte:
+                                    if (longsAreCompressed)
+                                        lastDataValue += value;
+                                    else
+                                        lastDataValue = value;
+                                    ((int[])curSchema.DataObject)[dataIndex] = checked((int)lastDataValue);
+                                    break;
+
+                                case PgoInstrumentationKind.EightByte:
+                                    if (longsAreCompressed)
+                                        lastDataValue += value;
+                                    else
+                                        lastDataValue = value;
+                                    ((long[])curSchema.DataObject)[dataIndex] = lastDataValue;
+                                    break;
+
+                                case PgoInstrumentationKind.TypeHandle:
+                                    if (longsAreCompressed)
+                                        lastTypeValue += value;
+                                    else
+                                        lastTypeValue = value;
+                                    ((TType[])curSchema.DataObject)[dataIndex] = dataProvider.TypeFromLong(lastTypeValue);
+                                    break;
+
+                                case PgoInstrumentationKind.MethodHandle:
+                                    if (longsAreCompressed)
+                                        lastMethodValue += value;
+                                    else
+                                        lastMethodValue = value;
+                                    ((TMethod[])curSchema.DataObject)[dataIndex] = dataProvider.MethodFromLong(lastMethodValue);
+                                    break;
+                            }
                         }
                     }
                     dataCountToRead--;
@@ -371,7 +406,17 @@ namespace Internal.Pgo
                             dataCountToRead = curSchema.Count;
                             break;
                         case PgoInstrumentationKind.TypeHandle:
-                            curSchema.DataObject = new TType[curSchema.Count];
+                            // HandleHistogramTypesWithCaller stores interleaved (type, method)
+                            // entries in an object[]; the marshal mask is TypeHandle for
+                            // backward-compat with size accounting, but the data layout differs.
+                            if (curSchema.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
+                            {
+                                curSchema.DataObject = new object[curSchema.Count];
+                            }
+                            else
+                            {
+                                curSchema.DataObject = new TType[curSchema.Count];
+                            }
                             dataCountToRead = curSchema.Count;
                             break;
                         case PgoInstrumentationKind.MethodHandle:
@@ -437,6 +482,29 @@ namespace Internal.Pgo
 
                 for (int i = 0; i < schema.Count; i++)
                 {
+                    // HandleHistogramTypesWithCaller is a special interleaved layout:
+                    // even slots hold TypeHandles, odd slots hold MethodHandles (callers).
+                    // The marshal mask of the kind is TypeHandle; we override per-slot
+                    // emission here based on slot index.
+                    //
+                    if (schema.InstrumentationKind == PgoInstrumentationKind.HandleHistogramTypesWithCaller)
+                    {
+                        object[] data = (object[])schema.DataObject;
+                        if ((i & 1) == 0)
+                        {
+                            TType typeToEmit = (TType)data[i];
+                            valueEmitter.EmitType(typeToEmit, prevEmittedType);
+                            prevEmittedType = typeToEmit;
+                        }
+                        else
+                        {
+                            TMethod methodToEmit = (TMethod)data[i];
+                            valueEmitter.EmitMethod(methodToEmit, prevEmittedMethod);
+                            prevEmittedMethod = methodToEmit;
+                        }
+                        continue;
+                    }
+
                     PgoInstrumentationKind marshal = schema.InstrumentationKind & PgoInstrumentationKind.MarshalMask;
                     switch (marshal)
                     {
@@ -587,6 +655,8 @@ namespace Internal.Pgo
                         case PgoInstrumentationKind.EdgeLongCount:
                         case PgoInstrumentationKind.HandleHistogramIntCount:
                         case PgoInstrumentationKind.HandleHistogramLongCount:
+                        case PgoInstrumentationKind.HandleHistogramWithCallerIntCount:
+                        case PgoInstrumentationKind.HandleHistogramWithCallerLongCount:
                         case PgoInstrumentationKind.ValueHistogramIntCount:
                         case PgoInstrumentationKind.ValueHistogramLongCount:
                             if ((existingSchemaItem.Count != 1) || (schema.Count != 1))
@@ -609,6 +679,24 @@ namespace Internal.Pgo
                                 foreach (TType type in (TType[])schema.DataObject)
                                 {
                                     newMergedTypeArray[i++] = type;
+                                }
+                                break;
+                            }
+
+                        case PgoInstrumentationKind.HandleHistogramTypesWithCaller:
+                            {
+                                // Interleaved (type, method) data stored as object[].
+                                mergedElem.Count = existingSchemaItem.Count + schema.Count;
+                                object[] newMergedArray = new object[mergedElem.Count];
+                                mergedElem.DataObject = newMergedArray;
+                                int i = 0;
+                                foreach (object o in (object[])existingSchemaItem.DataObject)
+                                {
+                                    newMergedArray[i++] = o;
+                                }
+                                foreach (object o in (object[])schema.DataObject)
+                                {
+                                    newMergedArray[i++] = o;
                                 }
                                 break;
                             }

@@ -5512,12 +5512,7 @@ GenTree* Compiler::fgCreateCallDispatcherAndGetResult(GenTreeCall*          orig
     GenTree* callTarget = new (this, GT_FTN_ADDR) GenTreeFptrVal(TYP_I_IMPL, callTargetStubHnd);
 
     // Add the caller's return address slot.
-    if (lvaRetAddrVar == BAD_VAR_NUM)
-    {
-        lvaRetAddrVar                  = lvaGrabTemp(false DEBUGARG("Return address"));
-        lvaTable[lvaRetAddrVar].lvType = TYP_I_IMPL;
-        lvaSetVarAddrExposed(lvaRetAddrVar DEBUGARG(AddressExposedReason::DISPATCH_RET_BUF));
-    }
+    lvaEnsureRetAddrVar(/* forTailCallDispatch */ true);
 
     GenTree* retAddrSlot = gtNewLclVarAddrNode(lvaRetAddrVar);
 

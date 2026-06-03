@@ -797,6 +797,12 @@ RELEASE_CONFIG_INTEGER(JitVTableProfiling, "JitVTableProfiling", 0)       // Pro
 RELEASE_CONFIG_INTEGER(JitEdgeProfiling, "JitEdgeProfiling", 1)           // Profile edges instead of blocks
 RELEASE_CONFIG_INTEGER(JitCollect64BitCounts, "JitCollect64BitCounts", 0) // Collect counts as 64-bit values.
 
+// Caller-sensitive class histograms for shared generic methods. When enabled,
+// the JIT emits a larger histogram with paired (TypeHandle, caller return
+// address) entries; the EE resolves the caller address to a method handle
+// when serving the data, and getLikelyClasses filters by caller.
+RELEASE_CONFIG_INTEGER(TieredPGO_ContextSensitive, "TieredPGO_ContextSensitive", 0)
+
 CONFIG_INTEGER(JitInstrumentIfOptimizing, "JitInstrumentIfOptimizing", 0) // 1: Always add instrumentation if optimizing
                                                                           // and not prejitting
 CONFIG_STRING(JitInstrumentIfOptimizingRange, "JitInstrumentIfOptimizingRange")

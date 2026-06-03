@@ -24,6 +24,12 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #define DLLEXPORT
 #endif // !DLLEXPORT
 
+// Maximum number of distinct (de-duplicated) entries we track when
+// summarizing a histogram. The base HandleHistogram has SIZE=32; the
+// caller-sensitive variant has SIZE=128 pairs, so we size for that.
+//
+#define LIKELYCLASS_MAX_DISTINCT 128
+
 // Data item in class profile histogram
 //
 struct LikelyClassMethodHistogramEntry
@@ -40,8 +46,16 @@ struct LikelyClassMethodHistogram
 {
     LikelyClassMethodHistogram(INT_PTR* histogramEntries, unsigned entryCount, bool int32Data = false);
 
+    // Construct a histogram from a context-sensitive (interleaved
+    // Handle, Caller) table, optionally filtering to only pairs whose
+    // Caller matches callerMethodHandle. Pass 0 to disable filtering.
+    LikelyClassMethodHistogram(INT_PTR* histogramEntries, unsigned entryCount, INT_PTR callerMethodHandle, bool int32Data);
+
     template <typename ElemType>
     void LikelyClassMethodHistogramInner(ElemType* histogramEntries, unsigned entryCount);
+
+    template <typename ElemType>
+    void LikelyClassMethodHistogramWithCallerInner(ElemType* histogramEntries, unsigned entryCount, INT_PTR callerMethodHandle);
 
     // Sum of counts from all entries in the histogram. This includes "unknown" entries which are not captured in
     // m_histogram
@@ -49,7 +63,7 @@ struct LikelyClassMethodHistogram
     // Rough guess at count of unknown handles
     unsigned m_unknownHandles;
     // Histogram entries, in no particular order.
-    LikelyClassMethodHistogramEntry m_histogram[HISTOGRAM_MAX_SIZE_COUNT];
+    LikelyClassMethodHistogramEntry m_histogram[LIKELYCLASS_MAX_DISTINCT];
     UINT32                          countHistogramElements = 0;
 
     LikelyClassMethodHistogramEntry HistogramEntryAt(unsigned index)
@@ -122,6 +136,87 @@ void LikelyClassMethodHistogram::LikelyClassMethodHistogramInner(ElemType* histo
 }
 
 //------------------------------------------------------------------------
+// LikelyClassMethodHistogram: construct from an interleaved (Handle, Caller)
+// table, optionally filtering by caller method handle.
+//
+// Arguments:
+//    histogramEntries  - pointer to the interleaved table from a
+//                        HandleHistogramWithCaller* object (see corjit.h).
+//                        Each pair is (handle, caller).
+//    entryCount        - total number of slots in the table (= 2 * pair count).
+//    callerMethodHandle - if non-zero, only pairs whose Caller slot equals
+//                         this value are included; if zero, all pairs are
+//                         included (Caller ignored).
+//    int32Data         - true if table entries are 32 bits.
+//
+LikelyClassMethodHistogram::LikelyClassMethodHistogram(INT_PTR* histogramEntries, unsigned entryCount, INT_PTR callerMethodHandle, bool int32Data)
+{
+    if (int32Data)
+    {
+        LikelyClassMethodHistogramWithCallerInner<int>((int*)histogramEntries, entryCount, callerMethodHandle);
+    }
+    else
+    {
+        LikelyClassMethodHistogramWithCallerInner<INT_PTR>(histogramEntries, entryCount, callerMethodHandle);
+    }
+}
+
+template <typename ElemType>
+void LikelyClassMethodHistogram::LikelyClassMethodHistogramWithCallerInner(ElemType* histogramEntries, unsigned entryCount, INT_PTR callerMethodHandle)
+{
+    m_unknownHandles = 0;
+    m_totalCount     = 0;
+
+    // The table is laid out as pairs: even index = handle, odd index = caller.
+    // Iterate in steps of 2.
+    for (unsigned k = 0; (k + 1) < entryCount; k += 2)
+    {
+        ElemType handleEntry = histogramEntries[k];
+        ElemType callerEntry = histogramEntries[k + 1];
+
+        if (handleEntry == 0)
+        {
+            continue;
+        }
+
+        // If a caller filter is supplied, skip pairs whose caller does
+        // not match. An unresolved/unknown caller (caller slot is unknown
+        // handle or zero) will not match a real method handle.
+        if (callerMethodHandle != 0 && (INT_PTR)callerEntry != callerMethodHandle)
+        {
+            continue;
+        }
+
+        m_totalCount++;
+        INT_PTR currentEntry = (INT_PTR)handleEntry;
+
+        bool     found = false;
+        unsigned h     = 0;
+        for (; h < countHistogramElements; h++)
+        {
+            if (m_histogram[h].m_handle == currentEntry)
+            {
+                m_histogram[h].m_count++;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+        {
+            if (countHistogramElements >= ArrLen(m_histogram))
+            {
+                continue;
+            }
+            LikelyClassMethodHistogramEntry newEntry;
+            newEntry.m_handle                     = currentEntry;
+            newEntry.m_count                      = 1;
+            m_histogram[countHistogramElements++] = newEntry;
+        }
+    }
+}
+
+//------------------------------------------------------------------------
 // getLikelyClassesOrMethods:
 //   Find class/method profile data for an IL offset, and return the most
 //   likely classes/methods.
@@ -129,13 +224,20 @@ void LikelyClassMethodHistogram::LikelyClassMethodHistogramInner(ElemType* histo
 //   This is a common entrypoint for getLikelyClasses and getLikelyMethods.
 //   See documentation for those for more information.
 //
+//   When 'callerMethodHandle' is non-zero AND the schema contains a
+//   context-sensitive class histogram (HandleHistogramTypesWithCaller), only
+//   entries whose caller slot matches will be considered. The non-context-
+//   sensitive kinds (HandleHistogramTypes / HandleHistogramMethods) ignore
+//   the filter (legacy behavior).
+//
 static unsigned getLikelyClassesOrMethods(LikelyClassMethodRecord*               pLikelyEntries,
                                           UINT32                                 maxLikelyClasses,
                                           ICorJitInfo::PgoInstrumentationSchema* schema,
                                           UINT32                                 countSchemaItems,
                                           BYTE*                                  pInstrumentationData,
                                           int32_t                                ilOffset,
-                                          bool                                   types)
+                                          bool                                   types,
+                                          INT_PTR                                callerMethodHandle = 0)
 {
     if (maxLikelyClasses == 0)
     {
@@ -176,6 +278,86 @@ static unsigned getLikelyClassesOrMethods(LikelyClassMethodRecord*              
         const bool isHistogramCount =
             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount) ||
             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount);
+
+        // Context-sensitive class histogram (only meaningful when types==true,
+        // since the method-profile path is not yet caller-sensitive).
+        const bool isWithCallerHistogramCount =
+            types &&
+            ((schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount) ||
+             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount));
+
+        if (isWithCallerHistogramCount && (schema[i].Count == 1) && ((i + 1) < countSchemaItems) &&
+            (schema[i + 1].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller))
+        {
+            const bool isInt32 = schema[i].InstrumentationKind ==
+                                 ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount;
+            LikelyClassMethodHistogram h((INT_PTR*)(pInstrumentationData + schema[i + 1].Offset),
+                                         schema[i + 1].Count, callerMethodHandle, isInt32);
+
+            // Fall through to the common formatting below by reusing the
+            // existing histogram-to-LikelyEntries lowering code.
+            // We do that by jumping into a small inline block to format the
+            // results from h.
+            //
+            // (Implementation below is duplicated from the non-WithCaller path;
+            //  could be extracted but kept inline for clarity.)
+
+            if (h.countHistogramElements == 0)
+            {
+                // No matching entries (or no entries at all).
+                return 0;
+            }
+
+            LikelyClassMethodHistogramEntry sortedEntries[LIKELYCLASS_MAX_DISTINCT];
+            unsigned knownHandles           = 0;
+            bool     containsUnknownHandles = false;
+            for (unsigned m = 0; m < h.countHistogramElements; m++)
+            {
+                LikelyClassMethodHistogramEntry const hist = h.HistogramEntryAt(m);
+                if (!ICorJitInfo::IsUnknownHandle(hist.m_handle))
+                {
+                    sortedEntries[knownHandles++] = hist;
+                }
+                else
+                {
+                    containsUnknownHandles = true;
+                }
+            }
+
+            if (knownHandles == 0)
+            {
+                return 0;
+            }
+
+            jitstd::sort(sortedEntries, sortedEntries + knownHandles,
+                         [](const LikelyClassMethodHistogramEntry& h1,
+                            const LikelyClassMethodHistogramEntry& h2) -> bool {
+                return h1.m_count > h2.m_count;
+            });
+
+            const UINT32 numberOfClasses = min(knownHandles, maxLikelyClasses);
+
+            UINT32 totalLikelihood = 0;
+            for (size_t hIdx = 0; hIdx < numberOfClasses; hIdx++)
+            {
+                LikelyClassMethodHistogramEntry const hc = sortedEntries[hIdx];
+                pLikelyEntries[hIdx].handle              = hc.m_handle;
+                pLikelyEntries[hIdx].likelihood          = hc.m_count * 100 / h.m_totalCount;
+                totalLikelihood += pLikelyEntries[hIdx].likelihood;
+            }
+
+            assert(totalLikelihood <= 100);
+
+            if (!containsUnknownHandles)
+            {
+                assert(numberOfClasses > 0);
+                assert(totalLikelihood > 0);
+                pLikelyEntries[0].likelihood += 100 - totalLikelihood;
+                assert(pLikelyEntries[0].likelihood <= 100);
+            }
+
+            return numberOfClasses;
+        }
 
         if (isHistogramCount && (schema[i].Count == 1) && ((i + 1) < countSchemaItems) &&
             (schema[i + 1].InstrumentationKind == histogramKind))
@@ -243,7 +425,7 @@ static unsigned getLikelyClassesOrMethods(LikelyClassMethodRecord*              
 
                 default:
                 {
-                    LikelyClassMethodHistogramEntry sortedEntries[HISTOGRAM_MAX_SIZE_COUNT];
+                    LikelyClassMethodHistogramEntry sortedEntries[LIKELYCLASS_MAX_DISTINCT];
 
                     // Since this method can be invoked without a jit instance we can't use any existing allocators
                     unsigned knownHandles           = 0;
@@ -342,10 +524,11 @@ extern "C" DLLEXPORT UINT32 WINAPI getLikelyClasses(LikelyClassMethodRecord*    
                                                     ICorJitInfo::PgoInstrumentationSchema* schema,
                                                     UINT32                                 countSchemaItems,
                                                     BYTE*                                  pInstrumentationData,
-                                                    int32_t                                ilOffset)
+                                                    int32_t                                ilOffset,
+                                                    INT_PTR                                callerMethodHandle)
 {
     return getLikelyClassesOrMethods(pLikelyClasses, maxLikelyClasses, schema, countSchemaItems, pInstrumentationData,
-                                     ilOffset, true);
+                                     ilOffset, true, callerMethodHandle);
 }
 
 //------------------------------------------------------------------------
@@ -413,7 +596,7 @@ extern "C" DLLEXPORT UINT32 WINAPI getLikelyValues(LikelyValueRecord*           
         {
             LikelyClassMethodHistogram h((INT_PTR*)(pInstrumentationData + schema[i + 1].Offset), schema[i + 1].Count,
                                          isIntHistogramCount);
-            LikelyClassMethodHistogramEntry sortedEntries[HISTOGRAM_MAX_SIZE_COUNT];
+            LikelyClassMethodHistogramEntry sortedEntries[LIKELYCLASS_MAX_DISTINCT];
 
             if (h.countHistogramElements == 0)
             {

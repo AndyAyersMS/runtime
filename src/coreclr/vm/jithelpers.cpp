@@ -1878,6 +1878,112 @@ HCIMPL2(void, JIT_ClassProfile64, Object *obj, ICorJitInfo::HandleHistogram64* c
 }
 HCIMPLEND
 
+// Reservoir sampling helper for context-sensitive (caller-aware) class
+// histograms. Returns true if the caller should write into *sampleIndex,
+// false to drop this observation.
+//
+// Algorithm: true reservoir sampling over a stream of N observations into
+// a fixed table of size S. The first S observations fill the table; for
+// observation i (i >= S), pick r uniformly in [0, i); if r < S, replace
+// slot r. This yields an unbiased uniform sample of all observations.
+//
+template<typename T>
+FORCEINLINE static bool CheckReservoirSample(T* pIndex, size_t* sampleIndex)
+{
+    const T S = static_cast<T>(ICorJitInfo::HandleHistogramWithCaller32::SIZE);
+    static_assert((std::is_same<T, uint32_t>::value || std::is_same<T, uint64_t>::value));
+
+    // Pre-increment so each observation gets a unique 1-based count.
+    T const count = ++(*pIndex);
+
+    if (count <= S)
+    {
+        *sampleIndex = static_cast<size_t>(count - 1);
+        return true;
+    }
+
+    // Pick r uniformly in [0, count). count grows without bound; using a
+    // 32-bit RNG is fine for the precision we need.
+    //
+    // Note: as count grows, the probability of replacement (S / count) drops,
+    // which gives us a uniform sample over the entire observation stream
+    // rather than the recent-weighted sample used for non-context-sensitive
+    // histograms. This is appropriate for the larger context-sensitive table
+    // where we want unbiased coverage across all (caller, type) pairs.
+    //
+    unsigned const x = HandleHistogramProfileRand();
+    T const r = static_cast<T>(x) % count;
+
+    if (r >= S)
+    {
+        return false;
+    }
+
+    *sampleIndex = static_cast<size_t>(r);
+    return true;
+}
+
+HCIMPL3(void, JIT_ClassProfileWithCaller32, Object* obj, void* callerReturnAddr, ICorJitInfo::HandleHistogramWithCaller32* classProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&classProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    MethodTable* pMT = objRef->GetMethodTable();
+
+    // If the object class is collectible, record an unknown typehandle.
+    if (pMT->Collectible())
+    {
+        pMT = (MethodTable*)DEFAULT_UNKNOWN_HANDLE;
+    }
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(classProfile);
+    PgoManager::VerifyAddress(classProfile + 1);
+#endif
+
+    classProfile->Entries[sampleIndex].Handle = (void*)pMT;
+    classProfile->Entries[sampleIndex].Caller = callerReturnAddr;
+}
+HCIMPLEND
+
+HCIMPL3(void, JIT_ClassProfileWithCaller64, Object* obj, void* callerReturnAddr, ICorJitInfo::HandleHistogramWithCaller64* classProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&classProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    MethodTable* pMT = objRef->GetMethodTable();
+
+    if (pMT->Collectible())
+    {
+        pMT = (MethodTable*)DEFAULT_UNKNOWN_HANDLE;
+    }
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(classProfile);
+    PgoManager::VerifyAddress(classProfile + 1);
+#endif
+
+    classProfile->Entries[sampleIndex].Handle = (void*)pMT;
+    classProfile->Entries[sampleIndex].Caller = callerReturnAddr;
+}
+HCIMPLEND
+
 HCIMPL2(void, JIT_DelegateProfile32, Object *obj, ICorJitInfo::HandleHistogram32* methodProfile)
 {
     FCALL_CONTRACT;

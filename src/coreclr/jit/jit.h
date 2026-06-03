@@ -935,7 +935,8 @@ extern "C" UINT32 WINAPI getLikelyClasses(LikelyClassMethodRecord*              
                                           ICorJitInfo::PgoInstrumentationSchema* schema,
                                           UINT32                                 countSchemaItems,
                                           BYTE*                                  pInstrumentationData,
-                                          int32_t                                ilOffset);
+                                          int32_t                                ilOffset,
+                                          INT_PTR                                callerMethodHandle = 0);
 
 extern "C" UINT32 WINAPI getLikelyMethods(LikelyClassMethodRecord*               pLikelyMethods,
                                           UINT32                                 maxLikelyMethods,

@@ -499,6 +499,7 @@ enum class AddressExposedReason
     OSR_EXPOSED,                   // It was exposed in the original method, osr has to repeat it.
     STRESS_LCL_FLD,                // Stress mode replaces localVar with localFld and makes them addrExposed.
     DISPATCH_RET_BUF,              // Caller return buffer dispatch.
+    PGO_CALLER_RETURN_ADDR,        // Caller return address slot for context-sensitive PGO.
     STRESS_POISON_IMPLICIT_BYREFS, // This is an implicit byref we want to poison.
     EXTERNALLY_VISIBLE_IMPLICITLY, // Local is visible externally without explicit escape in JIT IR.
                                    // For example because it is used by GC or is the outgoing arg area
@@ -4691,6 +4692,17 @@ public:
     unsigned lvaGrabTemps(unsigned cnt DEBUGARG(const char* reason));
     unsigned lvaGrabTempWithImplicitUse(bool shortLifetime DEBUGARG(const char* reason));
 
+    // Allocate (or return existing) lvaRetAddrVar -- an address-exposed
+    // local positioned at the stack slot holding the caller's return
+    // address. Used by tail-call dispatch and by context-sensitive PGO
+    // probes.
+    //
+    // forTailCallDispatch=true picks the existing DISPATCH_RET_BUF
+    // address-exposed reason (preserving prior tail-dispatch behavior);
+    // false picks PGO_CALLER_RETURN_ADDR.
+    //
+    unsigned lvaEnsureRetAddrVar(bool forTailCallDispatch);
+
     void lvaSortByRefCount();
 
     PhaseStatus lvaMarkLocalVars(); // Local variable ref-counting
@@ -5011,6 +5023,14 @@ public:
     };
 
     GDVProbeType compClassifyGDVProbeType(GenTreeCall* call);
+
+    // Returns true when the JIT should emit context-sensitive (caller-aware)
+    // class histograms for this method's class probes. Off by default; gated
+    // by JitConfig.TieredPGO_ContextSensitive and limited to shared generic
+    // root methods (only the root method's IL gets instrumented; inlinees
+    // can't carry distinct probe sites in the runtime sense).
+    //
+    bool compInstrumentForContextSensitiveClasses();
 
     //=========================================================================
     //                          PROTECTED
@@ -12056,6 +12076,7 @@ public:
         unsigned m_osrExposed;
         unsigned m_stressLclFld;
         unsigned m_dispatchRetBuf;
+        unsigned m_pgoCallerReturnAddr;
         unsigned m_wideIndir;
         unsigned m_stressPoisonImplicitByrefs;
         unsigned m_externallyVisibleImplicitly;

@@ -108,6 +108,7 @@ public:
     bool          TieredPGO(void) const { LIMITED_METHOD_CONTRACT;  return fTieredPGO; }
     bool          TieredPGO_InstrumentOnlyHotCode(void) const { LIMITED_METHOD_CONTRACT;  return tieredPGO_InstrumentOnlyHotCode; }
     DWORD         TieredPGO_ScalableCountThreshold() const { LIMITED_METHOD_CONTRACT;  return tieredPGO_ScalableCountThreshold; }
+    bool          TieredPGO_ContextSensitive(void) const { LIMITED_METHOD_CONTRACT;  return fTieredPGO_ContextSensitive; }
 #endif
 
 #if defined(FEATURE_READYTORUN)
@@ -608,6 +609,7 @@ private: //----------------------------------------------------------------
     bool fTieredPGO;
     bool tieredPGO_InstrumentOnlyHotCode;
     DWORD tieredPGO_ScalableCountThreshold;
+    bool fTieredPGO_ContextSensitive;
 #endif
 
 #if defined(FEATURE_READYTORUN)

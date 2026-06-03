@@ -581,6 +581,8 @@ enum CorInfoHelpFunc
     CORINFO_HELP_COUNTPROFILE64,            // Update 64-bit block or edge count profile
     CORINFO_HELP_VALUEPROFILE32,            // Update 32-bit value profile
     CORINFO_HELP_VALUEPROFILE64,            // Update 64-bit value profile
+    CORINFO_HELP_CLASSPROFILE_WITHCALLER32, // Update 32-bit caller-sensitive class profile (shared methods)
+    CORINFO_HELP_CLASSPROFILE_WITHCALLER64, // Update 64-bit caller-sensitive class profile (shared methods)
 
     CORINFO_HELP_VALIDATE_INDIRECT_CALL,    // CFG: Validate function pointer
     CORINFO_HELP_DISPATCH_INDIRECT_CALL,    // CFG: Validate and dispatch to pointer

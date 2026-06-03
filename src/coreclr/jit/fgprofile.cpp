@@ -1965,6 +1965,12 @@ public:
 
     void CreateHistogramSchemaEntries(Compiler* compiler, GenTreeCall* call, bool isTypeHistogram)
     {
+        // Context-sensitive class histograms apply only to type histograms.
+        // Method histograms (delegate/vtable) continue to use the legacy
+        // (non-context-sensitive) layout.
+        const bool useContextSensitive =
+            isTypeHistogram && compiler->compInstrumentForContextSensitiveClasses();
+
         ICorJitInfo::PgoInstrumentationSchema schemaElem = {};
         schemaElem.Count                                 = 1;
         schemaElem.Other = isTypeHistogram ? ICorJitInfo::HandleHistogram32::CLASS_FLAG : 0;
@@ -1977,9 +1983,19 @@ public:
             schemaElem.Other |= ICorJitInfo::HandleHistogram32::DELEGATE_FLAG;
         }
 
-        schemaElem.InstrumentationKind = compiler->opts.compCollect64BitCounts
-                                             ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount
-                                             : ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount;
+        if (useContextSensitive)
+        {
+            schemaElem.InstrumentationKind =
+                compiler->opts.compCollect64BitCounts
+                    ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount
+                    : ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount;
+        }
+        else
+        {
+            schemaElem.InstrumentationKind = compiler->opts.compCollect64BitCounts
+                                                 ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount
+                                                 : ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount;
+        }
         schemaElem.ILOffset            = (int32_t)call->gtHandleHistogramProfileCandidateInfo->ilOffset;
         schemaElem.Offset              = 0;
 
@@ -1987,10 +2003,20 @@ public:
 
         m_schemaCount++;
 
-        // Re-using ILOffset and Other fields from schema item for TypeHandleHistogramCount
-        schemaElem.InstrumentationKind = isTypeHistogram ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes
-                                                         : ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethods;
-        schemaElem.Count               = ICorJitInfo::HandleHistogram32::SIZE;
+        // Re-using ILOffset and Other fields from schema item for the table entry.
+        if (useContextSensitive)
+        {
+            schemaElem.InstrumentationKind = ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller;
+            // Each "entry" is a (handle, caller) pair; Count counts pointer-sized slots.
+            schemaElem.Count = 2 * ICorJitInfo::HandleHistogramWithCaller32::SIZE;
+        }
+        else
+        {
+            schemaElem.InstrumentationKind = isTypeHistogram
+                                                 ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes
+                                                 : ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethods;
+            schemaElem.Count = ICorJitInfo::HandleHistogram32::SIZE;
+        }
         m_schema.push_back(schemaElem);
 
         m_schemaCount++;
@@ -2064,15 +2090,17 @@ public:
         //
 
         // Read histograms
-        void* typeHistogram   = nullptr;
-        void* methodHistogram = nullptr;
+        void* typeHistogram             = nullptr;
+        void* methodHistogram           = nullptr;
+        bool  typeHistogramWithCaller   = false;
 
         bool is32;
         ReadHistogramAndAdvance(call->gtHandleHistogramProfileCandidateInfo->ilOffset, &typeHistogram, &methodHistogram,
-                                &is32);
+                                &typeHistogramWithCaller, &is32);
         bool secondIs32;
+        bool secondTypeHistogramWithCaller = false;
         ReadHistogramAndAdvance(call->gtHandleHistogramProfileCandidateInfo->ilOffset, &typeHistogram, &methodHistogram,
-                                &secondIs32);
+                                &secondTypeHistogramWithCaller, &secondIs32);
 
         assert(((typeHistogram != nullptr) || (methodHistogram != nullptr)) &&
                "Expected at least one handle histogram when inserting probes");
@@ -2108,9 +2136,28 @@ public:
         {
             GenTree* const tmpNode          = compiler->gtNewLclvNode(tmpNum, TYP_REF);
             GenTree* const classProfileNode = compiler->gtNewIconNode((ssize_t)typeHistogram, TYP_I_IMPL);
-            helperCallNode =
-                compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_CLASSPROFILE32 : CORINFO_HELP_CLASSPROFILE64,
-                                              TYP_VOID, tmpNode, classProfileNode);
+
+            if (typeHistogramWithCaller)
+            {
+                // Context-sensitive class histogram: also pass the caller's
+                // return address. lvaRetAddrVar is an address-exposed local
+                // whose stack offset coincides with the slot holding the
+                // caller's return address (positioned per-arch by
+                // lvaAssignFrameOffsets). A LCL_VAR load reads that slot.
+                //
+                unsigned const retAddrLcl =
+                    compiler->lvaEnsureRetAddrVar(/* forTailCallDispatch */ false);
+                GenTree* const callerRetAddrNode = compiler->gtNewLclvNode(retAddrLcl, TYP_I_IMPL);
+                helperCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_CLASSPROFILE_WITHCALLER32
+                                                                    : CORINFO_HELP_CLASSPROFILE_WITHCALLER64,
+                                                               TYP_VOID, tmpNode, callerRetAddrNode, classProfileNode);
+            }
+            else
+            {
+                helperCallNode =
+                    compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_CLASSPROFILE32 : CORINFO_HELP_CLASSPROFILE64,
+                                                  TYP_VOID, tmpNode, classProfileNode);
+            }
         }
 
         if (methodHistogram != nullptr)
@@ -2162,7 +2209,7 @@ public:
     }
 
 private:
-    void ReadHistogramAndAdvance(IL_OFFSET ilOffset, void** typeHistogram, void** methodHistogram, bool* histogramIs32)
+    void ReadHistogramAndAdvance(IL_OFFSET ilOffset, void** typeHistogram, void** methodHistogram, bool* typeHistogramWithCaller, bool* histogramIs32)
     {
         if (*m_currentSchemaIndex >= (int)m_schema.size())
         {
@@ -2171,9 +2218,14 @@ private:
 
         ICorJitInfo::PgoInstrumentationSchema& countEntry = m_schema[*m_currentSchemaIndex];
 
-        bool is32 = countEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount;
-        bool is64 = countEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount;
-        if (!is32 && !is64)
+        bool is32        = countEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount;
+        bool is64        = countEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount;
+        bool is32Caller  = countEntry.InstrumentationKind ==
+                          ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount;
+        bool is64Caller  = countEntry.InstrumentationKind ==
+                          ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount;
+        bool isWithCaller = is32Caller || is64Caller;
+        if (!is32 && !is64 && !isWithCaller)
         {
             return;
         }
@@ -2186,13 +2238,16 @@ private:
         assert(*m_currentSchemaIndex + 2 <= (int)m_schema.size());
         ICorJitInfo::PgoInstrumentationSchema& tableEntry = m_schema[*m_currentSchemaIndex + 1];
         assert((tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes) ||
-               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethods));
+               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethods) ||
+               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller));
 
         void** outHistogram;
-        if (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes)
+        if (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes ||
+            tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
         {
             assert(*typeHistogram == nullptr);
-            outHistogram = typeHistogram;
+            outHistogram             = typeHistogram;
+            *typeHistogramWithCaller = isWithCaller;
         }
         else
         {
@@ -2201,10 +2256,27 @@ private:
         }
 
         *outHistogram  = &m_profileMemory[countEntry.Offset];
-        *histogramIs32 = is32;
+        *histogramIs32 = is32 || is32Caller;
 
 #ifdef DEBUG
-        if (is32)
+        if (isWithCaller)
+        {
+            if (is32Caller)
+            {
+                ICorJitInfo::HandleHistogramWithCaller32* h32 =
+                    reinterpret_cast<ICorJitInfo::HandleHistogramWithCaller32*>(&m_profileMemory[countEntry.Offset]);
+                assert(reinterpret_cast<uint8_t*>(&h32->Count) == &m_profileMemory[countEntry.Offset]);
+                assert(reinterpret_cast<uint8_t*>(h32->Entries) == &m_profileMemory[tableEntry.Offset]);
+            }
+            else
+            {
+                ICorJitInfo::HandleHistogramWithCaller64* h64 =
+                    reinterpret_cast<ICorJitInfo::HandleHistogramWithCaller64*>(&m_profileMemory[countEntry.Offset]);
+                assert(reinterpret_cast<uint8_t*>(&h64->Count) == &m_profileMemory[countEntry.Offset]);
+                assert(reinterpret_cast<uint8_t*>(h64->Entries) == &m_profileMemory[tableEntry.Offset]);
+            }
+        }
+        else if (is32)
         {
             ICorJitInfo::HandleHistogram32* h32 =
                 reinterpret_cast<ICorJitInfo::HandleHistogram32*>(&m_profileMemory[countEntry.Offset]);
@@ -2973,6 +3045,19 @@ PhaseStatus Compiler::fgIncorporateProfileData()
                         iSchema++;
                         break;
                     }
+                }
+
+                __fallthrough;
+
+            case ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount:
+            case ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount:
+                if (iSchema + 1 < fgPgoSchemaCount &&
+                    fgPgoSchema[iSchema + 1].InstrumentationKind ==
+                        ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
+                {
+                    fgPgoClassProfiles++;
+                    iSchema++;
+                    break;
                 }
 
                 __fallthrough;

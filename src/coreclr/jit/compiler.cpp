@@ -10811,6 +10811,10 @@ void Compiler::EnregisterStats::RecordLocal(const LclVarDsc* varDsc)
                     m_dispatchRetBuf++;
                     break;
 
+                case AddressExposedReason::PGO_CALLER_RETURN_ADDR:
+                    m_pgoCallerReturnAddr++;
+                    break;
+
                 case AddressExposedReason::STRESS_POISON_IMPLICIT_BYREFS:
                     m_stressPoisonImplicitByrefs++;
                     break;
@@ -10916,6 +10920,7 @@ void Compiler::EnregisterStats::Dump(FILE* fout) const
     PRINT_STATS(m_osrExposed, m_addrExposed);
     PRINT_STATS(m_stressLclFld, m_addrExposed);
     PRINT_STATS(m_dispatchRetBuf, m_addrExposed);
+    PRINT_STATS(m_pgoCallerReturnAddr, m_addrExposed);
     PRINT_STATS(m_stressPoisonImplicitByrefs, m_addrExposed);
     PRINT_STATS(m_externallyVisibleImplicitly, m_addrExposed);
     PRINT_STATS(m_smallTypePartialDef, m_addrExposed);
