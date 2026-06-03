@@ -2498,6 +2498,154 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
         }
     }
 
+    // Profitability heuristic (gated by JitLoopUnswitchingPolicy).
+    //
+    // Partition the loop body by what each cloned copy will actually contain
+    // after pruning + unreachable-block cleanup. The cleanup removes blocks
+    // that are not reachable from the loop's entry through the surviving
+    // intra-loop edges, so we model "what survives in clone X" as: blocks
+    // reachable from the loop header by walking forward through loop edges
+    // with the cond's dropped edge removed.
+    //
+    // Concretely:
+    //   fastReach: blocks reachable from header with cond->falseTarget removed
+    //   slowReach: blocks reachable from header with cond->trueTarget  removed
+    //
+    // After unswitching, the original loop blocks are the "fast" clone (cond
+    // pruned to take the true edge); the duplicated loop blocks are the
+    // "slow" clone (cond pruned to take the false edge). Unreachable blocks
+    // in each clone are removed by later DFS-based cleanup. So:
+    //
+    //   condNodes : the cond block's IR before pruning. The whole JTRUE
+    //               statement (and the cond expression it owns) is removed
+    //               by optUnswitchLoop's pruneTo, so the pruned cond shell
+    //               has ~0 nodes in each clone. The dispatcher receives a
+    //               cloned copy of the cond expression, so the cond's IR
+    //               effectively migrates from the cond block to the
+    //               dispatcher (no IR growth from this).
+    //   fastOnly  : blocks in fastReach \ slowReach (only fast keeps them).
+    //   slowOnly  : blocks in slowReach \ fastReach (only slow keeps them).
+    //   shared    : blocks in fastReach n slowReach (both copies keep them).
+    //
+    //   old body size = condNodes + fastOnly + slowOnly + shared
+    //   new body size = dispatcher(~condNodes) + 2 * shellCondNodes(~0) +
+    //                   fastOnly + slowOnly + 2 * shared
+    //
+    //   delta ~= shared
+    //
+    // (The 3 new empty basic blocks - dispatcher, fastPreheader,
+    // slowPreheader - contribute negligible IR but a few bytes of jmp
+    // overhead each in codegen; ignored here.)
+    //
+    // Reject when the estimated growth exceeds JitLoopUnswitchingMaxSizeGrowth
+    // IR nodes (default 0: do not grow code).
+    //
+    // Note: a partition based purely on dominance of the cond's successors
+    // over-credits "exclusive" blocks when both arms can reach a common
+    // body via intra-loop back-edges. Header-rooted reachability with the
+    // dropped edge removed matches what cleanup actually preserves.
+    if (JitConfig.JitLoopUnswitchingPolicy() != 0)
+    {
+        BasicBlock* const header      = loop->GetHeader();
+        BasicBlock* const trueTarget  = invariantCondBlock->GetTrueTarget();
+        BasicBlock* const falseTarget = invariantCondBlock->GetFalseTarget();
+
+        BitVecTraits traits(compBasicBlockID, this);
+        BitVec       fastReach(BitVecOps::MakeEmpty(&traits));
+        BitVec       slowReach(BitVecOps::MakeEmpty(&traits));
+
+        auto markReachable = [&](BasicBlock* start, BasicBlock* avoidSucc, BitVec& set) {
+            if (!loop->ContainsBlock(start))
+            {
+                return;
+            }
+            ArrayStack<BasicBlock*> stack(getAllocator(CMK_LoopClone));
+            BitVecOps::AddElemD(&traits, set, start->bbID);
+            stack.Push(start);
+            while (!stack.Empty())
+            {
+                BasicBlock* const b = stack.Pop();
+                b->VisitRegularSuccs(this, [&](BasicBlock* succ) {
+                    if (!loop->ContainsBlock(succ))
+                    {
+                        return BasicBlockVisit::Continue;
+                    }
+                    // When walking from the cond block, skip the dropped edge.
+                    if ((b == invariantCondBlock) && (succ == avoidSucc))
+                    {
+                        return BasicBlockVisit::Continue;
+                    }
+                    if (BitVecOps::TryAddElemD(&traits, set, succ->bbID))
+                    {
+                        stack.Push(succ);
+                    }
+                    return BasicBlockVisit::Continue;
+                });
+            }
+        };
+
+        markReachable(header, falseTarget, fastReach); // fast clone: drop the false edge
+        markReachable(header, trueTarget, slowReach);  // slow clone: drop the true edge
+
+        unsigned condNodes  = 0;
+        unsigned fastOnly   = 0;
+        unsigned slowOnly   = 0;
+        unsigned sharedBody = 0;
+
+        loop->VisitLoopBlocks([&](BasicBlock* b) {
+            unsigned bn = 0;
+            auto     cb = [&bn](GenTree* tree) -> unsigned {
+                bn++;
+                return 1;
+            };
+            (void)b->ComplexityExceeds(this, UINT_MAX, cb);
+
+            if (b == invariantCondBlock)
+            {
+                condNodes += bn;
+                return BasicBlockVisit::Continue;
+            }
+
+            const bool inFast = BitVecOps::IsMember(&traits, fastReach, b->bbID);
+            const bool inSlow = BitVecOps::IsMember(&traits, slowReach, b->bbID);
+            if (inFast && inSlow)
+            {
+                sharedBody += bn;
+            }
+            else if (inFast)
+            {
+                fastOnly += bn;
+            }
+            else if (inSlow)
+            {
+                slowOnly += bn;
+            }
+            // else: not reachable in either clone (e.g., dead block in the
+            // loop already); both clones will drop it, so it contributes
+            // nothing to the delta.
+            return BasicBlockVisit::Continue;
+        });
+
+        // Approximate accounting (see comment above): the cond's IR
+        // migrates from the cond block to the dispatcher (net zero),
+        // pruned cond shells are ~0 nodes each, so the only IR growth
+        // comes from duplicating the shared body blocks.
+        const int estGrowth         = (int)sharedBody;
+        const int maxGrowth         = JitConfig.JitLoopUnswitchingMaxSizeGrowth();
+
+        JITDUMP("Unswitch: " FMT_LP " body node counts: cond=%u fastOnly=%u slowOnly=%u shared=%u; estGrowth=%d "
+                "(max=%d)\n",
+                loop->GetIndex(), condNodes, fastOnly, slowOnly, sharedBody, estGrowth, maxGrowth);
+
+        if (estGrowth > maxGrowth)
+        {
+            JITDUMP("Unswitch: " FMT_LP " rejected: estimated growth %d > %d\n", loop->GetIndex(), estGrowth,
+                    maxGrowth);
+            Metrics.LoopsRejectedForUnswitchingTooCostly++;
+            return false;
+        }
+    }
+
     return true;
 }
 

@@ -81,11 +81,21 @@ RELEASE_CONFIG_INTEGER(JitDoLoopUnswitching, "JitDoLoopUnswitching", 0) // If 1,
                                                                         // around a loop-invariant BBJ_COND so each copy
                                                                         // takes only one arm. Currently off by default.
 RELEASE_CONFIG_INTEGER(JitLoopUnswitchingPolicy, "JitLoopUnswitchingPolicy", 0) // Policy gate for loop unswitching.
-                                                                                // 0 means "clone every candidate that
-                                                                                // passes the soundness gate" (absurdly
-                                                                                // permissive, intended for measurement).
-                                                                                // Non-zero values are reserved for a
-                                                                                // future benefit-based heuristic.
+                                                                                // 0 = no heuristic ("clone every
+                                                                                // candidate that passes the soundness
+                                                                                // gate", intended for measurement).
+                                                                                // 1 = shared-body size heuristic:
+                                                                                // reject when duplicating the loop
+                                                                                // body would grow code by more than
+                                                                                // JitLoopUnswitchingMaxSizeGrowth IR
+                                                                                // nodes.
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchingMaxSizeGrowth, "JitLoopUnswitchingMaxSizeGrowth", 0) // Max additional IR
+                                                                                              // nodes the unswitch
+                                                                                              // transform may add to
+                                                                                              // the loop body. Only
+                                                                                              // consulted when
+                                                                                              // JitLoopUnswitchingPolicy
+                                                                                              // is 1.
 CONFIG_INTEGER(JitDefaultFill, "JitDefaultFill", 0xdd) // In debug builds, initialize the memory allocated by the nra
                                                        // with this byte.
 
