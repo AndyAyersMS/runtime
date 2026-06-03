@@ -245,67 +245,22 @@ void PgoManager::WritePgoData()
             {
                 size_t entryOffset = schema.Offset + iEntry * InstrumentationKindToSize(schema.InstrumentationKind);
 
-                // HandleHistogramTypesWithCaller is laid out as (Type, Caller) pairs.
-                // Even slots are type handles (already-resolved); odd slots hold the
-                // raw return address captured at runtime, which we resolve into the
-                // calling method's MethodDesc for serialization.
+                // HandleHistogramTypesWithCaller is laid out as (Type, Caller)
+                // pairs. Even slots are type handles; odd slots are caller
+                // method handles (already resolved by the JIT helper to a
+                // stable MethodDesc* or DEFAULT_UNKNOWN_HANDLE). Override the
+                // per-slot marshal selection so odd slots format as method
+                // handles.
                 //
+                ICorJitInfo::PgoInstrumentationKind slotMarshal =
+                    schema.InstrumentationKind & ICorJitInfo::PgoInstrumentationKind::MarshalMask;
                 if (schema.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller &&
                     (iEntry & 1) == 1)
                 {
-                    intptr_t rawValue = *(intptr_t*)(data + entryOffset);
-                    MethodDesc* pCallerMD = nullptr;
-                    if (rawValue != 0 && !ICorJitInfo::IsUnknownHandle(rawValue))
-                    {
-                        EX_TRY
-                        {
-                            EECodeInfo codeInfo((PCODE)rawValue);
-                            if (codeInfo.IsValid())
-                            {
-                                MethodDesc* md = codeInfo.GetMethodDesc();
-                                if (md != nullptr &&
-                                    !md->IsDynamicMethod() &&
-                                    !md->GetLoaderAllocator()->IsCollectible())
-                                {
-                                    pCallerMD = md;
-                                }
-                            }
-                        }
-                        EX_CATCH
-                        {
-                            pCallerMD = nullptr;
-                        }
-                        EX_END_CATCH
-                    }
-
-                    if (rawValue == 0)
-                    {
-                        fprintf(pgoDataFile, "MethodHandle: NULL\n");
-                    }
-                    else if (pCallerMD == nullptr)
-                    {
-                        fprintf(pgoDataFile, "MethodHandle: UNKNOWN\n");
-                    }
-                    else
-                    {
-                        SString garbage1, tMethodName, garbage2;
-                        pCallerMD->GetMethodInfo(garbage1, tMethodName, garbage2);
-                        StackSString tTypeName;
-                        TypeString::AppendType(tTypeName, TypeHandle(pCallerMD->GetMethodTable()),
-                                               TypeString::FormatNamespace | TypeString::FormatFullInst | TypeString::FormatAssembly);
-                        if (tTypeName.GetCount() + 1 + tMethodName.GetCount() > 8192)
-                        {
-                            fprintf(pgoDataFile, "MethodHandle: UNKNOWN\n");
-                        }
-                        else
-                        {
-                            fprintf(pgoDataFile, "MethodHandle: %s|@|%s\n", tMethodName.GetUTF8(), tTypeName.GetUTF8());
-                        }
-                    }
-                    continue;
+                    slotMarshal = ICorJitInfo::PgoInstrumentationKind::MethodHandle;
                 }
 
-                switch(schema.InstrumentationKind & ICorJitInfo::PgoInstrumentationKind::MarshalMask)
+                switch(slotMarshal)
                 {
                     case ICorJitInfo::PgoInstrumentationKind::None:
                         fprintf(pgoDataFile, s_None);
@@ -1299,12 +1254,11 @@ HRESULT PgoManager::getPgoInstrumentationResultsInstance(MethodDesc* pMD, BYTE**
             *pInstrumentationDataDst = *pSrc;
         }
 
-        // Resolve caller return addresses in any context-sensitive histograms.
-        // This rewrites the caller slot of each (handle, caller) pair from a
-        // raw PC into a MethodDesc*. Done on the private copy so it doesn't
-        // disturb the live instrumentation data.
-        //
-        ResolveCallerReturnAddresses(*ppSchema, *pCountSchemaItems, *pInstrumentationData);
+        // Note: HandleHistogramTypesWithCaller tables don't need a
+        // separate caller-address resolution pass here. The
+        // JIT_ClassProfileWithCaller helpers resolve callers eagerly
+        // (storing only DEFAULT_UNKNOWN_HANDLE or non-collectible
+        // MethodDesc*) so the copied data is already consumer-ready.
 
         *pPgoSource = ICorJitInfo::PgoSource::Dynamic;
         return S_OK;
@@ -1319,80 +1273,9 @@ HRESULT PgoManager::getPgoInstrumentationResultsInstance(MethodDesc* pMD, BYTE**
 //---------------------------------------------------------------------
 // ResolveCallerReturnAddresses
 //
-// Walk schema entries; for each HandleHistogramTypesWithCaller table, rewrite
-// each odd-indexed slot (caller-return-address) into the MethodDesc* of the
-// containing method, resolved via ExecutionManager.
-//
-// Unresolvable return addresses (e.g. stale entry pointing into freed JIT
-// code, collectible / dynamic methods, addresses outside managed code) are
-// rewritten to DEFAULT_UNKNOWN_HANDLE so that they participate in counting
-// but do not match any real caller filter.
-//
-// Slots whose original value is already 0 (uninitialized) are left as 0;
-// slots that already look like an unknown handle (idempotent re-resolve)
-// are left unchanged.
-//
-void PgoManager::ResolveCallerReturnAddresses(const ICorJitInfo::PgoInstrumentationSchema* pSchema,
-                                              UINT32                                       countSchemaItems,
-                                              BYTE*                                        pInstrumentationData)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    for (UINT32 i = 0; i < countSchemaItems; i++)
-    {
-        if (pSchema[i].InstrumentationKind !=
-            ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
-        {
-            continue;
-        }
-
-        // The table is laid out as pairs: even index = type handle (untouched),
-        // odd index = caller return address (resolved here).
-        INT_PTR* slots = (INT_PTR*)(pInstrumentationData + pSchema[i].Offset);
-        for (int slotIdx = 1; slotIdx < pSchema[i].Count; slotIdx += 2)
-        {
-            INT_PTR rawValue = slots[slotIdx];
-            if (rawValue == 0 || ICorJitInfo::IsUnknownHandle(rawValue))
-            {
-                continue;
-            }
-
-            EX_TRY
-            {
-                EECodeInfo codeInfo((PCODE)rawValue);
-                if (!codeInfo.IsValid())
-                {
-                    slots[slotIdx] = DEFAULT_UNKNOWN_HANDLE;
-                }
-                else
-                {
-                    MethodDesc* pCallerMD = codeInfo.GetMethodDesc();
-                    if (pCallerMD == nullptr ||
-                        pCallerMD->IsDynamicMethod() ||
-                        pCallerMD->GetLoaderAllocator()->IsCollectible())
-                    {
-                        slots[slotIdx] = DEFAULT_UNKNOWN_HANDLE;
-                    }
-                    else
-                    {
-                        slots[slotIdx] = (INT_PTR)pCallerMD;
-                    }
-                }
-            }
-            EX_CATCH
-            {
-                slots[slotIdx] = DEFAULT_UNKNOWN_HANDLE;
-            }
-            EX_END_CATCH
-        }
-    }
-}
+// (Removed; caller addresses are now resolved eagerly by the
+// JIT_ClassProfileWithCaller helpers so the live histogram already
+// contains MethodDesc pointers or DEFAULT_UNKNOWN_HANDLE.)
 
 #else
 

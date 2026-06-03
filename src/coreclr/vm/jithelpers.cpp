@@ -1878,6 +1878,26 @@ HCIMPL2(void, JIT_ClassProfile64, Object *obj, ICorJitInfo::HandleHistogram64* c
 }
 HCIMPLEND
 
+// Small wrappers so the templated reservoir sampler can dispatch to the
+// right Interlocked primitive for 32- and 64-bit counts.
+//
+FORCEINLINE static int32_t InterlockedIncrementT(int32_t* p)
+{
+    return static_cast<int32_t>(InterlockedIncrement(reinterpret_cast<LONG*>(p)));
+}
+FORCEINLINE static int64_t InterlockedIncrementT(int64_t* p)
+{
+    return static_cast<int64_t>(InterlockedIncrement64(reinterpret_cast<LONG64*>(p)));
+}
+FORCEINLINE static int32_t InterlockedAddT(int32_t* p, int32_t delta)
+{
+    return static_cast<int32_t>(InterlockedAdd(reinterpret_cast<LONG*>(p), static_cast<LONG>(delta)));
+}
+FORCEINLINE static int64_t InterlockedAddT(int64_t* p, int64_t delta)
+{
+    return static_cast<int64_t>(InterlockedAdd64(reinterpret_cast<LONG64*>(p), static_cast<LONG64>(delta)));
+}
+
 // Reservoir sampling helper for context-sensitive (caller-aware) class
 // histograms. Returns true if the caller should write into *sampleIndex,
 // false to drop this observation.
@@ -1887,40 +1907,114 @@ HCIMPLEND
 // observation i (i >= S), pick r uniformly in [0, i); if r < S, replace
 // slot r. This yields an unbiased uniform sample of all observations.
 //
+// To minimize cache-line contention on the Count field for very hot
+// probes, we integrate the same scalable approximate-counting strategy
+// used by JIT_CountProfile: once Count crosses a power-of-two threshold,
+// only one in `delta` calls actually touches Count (and only those calls
+// participate in a reservoir replacement). This is unbiased: each
+// observation has probability (1/delta) * (S/(N/delta)) = S/N of ending
+// up in the reservoir, the same as plain reservoir sampling.
+//
 template<typename T>
-FORCEINLINE static bool CheckReservoirSample(T* pIndex, size_t* sampleIndex)
+FORCEINLINE static bool CheckReservoirSample(T* pCount, size_t* sampleIndex)
 {
+    using SignedT = typename std::conditional<std::is_same<T, uint32_t>::value, int32_t, int64_t>::type;
     const T S = static_cast<T>(ICorJitInfo::HandleHistogramWithCaller32::SIZE);
     static_assert((std::is_same<T, uint32_t>::value || std::is_same<T, uint64_t>::value));
 
-    // Pre-increment so each observation gets a unique 1-based count.
-    T const count = ++(*pIndex);
-
-    if (count <= S)
+    // Phase 1 -- table not yet full: atomically claim the next slot.
+    // We use InterlockedIncrement so concurrent fillers don't collide on
+    // the same slot. Once count > S, we drop to the scalable-counting
+    // path below.
+    T const preIncrCount = *pCount;
+    if (preIncrCount < S)
     {
-        *sampleIndex = static_cast<size_t>(count - 1);
-        return true;
+        T const newCount = static_cast<T>(InterlockedIncrementT(reinterpret_cast<SignedT*>(pCount)));
+        if (newCount <= S)
+        {
+            *sampleIndex = static_cast<size_t>(newCount - 1);
+            return true;
+        }
+        // Lost a race with another filler; fall through to reservoir mode.
     }
 
-    // Pick r uniformly in [0, count). count grows without bound; using a
-    // 32-bit RNG is fine for the precision we need.
+    // Phase 2 -- reservoir mode. Scalable approximate counting: as count
+    // grows past 2^threshold, we only sample (and only bump count) on
+    // 1-in-delta calls.
     //
-    // Note: as count grows, the probability of replacement (S / count) drops,
-    // which gives us a uniform sample over the entire observation stream
-    // rather than the recent-weighted sample used for non-context-sensitive
-    // histograms. This is appropriate for the larger context-sensitive table
-    // where we want unbiased coverage across all (caller, type) pairs.
-    //
-    unsigned const x = HandleHistogramProfileRand();
-    T const r = static_cast<T>(x) % count;
+    T count = *pCount;
+    T delta = 1;
+    DWORD threshold = g_pConfig->TieredPGO_ScalableCountThreshold();
 
-    if (r >= S)
+    if (count >= (static_cast<T>(1) << threshold))
+    {
+        DWORD logCount;
+        if (sizeof(T) == sizeof(uint32_t))
+            BitScanReverse(&logCount, static_cast<uint32_t>(count));
+        else
+            BitScanReverse64(&logCount, static_cast<uint64_t>(count));
+
+        delta = static_cast<T>(1) << (logCount - (threshold - 1));
+        const unsigned rand = HandleHistogramProfileRand();
+        const bool sampleThisCall = (rand & (static_cast<unsigned>(delta) - 1)) == 0;
+        if (!sampleThisCall)
+        {
+            return false;
+        }
+    }
+
+    // We're going to (probabilistically) update. Bump count by delta
+    // atomically so concurrent samplers don't race on the count value.
+    T const newCount = static_cast<T>(InterlockedAddT(reinterpret_cast<SignedT*>(pCount), static_cast<SignedT>(delta)));
+
+    // Reservoir replacement: pick a slot in [0, newCount); if it lands
+    // inside the table, that slot wins.
+    unsigned const r2 = HandleHistogramProfileRand();
+    T const pick = static_cast<T>(r2) % newCount;
+    if (pick >= S)
     {
         return false;
     }
 
-    *sampleIndex = static_cast<size_t>(r);
+    *sampleIndex = static_cast<size_t>(pick);
     return true;
+}
+
+// Small wrappers so the template above can call the right Interlocked
+// primitive for 32- and 64-bit counts.
+//
+// (Defined just above the template.)
+
+// Resolve a raw return-address-into-JIT-code into the calling MethodDesc.
+// Returns DEFAULT_UNKNOWN_HANDLE for:
+//   - addresses outside any managed code range
+//   - dynamic methods
+//   - methods whose loader allocator is collectible (storing a pointer
+//     to a collectible MethodDesc would risk a dangling pointer if the
+//     containing assembly is unloaded before the histogram is consumed)
+//
+FORCEINLINE static void* ResolveCallerToMethodDesc(void* callerReturnAddr)
+{
+    if (callerReturnAddr == nullptr)
+    {
+        return (void*)DEFAULT_UNKNOWN_HANDLE;
+    }
+
+    EECodeInfo codeInfo((PCODE)callerReturnAddr);
+    if (!codeInfo.IsValid())
+    {
+        return (void*)DEFAULT_UNKNOWN_HANDLE;
+    }
+
+    MethodDesc* pCallerMD = codeInfo.GetMethodDesc();
+    if (pCallerMD == nullptr ||
+        pCallerMD->IsDynamicMethod() ||
+        pCallerMD->GetLoaderAllocator()->IsCollectible())
+    {
+        return (void*)DEFAULT_UNKNOWN_HANDLE;
+    }
+
+    return (void*)pCallerMD;
 }
 
 HCIMPL3(void, JIT_ClassProfileWithCaller32, Object* obj, void* callerReturnAddr, ICorJitInfo::HandleHistogramWithCaller32* classProfile)
@@ -1944,13 +2038,19 @@ HCIMPL3(void, JIT_ClassProfileWithCaller32, Object* obj, void* callerReturnAddr,
         pMT = (MethodTable*)DEFAULT_UNKNOWN_HANDLE;
     }
 
+    // Resolve the caller eagerly. Storing only resolved (non-collectible)
+    // MethodDesc pointers or DEFAULT_UNKNOWN_HANDLE means the recorded
+    // caller value remains valid for the lifetime of the histogram.
+    //
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
 #ifdef _DEBUG
     PgoManager::VerifyAddress(classProfile);
     PgoManager::VerifyAddress(classProfile + 1);
 #endif
 
     classProfile->Entries[sampleIndex].Handle = (void*)pMT;
-    classProfile->Entries[sampleIndex].Caller = callerReturnAddr;
+    classProfile->Entries[sampleIndex].Caller = resolvedCaller;
 }
 HCIMPLEND
 
@@ -1974,13 +2074,15 @@ HCIMPL3(void, JIT_ClassProfileWithCaller64, Object* obj, void* callerReturnAddr,
         pMT = (MethodTable*)DEFAULT_UNKNOWN_HANDLE;
     }
 
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
 #ifdef _DEBUG
     PgoManager::VerifyAddress(classProfile);
     PgoManager::VerifyAddress(classProfile + 1);
 #endif
 
     classProfile->Entries[sampleIndex].Handle = (void*)pMT;
-    classProfile->Entries[sampleIndex].Caller = callerReturnAddr;
+    classProfile->Entries[sampleIndex].Caller = resolvedCaller;
 }
 HCIMPLEND
 

@@ -160,18 +160,6 @@ private:
     static HRESULT ComputeOffsetOfActualInstrumentationData(const ICorJitInfo::PgoInstrumentationSchema* pSchema, UINT32 countSchemaItems, size_t headerInitialSize, UINT *offsetOfActualInstrumentationData);
     static HRESULT getPgoInstrumentationResultsFromText(MethodDesc* pMD, BYTE** pAllocatedData, ICorJitInfo::PgoInstrumentationSchema** ppSchema, UINT32 *pCountSchemaItems, BYTE**pInstrumentationData, ICorJitInfo::PgoSource *pPgoSource);
 
-    // For HandleHistogramTypesWithCaller tables, rewrite each "caller" slot
-    // (odd index) from a raw return-address pointer into the MethodDesc* of
-    // the caller method, using ExecutionManager. Unresolvable / dynamic /
-    // collectible callers become DEFAULT_UNKNOWN_HANDLE.
-    //
-    // The rewrite is performed in-place on the buffer; the caller must ensure
-    // the buffer is a private (copied) instance.
-    //
-    static void ResolveCallerReturnAddresses(const ICorJitInfo::PgoInstrumentationSchema* pSchema,
-                                             UINT32                                       countSchemaItems,
-                                             BYTE*                                        pInstrumentationData);
-
     static void ReadPgoData();
     static void WritePgoData();
 
