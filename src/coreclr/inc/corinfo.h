@@ -583,6 +583,10 @@ enum CorInfoHelpFunc
     CORINFO_HELP_VALUEPROFILE64,            // Update 64-bit value profile
     CORINFO_HELP_CLASSPROFILE_WITHCALLER32, // Update 32-bit caller-sensitive class profile (shared methods)
     CORINFO_HELP_CLASSPROFILE_WITHCALLER64, // Update 64-bit caller-sensitive class profile (shared methods)
+    CORINFO_HELP_DELEGATEPROFILE_WITHCALLER32, // Update 32-bit caller-sensitive delegate-target profile (shared methods)
+    CORINFO_HELP_DELEGATEPROFILE_WITHCALLER64, // Update 64-bit caller-sensitive delegate-target profile (shared methods)
+    CORINFO_HELP_VTABLEPROFILE_WITHCALLER32,   // Update 32-bit caller-sensitive vtable-target profile (shared methods)
+    CORINFO_HELP_VTABLEPROFILE_WITHCALLER64,   // Update 64-bit caller-sensitive vtable-target profile (shared methods)
 
     CORINFO_HELP_VALIDATE_INDIRECT_CALL,    // CFG: Validate function pointer
     CORINFO_HELP_DISPATCH_INDIRECT_CALL,    // CFG: Validate and dispatch to pointer

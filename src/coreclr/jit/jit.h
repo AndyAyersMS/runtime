@@ -943,7 +943,8 @@ extern "C" UINT32 WINAPI getLikelyMethods(LikelyClassMethodRecord*              
                                           ICorJitInfo::PgoInstrumentationSchema* schema,
                                           UINT32                                 countSchemaItems,
                                           BYTE*                                  pInstrumentationData,
-                                          int32_t                                ilOffset);
+                                          int32_t                                ilOffset,
+                                          INT_PTR                                callerMethodHandle = 0);
 
 /*****************************************************************************/
 #endif //_JIT_H_

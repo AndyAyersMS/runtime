@@ -398,6 +398,12 @@ public:
         HandleHistogramWithCallerIntCount  = (DescriptorMin * 10) | FourByte | AlignPointer,
         HandleHistogramWithCallerLongCount = (DescriptorMin * 10) | EightByte,
         HandleHistogramTypesWithCaller     = (DescriptorMin * 11) | TypeHandle,
+        // Context-sensitive method histogram (delegate / vtable call sites)
+        // for shared generic methods. Same paired layout but both slots are
+        // MethodHandles: even indices are the observed target method, odd
+        // indices are the calling method handle. Shares the WithCaller
+        // counter kinds above.
+        HandleHistogramMethodsWithCaller   = (DescriptorMin * 11) | MethodHandle,
     };
 
     struct PgoInstrumentationSchema

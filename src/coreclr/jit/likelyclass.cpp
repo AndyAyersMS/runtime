@@ -279,15 +279,20 @@ static unsigned getLikelyClassesOrMethods(LikelyClassMethodRecord*              
             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramIntCount) ||
             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramLongCount);
 
-        // Context-sensitive class histogram (only meaningful when types==true,
-        // since the method-profile path is not yet caller-sensitive).
+        // Context-sensitive histogram. Type histograms pair with
+        // HandleHistogramTypesWithCaller; method histograms pair with
+        // HandleHistogramMethodsWithCaller. We accept whichever matches the
+        // current `types` flag.
         const bool isWithCallerHistogramCount =
-            types &&
-            ((schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount) ||
-             (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount));
+            (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount) ||
+            (schema[i].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount);
+
+        ICorJitInfo::PgoInstrumentationKind expectedTableKind =
+            types ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller
+                  : ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethodsWithCaller;
 
         if (isWithCallerHistogramCount && (schema[i].Count == 1) && ((i + 1) < countSchemaItems) &&
-            (schema[i + 1].InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller))
+            (schema[i + 1].InstrumentationKind == expectedTableKind))
         {
             const bool isInt32 = schema[i].InstrumentationKind ==
                                  ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount;
@@ -541,10 +546,11 @@ extern "C" DLLEXPORT UINT32 WINAPI getLikelyMethods(LikelyClassMethodRecord*    
                                                     ICorJitInfo::PgoInstrumentationSchema* schema,
                                                     UINT32                                 countSchemaItems,
                                                     BYTE*                                  pInstrumentationData,
-                                                    int32_t                                ilOffset)
+                                                    int32_t                                ilOffset,
+                                                    INT_PTR                                callerMethodHandle)
 {
     return getLikelyClassesOrMethods(pLikelyMethods, maxLikelyMethods, schema, countSchemaItems, pInstrumentationData,
-                                     ilOffset, false);
+                                     ilOffset, false, callerMethodHandle);
 }
 
 //------------------------------------------------------------------------

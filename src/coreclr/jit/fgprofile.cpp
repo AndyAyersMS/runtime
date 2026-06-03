@@ -1965,11 +1965,9 @@ public:
 
     void CreateHistogramSchemaEntries(Compiler* compiler, GenTreeCall* call, bool isTypeHistogram)
     {
-        // Context-sensitive class histograms apply only to type histograms.
-        // Method histograms (delegate/vtable) continue to use the legacy
-        // (non-context-sensitive) layout.
-        const bool useContextSensitive =
-            isTypeHistogram && compiler->compInstrumentForContextSensitiveClasses();
+        // Context-sensitive (caller-tagged) histograms apply to both type and
+        // method histograms when the root method is a shared generic.
+        const bool useContextSensitive = compiler->compInstrumentForContextSensitiveClasses();
 
         ICorJitInfo::PgoInstrumentationSchema schemaElem = {};
         schemaElem.Count                                 = 1;
@@ -2006,7 +2004,9 @@ public:
         // Re-using ILOffset and Other fields from schema item for the table entry.
         if (useContextSensitive)
         {
-            schemaElem.InstrumentationKind = ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller;
+            schemaElem.InstrumentationKind =
+                isTypeHistogram ? ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller
+                                : ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethodsWithCaller;
             // Each "entry" is a (handle, caller) pair; Count counts pointer-sized slots.
             schemaElem.Count = 2 * ICorJitInfo::HandleHistogramWithCaller32::SIZE;
         }
@@ -2090,17 +2090,17 @@ public:
         //
 
         // Read histograms
-        void* typeHistogram             = nullptr;
-        void* methodHistogram           = nullptr;
-        bool  typeHistogramWithCaller   = false;
+        void* typeHistogram               = nullptr;
+        void* methodHistogram             = nullptr;
+        bool  typeHistogramWithCaller     = false;
+        bool  methodHistogramWithCaller   = false;
 
         bool is32;
         ReadHistogramAndAdvance(call->gtHandleHistogramProfileCandidateInfo->ilOffset, &typeHistogram, &methodHistogram,
-                                &typeHistogramWithCaller, &is32);
+                                &typeHistogramWithCaller, &methodHistogramWithCaller, &is32);
         bool secondIs32;
-        bool secondTypeHistogramWithCaller = false;
         ReadHistogramAndAdvance(call->gtHandleHistogramProfileCandidateInfo->ilOffset, &typeHistogram, &methodHistogram,
-                                &secondTypeHistogramWithCaller, &secondIs32);
+                                &typeHistogramWithCaller, &methodHistogramWithCaller, &secondIs32);
 
         assert(((typeHistogram != nullptr) || (methodHistogram != nullptr)) &&
                "Expected at least one handle histogram when inserting probes");
@@ -2132,6 +2132,17 @@ public:
 
         GenTree* helperCallNode = nullptr;
 
+        // For context-sensitive histograms we need to pass the caller's
+        // return address. Reuse the existing lvaRetAddrVar slot (positioned
+        // by lvaAssignFrameOffsets at the per-arch caller-RA stack slot).
+        // Computed lazily so non-context-sensitive paths don't allocate it.
+        //
+        auto getCallerRetAddrNode = [&]() {
+            unsigned const retAddrLcl =
+                compiler->lvaEnsureRetAddrVar(/* forTailCallDispatch */ false);
+            return compiler->gtNewLclvNode(retAddrLcl, TYP_I_IMPL);
+        };
+
         if (typeHistogram != nullptr)
         {
             GenTree* const tmpNode          = compiler->gtNewLclvNode(tmpNum, TYP_REF);
@@ -2139,18 +2150,10 @@ public:
 
             if (typeHistogramWithCaller)
             {
-                // Context-sensitive class histogram: also pass the caller's
-                // return address. lvaRetAddrVar is an address-exposed local
-                // whose stack offset coincides with the slot holding the
-                // caller's return address (positioned per-arch by
-                // lvaAssignFrameOffsets). A LCL_VAR load reads that slot.
-                //
-                unsigned const retAddrLcl =
-                    compiler->lvaEnsureRetAddrVar(/* forTailCallDispatch */ false);
-                GenTree* const callerRetAddrNode = compiler->gtNewLclvNode(retAddrLcl, TYP_I_IMPL);
                 helperCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_CLASSPROFILE_WITHCALLER32
                                                                     : CORINFO_HELP_CLASSPROFILE_WITHCALLER64,
-                                                               TYP_VOID, tmpNode, callerRetAddrNode, classProfileNode);
+                                                               TYP_VOID, tmpNode, getCallerRetAddrNode(),
+                                                               classProfileNode);
             }
             else
             {
@@ -2168,17 +2171,39 @@ public:
             GenTree* methodProfileCallNode;
             if (call->IsDelegateInvoke())
             {
-                methodProfileCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_DELEGATEPROFILE32
-                                                                           : CORINFO_HELP_DELEGATEPROFILE64,
-                                                                      TYP_VOID, tmpNode, methodProfileNode);
+                if (methodHistogramWithCaller)
+                {
+                    methodProfileCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_DELEGATEPROFILE_WITHCALLER32
+                                                                               : CORINFO_HELP_DELEGATEPROFILE_WITHCALLER64,
+                                                                          TYP_VOID, tmpNode, getCallerRetAddrNode(),
+                                                                          methodProfileNode);
+                }
+                else
+                {
+                    methodProfileCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_DELEGATEPROFILE32
+                                                                               : CORINFO_HELP_DELEGATEPROFILE64,
+                                                                          TYP_VOID, tmpNode, methodProfileNode);
+                }
             }
             else
             {
                 assert(call->IsVirtualVtable());
                 GenTree* const baseMethodNode = compiler->gtNewIconEmbMethHndNode(call->gtCallMethHnd);
-                methodProfileCallNode =
-                    compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_VTABLEPROFILE32 : CORINFO_HELP_VTABLEPROFILE64,
-                                                  TYP_VOID, tmpNode, baseMethodNode, methodProfileNode);
+                if (methodHistogramWithCaller)
+                {
+                    methodProfileCallNode =
+                        compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_VTABLEPROFILE_WITHCALLER32
+                                                           : CORINFO_HELP_VTABLEPROFILE_WITHCALLER64,
+                                                      TYP_VOID, tmpNode, baseMethodNode, getCallerRetAddrNode(),
+                                                      methodProfileNode);
+                }
+                else
+                {
+                    methodProfileCallNode = compiler->gtNewHelperCallNode(is32 ? CORINFO_HELP_VTABLEPROFILE32
+                                                                               : CORINFO_HELP_VTABLEPROFILE64,
+                                                                          TYP_VOID, tmpNode, baseMethodNode,
+                                                                          methodProfileNode);
+                }
             }
 
             if (helperCallNode == nullptr)
@@ -2209,7 +2234,7 @@ public:
     }
 
 private:
-    void ReadHistogramAndAdvance(IL_OFFSET ilOffset, void** typeHistogram, void** methodHistogram, bool* typeHistogramWithCaller, bool* histogramIs32)
+    void ReadHistogramAndAdvance(IL_OFFSET ilOffset, void** typeHistogram, void** methodHistogram, bool* typeHistogramWithCaller, bool* methodHistogramWithCaller, bool* histogramIs32)
     {
         if (*m_currentSchemaIndex >= (int)m_schema.size())
         {
@@ -2239,11 +2264,14 @@ private:
         ICorJitInfo::PgoInstrumentationSchema& tableEntry = m_schema[*m_currentSchemaIndex + 1];
         assert((tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes) ||
                (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethods) ||
-               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller));
+               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller) ||
+               (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethodsWithCaller));
 
         void** outHistogram;
-        if (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes ||
-            tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
+        const bool tableIsTypes =
+            (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypes) ||
+            (tableEntry.InstrumentationKind == ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller);
+        if (tableIsTypes)
         {
             assert(*typeHistogram == nullptr);
             outHistogram             = typeHistogram;
@@ -2252,7 +2280,8 @@ private:
         else
         {
             assert(*methodHistogram == nullptr);
-            outHistogram = methodHistogram;
+            outHistogram               = methodHistogram;
+            *methodHistogramWithCaller = isWithCaller;
         }
 
         *outHistogram  = &m_profileMemory[countEntry.Offset];
@@ -3051,13 +3080,22 @@ PhaseStatus Compiler::fgIncorporateProfileData()
 
             case ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount:
             case ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerLongCount:
-                if (iSchema + 1 < fgPgoSchemaCount &&
-                    fgPgoSchema[iSchema + 1].InstrumentationKind ==
-                        ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
+                if (iSchema + 1 < fgPgoSchemaCount)
                 {
-                    fgPgoClassProfiles++;
-                    iSchema++;
-                    break;
+                    if (fgPgoSchema[iSchema + 1].InstrumentationKind ==
+                        ICorJitInfo::PgoInstrumentationKind::HandleHistogramTypesWithCaller)
+                    {
+                        fgPgoClassProfiles++;
+                        iSchema++;
+                        break;
+                    }
+                    if (fgPgoSchema[iSchema + 1].InstrumentationKind ==
+                        ICorJitInfo::PgoInstrumentationKind::HandleHistogramMethodsWithCaller)
+                    {
+                        fgPgoMethodProfiles++;
+                        iSchema++;
+                        break;
+                    }
                 }
 
                 __fallthrough;

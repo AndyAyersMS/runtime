@@ -62,6 +62,11 @@ namespace Internal.Pgo
         HandleHistogramWithCallerIntCount = (DescriptorMin * 10) | FourByte | AlignPointer,
         HandleHistogramWithCallerLongCount = (DescriptorMin * 10) | EightByte,
         HandleHistogramTypesWithCaller = (DescriptorMin * 11) | TypeHandle,
+        // Context-sensitive method histogram (delegate/vtable call sites).
+        // Same paired layout but both slots are MethodHandles: even = target
+        // method, odd = caller method handle. Shares the WithCaller counter
+        // kinds above.
+        HandleHistogramMethodsWithCaller = (DescriptorMin * 11) | MethodHandle,
     }
 
     public interface IPgoSchemaDataLoader<TType, TMethod>
@@ -722,6 +727,25 @@ namespace Internal.Pgo
 
                         case PgoInstrumentationKind.HandleHistogramMethods:
                             {
+                                mergedElem.Count = existingSchemaItem.Count + schema.Count;
+                                TMethod[] newMergedMethodArray = new TMethod[mergedElem.Count];
+                                mergedElem.DataObject = newMergedMethodArray;
+                                int i = 0;
+                                foreach (TMethod meth in (TMethod[])existingSchemaItem.DataObject)
+                                {
+                                    newMergedMethodArray[i++] = meth;
+                                }
+                                foreach (TMethod meth in (TMethod[])schema.DataObject)
+                                {
+                                    newMergedMethodArray[i++] = meth;
+                                }
+                                break;
+                            }
+
+                        case PgoInstrumentationKind.HandleHistogramMethodsWithCaller:
+                            {
+                                // Same shape as HandleHistogramMethods (TMethod[] of
+                                // alternating target/caller slots).
                                 mergedElem.Count = existingSchemaItem.Count + schema.Count;
                                 TMethod[] newMergedMethodArray = new TMethod[mergedElem.Count];
                                 mergedElem.DataObject = newMergedMethodArray;

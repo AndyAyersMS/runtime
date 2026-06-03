@@ -2269,6 +2269,177 @@ HCIMPL3(void, JIT_VTableProfile64, Object* obj, MethodDesc* pBaseMD, ICorJitInfo
 }
 HCIMPLEND
 
+// Context-sensitive delegate-target profile helper. Same shape as
+// JIT_DelegateProfile{32,64} but stores a (target, caller) pair selected by
+// the reservoir sampler. callerReturnAddr is resolved eagerly so the slot
+// holds a stable MethodDesc* (or DEFAULT_UNKNOWN_HANDLE).
+//
+HCIMPL3(void, JIT_DelegateProfileWithCaller32, Object* obj, void* callerReturnAddr,
+        ICorJitInfo::HandleHistogramWithCaller32* methodProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&methodProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    _ASSERTE(objRef->GetMethodTable()->IsDelegate());
+
+    MethodDesc* pRecordedMD = (MethodDesc*)DEFAULT_UNKNOWN_HANDLE;
+    DELEGATEREF del = (DELEGATEREF)objRef;
+    if ((del->GetInvocationCount() == 0) && (del->GetMethodPtrAux() == (PCODE)NULL))
+    {
+        MethodDesc* pMD = NonVirtualEntry2MethodDesc(del->GetMethodPtr());
+        if ((pMD != nullptr) && !pMD->GetLoaderAllocator()->IsCollectible() && !pMD->IsDynamicMethod())
+        {
+            pRecordedMD = pMD;
+        }
+    }
+
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(methodProfile);
+    PgoManager::VerifyAddress(methodProfile + 1);
+#endif
+
+    methodProfile->Entries[sampleIndex].Handle = (void*)pRecordedMD;
+    methodProfile->Entries[sampleIndex].Caller = resolvedCaller;
+}
+HCIMPLEND
+
+HCIMPL3(void, JIT_DelegateProfileWithCaller64, Object* obj, void* callerReturnAddr,
+        ICorJitInfo::HandleHistogramWithCaller64* methodProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&methodProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    _ASSERTE(objRef->GetMethodTable()->IsDelegate());
+
+    MethodDesc* pRecordedMD = (MethodDesc*)DEFAULT_UNKNOWN_HANDLE;
+    DELEGATEREF del = (DELEGATEREF)objRef;
+    if ((del->GetInvocationCount() == 0) && (del->GetMethodPtrAux() == (PCODE)NULL))
+    {
+        MethodDesc* pMD = NonVirtualEntry2MethodDesc(del->GetMethodPtr());
+        if ((pMD != nullptr) && !pMD->GetLoaderAllocator()->IsCollectible() && !pMD->IsDynamicMethod())
+        {
+            pRecordedMD = pMD;
+        }
+    }
+
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(methodProfile);
+    PgoManager::VerifyAddress(methodProfile + 1);
+#endif
+
+    methodProfile->Entries[sampleIndex].Handle = (void*)pRecordedMD;
+    methodProfile->Entries[sampleIndex].Caller = resolvedCaller;
+}
+HCIMPLEND
+
+// Context-sensitive vtable-target profile helper.
+//
+HCIMPL4(void, JIT_VTableProfileWithCaller32, Object* obj, MethodDesc* pBaseMD, void* callerReturnAddr,
+        ICorJitInfo::HandleHistogramWithCaller32* methodProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&methodProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    _ASSERTE(pBaseMD->IsVirtual());
+    _ASSERTE(!pBaseMD->IsInterface());
+    _ASSERTE(!pBaseMD->HasMethodInstantiation());
+
+    MethodTable* pMT = objRef->GetMethodTable();
+
+    WORD slot = pBaseMD->GetSlot();
+    _ASSERTE(slot < pBaseMD->GetMethodTable()->GetNumVirtuals());
+
+    MethodDesc* pMD = pMT->GetMethodDescForSlot_NoThrow(slot);
+
+    MethodDesc* pRecordedMD = (MethodDesc*)DEFAULT_UNKNOWN_HANDLE;
+    if (!pMD->GetLoaderAllocator()->IsCollectible() && !pMD->IsDynamicMethod())
+    {
+        pRecordedMD = pMD;
+    }
+
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(methodProfile);
+    PgoManager::VerifyAddress(methodProfile + 1);
+#endif
+
+    methodProfile->Entries[sampleIndex].Handle = (void*)pRecordedMD;
+    methodProfile->Entries[sampleIndex].Caller = resolvedCaller;
+}
+HCIMPLEND
+
+HCIMPL4(void, JIT_VTableProfileWithCaller64, Object* obj, MethodDesc* pBaseMD, void* callerReturnAddr,
+        ICorJitInfo::HandleHistogramWithCaller64* methodProfile)
+{
+    FCALL_CONTRACT;
+
+    OBJECTREF objRef = ObjectToOBJECTREF(obj);
+    VALIDATEOBJECTREF(objRef);
+
+    size_t sampleIndex;
+    if (!CheckReservoirSample(&methodProfile->Count, &sampleIndex) || objRef == NULL)
+    {
+        return;
+    }
+
+    _ASSERTE(pBaseMD->IsVirtual());
+    _ASSERTE(!pBaseMD->IsInterface());
+    _ASSERTE(!pBaseMD->HasMethodInstantiation());
+
+    MethodTable* pMT = objRef->GetMethodTable();
+
+    WORD slot = pBaseMD->GetSlot();
+    _ASSERTE(slot < pBaseMD->GetMethodTable()->GetNumVirtuals());
+
+    MethodDesc* pMD = pMT->GetMethodDescForSlot_NoThrow(slot);
+
+    MethodDesc* pRecordedMD = (MethodDesc*)DEFAULT_UNKNOWN_HANDLE;
+    if (!pMD->GetLoaderAllocator()->IsCollectible() && !pMD->IsDynamicMethod())
+    {
+        pRecordedMD = pMD;
+    }
+
+    void* const resolvedCaller = ResolveCallerToMethodDesc(callerReturnAddr);
+
+#ifdef _DEBUG
+    PgoManager::VerifyAddress(methodProfile);
+    PgoManager::VerifyAddress(methodProfile + 1);
+#endif
+
+    methodProfile->Entries[sampleIndex].Handle = (void*)pRecordedMD;
+    methodProfile->Entries[sampleIndex].Caller = resolvedCaller;
+}
+HCIMPLEND
+
 // Helpers for scalable approximate counters
 //
 // Here threshold = 13 means we count accurately up to 2^13 = 8192 and

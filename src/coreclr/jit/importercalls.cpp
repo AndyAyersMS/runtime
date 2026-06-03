@@ -7350,7 +7350,7 @@ void Compiler::pickGDV(GenTreeCall*           call,
     {
         assert(!call->IsHelperCall());
         numberOfMethods = getLikelyMethods(likelyMethods, maxLikelyMethods, pgoInfo.PgoSchema, pgoInfo.PgoSchemaCount,
-                                           pgoInfo.PgoData, ilOffset);
+                                           pgoInfo.PgoData, ilOffset, callerMethodHandle);
     }
 
     if ((numberOfClasses < 1) && (numberOfMethods < 1) && hasEnumeratorLikelyTypeMap())
