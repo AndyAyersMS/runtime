@@ -216,6 +216,7 @@ HRESULT EEConfig::Init()
 #if defined(FEATURE_ON_STACK_REPLACEMENT)
     dwOSR_HitLimit = 10;
     dwOSR_CounterBump = 5000;
+    dwOSR_StagedHitLimit = 2;
 #endif
 
     backpatchEntryPointSlots = false;
@@ -779,7 +780,7 @@ HRESULT EEConfig::sync()
 
         // Two-stage OSR is gated on TieredPGO being enabled.
         fTC_OSRPgoStaging = fTieredPGO &&
-            (CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_TC_OSRPgoStaging) != 0);
+            (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_TC_OSRPgoStaging) != 0);
     #endif
 
 #ifdef FEATURE_PGO
@@ -816,6 +817,7 @@ HRESULT EEConfig::sync()
 #if defined(FEATURE_ON_STACK_REPLACEMENT)
     dwOSR_HitLimit = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_OSR_HitLimit);
     dwOSR_CounterBump = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_OSR_CounterBump);
+    dwOSR_StagedHitLimit = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_OSR_StagedHitLimit);
 #endif
 
 #if defined(FEATURE_ON_STACK_REPLACEMENT) && defined(_DEBUG)

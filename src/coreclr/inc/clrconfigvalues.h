@@ -539,8 +539,14 @@ RETAIL_CONFIG_DWORD_INFO(UNSUPPORTED_TieredPGO_ScalableCountThreshold, W("Tiered
 // Enable two-stage OSR: when a Tier0 patchpoint trips, first OSR into a
 // Tier0+Instr body (instead of straight to Tier1+Opt) so the long-running
 // loop can collect PGO data; later patchpoints in that body promote to a
-// Tier1+Opt OSR using the collected data. Off by default.
-RETAIL_CONFIG_DWORD_INFO(UNSUPPORTED_TC_OSRPgoStaging, W("TC_OSRPgoStaging"), 0, "Enable two-stage OSR: Tier0 -> Tier0+Instr-OSR -> Tier1-OSR")
+// Tier1+Opt OSR using the collected data. On by default when TieredPGO is on.
+RETAIL_CONFIG_DWORD_INFO(INTERNAL_TC_OSRPgoStaging, W("TC_OSRPgoStaging"), 1, "Enable two-stage OSR: Tier0 -> Tier0+Instr-OSR -> Tier1-OSR")
+
+// When two-stage OSR is enabled, this is the patchpoint hit count required to
+// transition from the Stage B (Tier0+Instr-OSR) body to the Stage C (Tier1-OSR
+// with PGO) body. Lower than the default OSR_HitLimit because Stage B runs
+// instrumented code that we want to escape from quickly.
+RETAIL_CONFIG_DWORD_INFO(INTERNAL_OSR_StagedHitLimit, W("OSR_StagedHitLimit"), 2, "Patchpoint hit limit for Stage B -> Stage C OSR transitions")
 
 #endif
 

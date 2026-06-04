@@ -1049,16 +1049,13 @@ CORJIT_FLAGS TieredCompilationManager::GetJitFlags(PrepareCodeConfig *config)
         case NativeCodeVersion::OptimizationTier0:
             if (g_pConfig->TieredCompilation_QuickJit())
             {
-#ifdef FEATURE_PGO
-                if (g_pConfig->TieredPGO() && g_pConfig->TieredPGO_InstrumentOnlyHotCode())
-                {
-                    // If we plan to only instrument hot code we have to make an exception
-                    // for cold methods with loops so if those self promote to OSR they need
-                    // some profile to optimize, so here we allow JIT to enable instrumentation
-                    // if current method has loops and is eligible for OSR.
-                    flags.Set(CORJIT_FLAGS::CORJIT_FLAG_BBINSTR_IF_LOOPS);
-                }
-#endif
+                // Note: BBINSTR_IF_LOOPS used to be set here so that long-running
+                // OSR'd methods would have PGO data available for their OSR build.
+                // It is now intentionally not set: with two-stage OSR (enabled when
+                // TieredPGO is on), the Stage B Tier0+Instr OSR body collects PGO
+                // for the OSR transition, and Tier0+Instr (Tier0Instrumented) handles
+                // PGO collection for the non-OSR call-counted promotion path.
+                // This avoids paying instrumentation cost in plain Tier0 code.
                 flags.Set(CORJIT_FLAGS::CORJIT_FLAG_TIER0);
                 break;
             }

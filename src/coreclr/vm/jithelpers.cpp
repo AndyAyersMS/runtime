@@ -1426,7 +1426,25 @@ static PCODE PatchpointOptimizationPolicy(TransitionBlock* pTransitionBlock, int
         // some jit cost), but are eager enough to transition before
         // we run too much Tier0 code.
         //
-        const int hitLimit = g_pConfig->OSR_HitLimit();
+        // Determine the hit limit. If the current code is a Stage B
+        // (Tier0+Instr OSR body), use the smaller staged limit so we
+        // escape from instrumented OSR code into the fully optimized
+        // Stage C body sooner.
+#ifdef FEATURE_PGO
+        int hitLimit;
+        if (g_pConfig->TC_OSRPgoStaging() &&
+            codeInfo.GetNativeCodeVersion().GetOptimizationTier() ==
+                NativeCodeVersion::OptimizationTier1OSRInstrumented)
+        {
+            hitLimit = (int)g_pConfig->OSR_StagedHitLimit();
+        }
+        else
+        {
+            hitLimit = (int)g_pConfig->OSR_HitLimit();
+        }
+#else
+        const int hitLimit = (int)g_pConfig->OSR_HitLimit();
+#endif // FEATURE_PGO
         const int hitCount = InterlockedIncrement(&ppInfo->m_patchpointCount);
         const int hitLogLevel = (hitCount == 1) ? LL_INFO10 : LL_INFO1000;
 

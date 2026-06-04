@@ -119,6 +119,7 @@ public:
     // OSR Config
     DWORD         OSR_CounterBump() const { LIMITED_METHOD_CONTRACT; return dwOSR_CounterBump; }
     DWORD         OSR_HitLimit() const { LIMITED_METHOD_CONTRACT; return dwOSR_HitLimit; }
+    DWORD         OSR_StagedHitLimit() const { LIMITED_METHOD_CONTRACT; return dwOSR_StagedHitLimit; }
 #endif
 
 #if defined(FEATURE_ON_STACK_REPLACEMENT) && defined(_DEBUG)
@@ -625,6 +626,7 @@ private: //----------------------------------------------------------------
 #if defined(FEATURE_ON_STACK_REPLACEMENT)
     DWORD dwOSR_HitLimit;
     DWORD dwOSR_CounterBump;
+    DWORD dwOSR_StagedHitLimit;
 #endif
 
 #if defined(FEATURE_ON_STACK_REPLACEMENT) && defined(_DEBUG)
