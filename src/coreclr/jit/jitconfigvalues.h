@@ -96,6 +96,34 @@ RELEASE_CONFIG_INTEGER(JitLoopUnswitchingMaxSizeGrowth, "JitLoopUnswitchingMaxSi
                                                                                               // consulted when
                                                                                               // JitLoopUnswitchingPolicy
                                                                                               // is 1.
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchPicker, "JitLoopUnswitchPicker", 0) // Picker used by optFindUnswitchCandidate
+                                                                          // when multiple invariant BBJ_CONDs are
+                                                                          // valid:
+                                                                          // 0 = topmost-by-dominance (current).
+                                                                          // 1 = highest expected impact (weighted
+                                                                          //     dead-code per clone, computed via
+                                                                          //     fast/slow reach partition).
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchSkewGate, "JitLoopUnswitchSkewGate", 0) // Reject unswitch candidates whose
+                                                                              // BBJ_COND has a highly skewed branch
+                                                                              // likelihood. Only consulted when
+                                                                              // JitLoopUnswitchingPolicy is 1.
+                                                                              // 0 = off (no skew gate).
+                                                                              // 1 = reject if max(p,1-p) > 0.95.
+                                                                              // 2 = reject if max(p,1-p) > 0.80.
+                                                                              // 3 = reject if max(p,1-p) > 0.60.
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchSkewGrowthBalanced, "JitLoopUnswitchSkewGrowthBalanced", 0) // Additional shared
+                                                                                                  // body growth (IR
+                                                                                                  // nodes) allowed when
+                                                                                                  // cond skew is
+                                                                                                  // <= 0.60. Added to
+                                                                                                  // JitLoopUnswitchingMax
+                                                                                                  // SizeGrowth.
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchSkewGrowthMild, "JitLoopUnswitchSkewGrowthMild", 0)         // Additional growth
+                                                                                                  // when cond skew is
+                                                                                                  // in (0.60, 0.80].
+RELEASE_CONFIG_INTEGER(JitLoopUnswitchSkewGrowthModerate, "JitLoopUnswitchSkewGrowthModerate", 0) // Additional growth
+                                                                                                  // when cond skew is
+                                                                                                  // in (0.80, 0.95].
 CONFIG_INTEGER(JitDefaultFill, "JitDefaultFill", 0xdd) // In debug builds, initialize the memory allocated by the nra
                                                        // with this byte.
 

@@ -2145,14 +2145,19 @@ void Compiler::optCloneLoop(FlowGraphNaturalLoop* loop, LoopCloneContext* contex
 
         if (enclosingRegion != 0)
         {
+            // The slow preheader was inserted lexically after `beforeSlowPreheader`
+            // but logically lives in `preheader`'s EH region. Any enclosing region
+            // whose lex-last is `beforeSlowPreheader` must be extended to cover the
+            // slow preheader, so that the subsequent DuplicateWithEH call can in turn
+            // extend those regions to also cover the cloned slow-path blocks.
             EHblkDsc* const ebd = ehGetDsc(enclosingRegion - 1);
             for (EHblkDsc* const HBtab : EHClauses(this, ebd))
             {
-                if (HBtab->ebdTryLast == bottom)
+                if (HBtab->ebdTryLast == beforeSlowPreheader)
                 {
                     fgSetTryEnd(HBtab, slowPreheader);
                 }
-                if (HBtab->ebdHndLast == bottom)
+                if (HBtab->ebdHndLast == beforeSlowPreheader)
                 {
                     fgSetHndEnd(HBtab, slowPreheader);
                 }
@@ -2329,6 +2334,337 @@ bool Compiler::optTreeIsStructurallyLoopInvariant(FlowGraphNaturalLoop* loop, Ge
 }
 
 //------------------------------------------------------------------------
+// optTreeContainsArrLen: Diagnostic helper -- returns true if 'tree' or
+//   any descendant is GT_ARR_LENGTH, GT_MDARR_LENGTH, or
+//   GT_MDARR_LOWER_BOUND. No invariance checks are performed.
+//
+// static
+bool Compiler::optTreeContainsArrLen(GenTree* tree)
+{
+    if (tree == nullptr)
+    {
+        return false;
+    }
+    if (tree->OperIs(GT_ARR_LENGTH, GT_MDARR_LENGTH, GT_MDARR_LOWER_BOUND))
+    {
+        return true;
+    }
+    bool found = false;
+    tree->VisitOperands([&](GenTree* op) {
+        if (optTreeContainsArrLen(op))
+        {
+            found = true;
+            return GenTree::VisitResult::Abort;
+        }
+        return GenTree::VisitResult::Continue;
+    });
+    return found;
+}
+
+//------------------------------------------------------------------------
+// optTreeIsLooseLoopInvariant: Recursive per-node loop-invariance check
+//   that recognizes more shapes than optTreeIsStructurallyLoopInvariant
+//   without relying on value numbering.
+//
+// Arguments:
+//   loop                - the loop to check invariance in
+//   tree                - the tree to inspect
+//   requireArrayNonNull - if true, GT_ARR_LENGTH/GT_MDARR_LENGTH operands
+//                         must have GTF_NON_NULL set to qualify
+//
+// Return Value:
+//   true if every leaf in 'tree' is provably invariant under the rules
+//   above and every interior operation is pure (no calls, stores, or
+//   may-throw beyond the recognized non-faulting array-length form).
+//
+// Notes:
+//   PROTOTYPE / INSTRUMENTATION ONLY. The result is used to count loops
+//   in metrics; it does not currently drive the unswitching transform.
+//
+bool Compiler::optTreeIsLooseLoopInvariant(FlowGraphNaturalLoop* loop, GenTree* tree, bool requireArrayNonNull)
+{
+    // Allowed exception: GT_ARR_LENGTH and friends carry GTF_GLOB_REF (and
+    // GTF_EXCEPT when they may fault on null). Recurse with that one node
+    // class admitted, but everything else must pass the same flag-gate as
+    // optTreeIsStructurallyLoopInvariant.
+    if (tree->OperIs(GT_ARR_LENGTH, GT_MDARR_LENGTH, GT_MDARR_LOWER_BOUND))
+    {
+        // GTF_ARRLEN_NONFAULTING / GTF_MDARRLEN_NONFAULTING / GTF_MDARRLOWERBOUND_NONFAULTING
+        // all alias the same bit (0x20000000) and mean the JIT has proven the
+        // array operand is non-null at this point. Without it, hoisting the
+        // length read to the unswitch dispatcher would change exception order.
+        if (requireArrayNonNull && ((tree->gtFlags & GTF_ARRLEN_NONFAULTING) == 0))
+        {
+            return false;
+        }
+        return optTreeIsLooseLoopInvariant(loop, tree->AsArrCommon()->ArrRef(), requireArrayNonNull);
+    }
+
+    // Reject anything that performs a store, calls, may throw, or reads
+    // global memory other than via the array-length form handled above.
+    if ((tree->gtFlags & GTF_GLOB_EFFECT) != 0)
+    {
+        return false;
+    }
+
+    if (tree->OperIsConst())
+    {
+        return true;
+    }
+
+    if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD, GT_LCL_ADDR))
+    {
+        unsigned         lclNum = tree->AsLclVarCommon()->GetLclNum();
+        LclVarDsc* const dsc    = lvaGetDesc(lclNum);
+        if (dsc->lvPromoted)
+        {
+            return false;
+        }
+        return optIsStackLocalInvariant(loop, lclNum);
+    }
+
+    if (tree->OperIsUnary())
+    {
+        GenTree* op1 = tree->AsUnOp()->gtGetOp1();
+        return (op1 == nullptr) || optTreeIsLooseLoopInvariant(loop, op1, requireArrayNonNull);
+    }
+
+    if (tree->OperIsBinary())
+    {
+        GenTree* op1 = tree->AsOp()->gtGetOp1();
+        GenTree* op2 = tree->AsOp()->gtGetOp2();
+        if ((op1 != nullptr) && !optTreeIsLooseLoopInvariant(loop, op1, requireArrayNonNull))
+        {
+            return false;
+        }
+        if ((op2 != nullptr) && !optTreeIsLooseLoopInvariant(loop, op2, requireArrayNonNull))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+//------------------------------------------------------------------------
+// optTreeContainsInvariantLoad: Diagnostic helper -- returns true if 'tree'
+//   or any descendant is a GT_IND / GT_BLK carrying GTF_IND_INVARIANT.
+//   No invariance check on the operand is performed.
+//
+// static
+bool Compiler::optTreeContainsInvariantLoad(GenTree* tree)
+{
+    if (tree == nullptr)
+    {
+        return false;
+    }
+    if (tree->OperIs(GT_IND, GT_BLK) && ((tree->gtFlags & GTF_IND_INVARIANT) != 0))
+    {
+        return true;
+    }
+    bool found = false;
+    tree->VisitOperands([&](GenTree* op) {
+        if (optTreeContainsInvariantLoad(op))
+        {
+            found = true;
+            return GenTree::VisitResult::Abort;
+        }
+        return GenTree::VisitResult::Continue;
+    });
+    return found;
+}
+
+//------------------------------------------------------------------------
+// optTreeIsLooseLoopInvariantWithInvariantLoad: Mirror of
+//   optTreeIsLooseLoopInvariant that admits GT_IND / GT_BLK loads marked
+//   GTF_IND_INVARIANT (e.g. AOT-resolved readonly statics, MethodTable
+//   loads, frozen-object field loads) on otherwise-invariant operands.
+//
+// Arguments:
+//   loop                - the loop to check invariance in
+//   tree                - the tree to inspect
+//   requireNonFaulting  - if true, an admitted GT_IND/GT_BLK must also
+//                         carry GTF_IND_NONFAULTING; otherwise hoisting
+//                         the load could introduce a fault not present
+//                         on the original loop entry path.
+//
+// Return Value:
+//   true if every leaf in 'tree' is invariant under the rules above and
+//   every interior operation is pure (no calls, stores, or may-throw
+//   beyond the recognized invariant-load form).
+//
+// Notes:
+//   PROTOTYPE / INSTRUMENTATION ONLY. Result is consumed by metrics and
+//   does not currently drive the unswitching transform.
+//
+bool Compiler::optTreeIsLooseLoopInvariantWithInvariantLoad(FlowGraphNaturalLoop* loop,
+                                                            GenTree*              tree,
+                                                            bool                  requireNonFaulting)
+{
+    // Allowed exception: an invariant load. Its target value cannot change
+    // for the lifetime of the process, so it's safe to hoist provided the
+    // address operand is itself loop-invariant. GTF_IND_INVARIANT implies
+    // we don't need to worry about ordering with respect to stores.
+    if (tree->OperIs(GT_IND, GT_BLK) && ((tree->gtFlags & GTF_IND_INVARIANT) != 0))
+    {
+        if (requireNonFaulting && ((tree->gtFlags & GTF_IND_NONFAULTING) == 0))
+        {
+            return false;
+        }
+        GenTree* addr = tree->AsIndir()->Addr();
+        return (addr == nullptr) ||
+               optTreeIsLooseLoopInvariantWithInvariantLoad(loop, addr, requireNonFaulting);
+    }
+
+    // Reject anything that performs a store, calls, may throw, or reads
+    // global memory other than via the invariant-load form handled above.
+    if ((tree->gtFlags & GTF_GLOB_EFFECT) != 0)
+    {
+        return false;
+    }
+
+    if (tree->OperIsConst())
+    {
+        return true;
+    }
+
+    if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD, GT_LCL_ADDR))
+    {
+        unsigned         lclNum = tree->AsLclVarCommon()->GetLclNum();
+        LclVarDsc* const dsc    = lvaGetDesc(lclNum);
+        if (dsc->lvPromoted)
+        {
+            return false;
+        }
+        return optIsStackLocalInvariant(loop, lclNum);
+    }
+
+    if (tree->OperIsUnary())
+    {
+        GenTree* op1 = tree->AsUnOp()->gtGetOp1();
+        return (op1 == nullptr) || optTreeIsLooseLoopInvariantWithInvariantLoad(loop, op1, requireNonFaulting);
+    }
+
+    if (tree->OperIsBinary())
+    {
+        GenTree* op1 = tree->AsOp()->gtGetOp1();
+        GenTree* op2 = tree->AsOp()->gtGetOp2();
+        if ((op1 != nullptr) && !optTreeIsLooseLoopInvariantWithInvariantLoad(loop, op1, requireNonFaulting))
+        {
+            return false;
+        }
+        if ((op2 != nullptr) && !optTreeIsLooseLoopInvariantWithInvariantLoad(loop, op2, requireNonFaulting))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+//------------------------------------------------------------------------
+// optEstimateUnswitchImpact: Estimate the expected per-clone dead-code
+//   savings if 'candidate' is unswitched in 'loop'.
+//
+// Arguments:
+//   loop      - the natural loop
+//   candidate - a BBJ_COND in the loop whose test will be hoisted to
+//               the dispatcher. Assumed to be a valid candidate (its
+//               test is loop-invariant and it dominates every back-edge).
+//
+// Return Value:
+//   A non-negative impact score. Larger means more code (weighted by
+//   block execution count) will become dead in exactly one of the two
+//   clones. This is the post-cleanup savings: blocks unique to the
+//   fast-reach set are dead in the slow clone, and vice versa.
+//
+// Notes:
+//   Used by optFindUnswitchCandidate to choose between multiple valid
+//   candidates when JitLoopUnswitchPicker selects "highest impact".
+//   The score is computed using the same fast/slow reachability model
+//   as the JitLoopUnswitchingPolicy=1 size heuristic, so it stays
+//   consistent with the cost model.
+//
+weight_t Compiler::optEstimateUnswitchImpact(FlowGraphNaturalLoop* loop, BasicBlock* candidate)
+{
+    BasicBlock* const header      = loop->GetHeader();
+    BasicBlock* const trueTarget  = candidate->GetTrueTarget();
+    BasicBlock* const falseTarget = candidate->GetFalseTarget();
+
+    BitVecTraits traits(compBasicBlockID, this);
+    BitVec       fastReach(BitVecOps::MakeEmpty(&traits));
+    BitVec       slowReach(BitVecOps::MakeEmpty(&traits));
+
+    auto markReachable = [&](BasicBlock* start, BasicBlock* avoidSucc, BitVec& set) {
+        if (!loop->ContainsBlock(start))
+        {
+            return;
+        }
+        ArrayStack<BasicBlock*> stack(getAllocator(CMK_LoopClone));
+        BitVecOps::AddElemD(&traits, set, start->bbID);
+        stack.Push(start);
+        while (!stack.Empty())
+        {
+            BasicBlock* const b = stack.Pop();
+            b->VisitRegularSuccs(this, [&](BasicBlock* succ) {
+                if (!loop->ContainsBlock(succ))
+                {
+                    return BasicBlockVisit::Continue;
+                }
+                if ((b == candidate) && (succ == avoidSucc))
+                {
+                    return BasicBlockVisit::Continue;
+                }
+                if (BitVecOps::TryAddElemD(&traits, set, succ->bbID))
+                {
+                    stack.Push(succ);
+                }
+                return BasicBlockVisit::Continue;
+            });
+        }
+    };
+
+    markReachable(header, falseTarget, fastReach);
+    markReachable(header, trueTarget, slowReach);
+
+    weight_t impact = 0;
+    loop->VisitLoopBlocks([&](BasicBlock* b) {
+        if (b == candidate)
+        {
+            return BasicBlockVisit::Continue;
+        }
+
+        const bool inFast = BitVecOps::IsMember(&traits, fastReach, b->bbID);
+        const bool inSlow = BitVecOps::IsMember(&traits, slowReach, b->bbID);
+
+        // Only blocks unique to one clone contribute to the dead-code
+        // savings -- they survive in one copy and are eliminated by
+        // unreachable-cleanup in the other.
+        if (inFast == inSlow)
+        {
+            return BasicBlockVisit::Continue;
+        }
+
+        unsigned bn = 0;
+        auto     cb = [&bn](GenTree* tree) -> unsigned {
+            bn++;
+            return 1;
+        };
+        (void)b->ComplexityExceeds(this, UINT_MAX, cb);
+
+        // Weight by block execution count so blocks gated by an inner
+        // variant condition (lower bbWeight) count less than blocks
+        // executed on every iteration.
+        impact += (weight_t)bn * b->bbWeight;
+        return BasicBlockVisit::Continue;
+    });
+
+    return impact;
+}
+
+//------------------------------------------------------------------------
 // optFindUnswitchCandidate: Find the most-dominating loop-invariant
 //   BBJ_COND inside 'loop' that dominates every back-edge source.
 //
@@ -2360,6 +2696,12 @@ BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
     }
 
     ArrayStack<BasicBlock*> candidates(getAllocator(CMK_LoopClone));
+    bool                    sawLooseOnly             = false;
+    bool                    sawLooseOnlyNonNull      = false;
+    bool                    sawArrLenInCond          = false;
+    bool                    sawInvLoadOnly           = false;
+    bool                    sawInvLoadOnlyNonFault   = false;
+    bool                    sawInvLoadInCond         = false;
 
     loop->VisitLoopBlocks([&](BasicBlock* block) {
         if (!block->KindIs(BBJ_COND))
@@ -2373,8 +2715,29 @@ BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
             return BasicBlockVisit::Continue;
         }
 
-        GenTree* cond = lastStmt->GetRootNode()->gtGetOp1();
-        if (!optTreeIsStructurallyLoopInvariant(loop, cond))
+        GenTree* cond   = lastStmt->GetRootNode()->gtGetOp1();
+        bool     strict = optTreeIsStructurallyLoopInvariant(loop, cond);
+
+        // Also evaluate the relaxed checks for upside instrumentation.
+        bool loose        = strict || optTreeIsLooseLoopInvariant(loop, cond, /* requireArrayNonNull */ false);
+        bool looseNonNull = strict || optTreeIsLooseLoopInvariant(loop, cond, /* requireArrayNonNull */ true);
+        bool invLoad      = strict ||
+                       optTreeIsLooseLoopInvariantWithInvariantLoad(loop, cond, /* requireNonFaulting */ false);
+        bool invLoadNF = strict ||
+                         optTreeIsLooseLoopInvariantWithInvariantLoad(loop, cond, /* requireNonFaulting */ true);
+
+        // Pure diagnostic: does the cond mention an array length or
+        // invariant load at all?
+        if (!sawArrLenInCond && optTreeContainsArrLen(cond))
+        {
+            sawArrLenInCond = true;
+        }
+        if (!sawInvLoadInCond && optTreeContainsInvariantLoad(cond))
+        {
+            sawInvLoadInCond = true;
+        }
+
+        if (!strict && !loose && !looseNonNull && !invLoad && !invLoadNF)
         {
             return BasicBlockVisit::Continue;
         }
@@ -2388,20 +2751,68 @@ BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
             }
         }
 
-        candidates.Push(block);
+        if (strict)
+        {
+            candidates.Push(block);
+        }
+        else
+        {
+            if (loose)
+            {
+                sawLooseOnly = true;
+            }
+            if (looseNonNull)
+            {
+                sawLooseOnlyNonNull = true;
+            }
+            if (invLoad)
+            {
+                sawInvLoadOnly = true;
+            }
+            if (invLoadNF)
+            {
+                sawInvLoadOnlyNonFault = true;
+            }
+        }
         return BasicBlockVisit::Continue;
     });
 
+    if (sawArrLenInCond)
+    {
+        Metrics.LoopsCondHasArrLenAny++;
+    }
+    if (sawInvLoadInCond)
+    {
+        Metrics.LoopsCondHasInvariantLoadAny++;
+    }
+
     if (candidates.Empty())
     {
+        if (sawLooseOnly)
+        {
+            Metrics.LoopsCondCouldBeArrLen++;
+        }
+        if (sawLooseOnlyNonNull)
+        {
+            Metrics.LoopsCondCouldBeArrLenNonNull++;
+        }
+        if (sawInvLoadOnly)
+        {
+            Metrics.LoopsCondCouldBeInvariantLoad++;
+        }
+        if (sawInvLoadOnlyNonFault)
+        {
+            Metrics.LoopsCondCouldBeInvariantLoadNonFault++;
+        }
         return nullptr;
     }
 
-    // Among the candidates, pick the single one that dominates every other
+    // Among the candidates, find the one that dominates every other
     // candidate -- i.e., the candidate nearest the loop header on the dom
     // chain. This element is unique: every candidate dominates every
     // back-edge source, so for any back-edge source S all candidates are
     // ancestors of S in the dom tree and therefore pairwise comparable.
+    BasicBlock* topmost = nullptr;
     for (int i = 0; i < candidates.Height(); i++)
     {
         BasicBlock* b         = candidates.Bottom(i);
@@ -2420,13 +2831,152 @@ BasicBlock* Compiler::optFindUnswitchCandidate(FlowGraphNaturalLoop* loop)
         }
         if (isMostDom)
         {
-            return b;
+            topmost = b;
+            break;
         }
     }
 
     // Defensive: should not happen by the argument above, but if some
     // assumption is violated we'd rather skip than crash.
-    return nullptr;
+    if (topmost == nullptr)
+    {
+        return nullptr;
+    }
+
+    if (candidates.Height() > 1)
+    {
+        // Multiple invariant candidates. Compute a "highest expected impact"
+        // pick (weighted dead-code per clone) for diagnostics, and optionally
+        // use it as the selection.
+        Metrics.LoopsWithMultipleUnswitchCandidates++;
+    }
+
+    // Detect short-circuit-chain adjacency: two candidates A, B with A
+    // strictly dominating B and B reachable from A by following exactly
+    // one of A's successor edges (no intervening block in the loop).
+    // Such pairs almost certainly come from C# `&&`/`||` lowering and
+    // are eligible for combined-dispatcher unswitching (one dispatcher
+    // testing the conjunction/disjunction, still only 2 clones).
+    int  adjacentPairs = 0;
+    int  andPairs      = 0;
+    int  orPairs       = 0;
+    for (int i = 0; i < candidates.Height(); i++)
+    {
+        BasicBlock* const a = candidates.Bottom(i);
+        for (int j = 0; j < candidates.Height(); j++)
+        {
+            if (i == j)
+            {
+                continue;
+            }
+            BasicBlock* const b = candidates.Bottom(j);
+            if (!m_domTree->Dominates(a, b) || (a == b))
+            {
+                continue;
+            }
+            // a strictly dominates b. AND-shape: a.trueTarget == b
+            // (entering the true arm of a leads directly to another
+            // invariant cond). OR-shape: a.falseTarget == b.
+            const bool andShape = (a->GetTrueTarget() == b);
+            const bool orShape  = (a->GetFalseTarget() == b);
+            if (andShape || orShape)
+            {
+                adjacentPairs++;
+                if (andShape)
+                {
+                    andPairs++;
+                }
+                if (orShape)
+                {
+                    orPairs++;
+                }
+            }
+        }
+    }
+
+    if (adjacentPairs > 0)
+    {
+        Metrics.LoopsMultiCandAdjacent++;
+        Metrics.LoopsMultiCandAdjacentPairs += adjacentPairs;
+        if (andPairs > 0)
+        {
+            Metrics.LoopsMultiCandAdjacentAnd++;
+        }
+        if (orPairs > 0)
+        {
+            Metrics.LoopsMultiCandAdjacentOr++;
+        }
+    }
+
+    BasicBlock* best        = topmost;
+    weight_t    bestImpact  = optEstimateUnswitchImpact(loop, topmost);
+    for (int i = 0; i < candidates.Height(); i++)
+    {
+        BasicBlock* const c = candidates.Bottom(i);
+        if (c == topmost)
+        {
+            continue;
+        }
+        const weight_t score = optEstimateUnswitchImpact(loop, c);
+        // Strictly greater so we prefer the topmost-dom on ties for stability.
+        if (score > bestImpact)
+        {
+            best       = c;
+            bestImpact = score;
+        }
+    }
+
+    const bool betterExists = (best != topmost);
+    if (betterExists)
+    {
+        Metrics.LoopsBetterUnswitchCandidateExists++;
+    }
+
+    BasicBlock* const picked = (JitConfig.JitLoopUnswitchPicker() != 0) ? best : topmost;
+
+    // Branch-skew bucket for the picked cond. Uses the true edge's likelihood
+    // and takes max(p, 1-p) so the skew is direction-independent. Also tracks
+    // whether the likelihood was derived from real profile data (non-heuristic).
+    {
+        FlowEdge* const trueEdge  = picked->GetTrueEdge();
+        FlowEdge* const falseEdge = picked->GetFalseEdge();
+        const weight_t  pTrue     = trueEdge->getLikelihood();
+        const weight_t  maxP      = max(pTrue, 1.0 - pTrue);
+        if (maxP <= 0.6)
+        {
+            Metrics.LoopsUnswitchCondSkewBalanced++;
+        }
+        else if (maxP <= 0.8)
+        {
+            Metrics.LoopsUnswitchCondSkewMild++;
+        }
+        else if (maxP <= 0.95)
+        {
+            Metrics.LoopsUnswitchCondSkewModerate++;
+        }
+        else
+        {
+            Metrics.LoopsUnswitchCondSkewExtreme++;
+        }
+        if (!trueEdge->isHeuristicBased() && !falseEdge->isHeuristicBased())
+        {
+            Metrics.LoopsUnswitchCondFromProfile++;
+        }
+    }
+
+    if (JitConfig.JitLoopUnswitchPicker() != 0)
+    {
+        if (betterExists)
+        {
+            Metrics.LoopsUnswitchPickedDifferent++;
+            JITDUMP("Unswitch: " FMT_LP " picker switched from " FMT_BB " (topmost) to " FMT_BB
+                    " (impact %.2f)\n",
+                    loop->GetIndex(), topmost->bbNum, best->bbNum, bestImpact);
+        }
+        return best;
+    }
+
+    return topmost;
 }
 
 //------------------------------------------------------------------------
@@ -2483,19 +3033,85 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
         return false;
     }
 
-    // Reuse the cloning size cap as a safety net.
-    const int sizeLimit = JitConfig.JitCloneLoopsSizeLimit();
-    if (sizeLimit >= 0)
+    // Branch-skew gate. A loop-invariant BBJ_COND whose likelihood is heavily
+    // biased one way produces little benefit from unswitching: the BPU
+    // already predicts the in-loop branch correctly almost every iteration,
+    // and the rarely-taken clone becomes I-cache pressure. Reject above the
+    // configured threshold. Only consulted when JitLoopUnswitchingPolicy != 0.
+    if (JitConfig.JitLoopUnswitchingPolicy() != 0)
     {
-        auto countNode = [](GenTree* tree) -> unsigned {
+        const int skewGate = JitConfig.JitLoopUnswitchSkewGate();
+        if (skewGate != 0)
+        {
+            const weight_t pTrue = invariantCondBlock->GetTrueEdge()->getLikelihood();
+            const weight_t maxP  = max(pTrue, 1.0 - pTrue);
+
+            double threshold = 1.0; // off
+            switch (skewGate)
+            {
+                case 1:
+                    threshold = 0.95;
+                    break;
+                case 2:
+                    threshold = 0.80;
+                    break;
+                case 3:
+                    threshold = 0.60;
+                    break;
+                default:
+                    break;
+            }
+            if (maxP > threshold)
+            {
+                JITDUMP("Unswitch: " FMT_LP " rejected by skew gate (maxP=%.3f > %.2f)\n", loop->GetIndex(), maxP,
+                        threshold);
+                Metrics.LoopsRejectedForUnswitchingSkew++;
+                return false;
+            }
+        }
+    }
+
+    // Always count the whole loop size (cheap) and bucket it for diagnostics,
+    // then apply the cloning size cap as a safety net.
+    unsigned loopSize = 0;
+    {
+        auto countNode = [&loopSize](GenTree* tree) -> unsigned {
+            loopSize++;
             return 1;
         };
-        if (optLoopComplexityExceeds(loop, (unsigned)sizeLimit, countNode))
-        {
-            JITDUMP("Unswitch: " FMT_LP " exceeds size limit %d\n", loop->GetIndex(), sizeLimit);
-            Metrics.LoopsRejectedForUnswitchingTooLarge++;
-            return false;
-        }
+        loop->VisitLoopBlocks([&](BasicBlock* b) {
+            (void)b->ComplexityExceeds(this, UINT_MAX, countNode);
+            return BasicBlockVisit::Continue;
+        });
+    }
+
+    if (loopSize <= 50)
+    {
+        Metrics.LoopsUnswitchLoopSize0to50++;
+    }
+    else if (loopSize <= 100)
+    {
+        Metrics.LoopsUnswitchLoopSize51to100++;
+    }
+    else if (loopSize <= 200)
+    {
+        Metrics.LoopsUnswitchLoopSize101to200++;
+    }
+    else if (loopSize <= 400)
+    {
+        Metrics.LoopsUnswitchLoopSize201to400++;
+    }
+    else
+    {
+        Metrics.LoopsUnswitchLoopSizeOver400++;
+    }
+
+    const int sizeLimit = JitConfig.JitCloneLoopsSizeLimit();
+    if ((sizeLimit >= 0) && (loopSize > (unsigned)sizeLimit))
+    {
+        JITDUMP("Unswitch: " FMT_LP " exceeds size limit %d\n", loop->GetIndex(), sizeLimit);
+        Metrics.LoopsRejectedForUnswitchingTooLarge++;
+        return false;
     }
 
     // Profitability heuristic (gated by JitLoopUnswitchingPolicy).
@@ -2630,12 +3246,60 @@ bool Compiler::optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invari
         // migrates from the cond block to the dispatcher (net zero),
         // pruned cond shells are ~0 nodes each, so the only IR growth
         // comes from duplicating the shared body blocks.
-        const int estGrowth         = (int)sharedBody;
-        const int maxGrowth         = JitConfig.JitLoopUnswitchingMaxSizeGrowth();
+        const int estGrowth = (int)sharedBody;
+
+        // Effective max growth = base + skew-bucket bonus. Conds that are
+        // more balanced (less skewed) benefit more per duplicated node, so
+        // they earn a higher growth allowance. Extreme-skew conds get the
+        // base allowance only (default 0 = no growth).
+        const int      baseMaxGrowth = JitConfig.JitLoopUnswitchingMaxSizeGrowth();
+        const weight_t pTrueCost     = invariantCondBlock->GetTrueEdge()->getLikelihood();
+        const weight_t maxPCost      = max(pTrueCost, 1.0 - pTrueCost);
+        int            skewBonus     = 0;
+        if (maxPCost <= 0.6)
+        {
+            skewBonus = JitConfig.JitLoopUnswitchSkewGrowthBalanced();
+        }
+        else if (maxPCost <= 0.8)
+        {
+            skewBonus = JitConfig.JitLoopUnswitchSkewGrowthMild();
+        }
+        else if (maxPCost <= 0.95)
+        {
+            skewBonus = JitConfig.JitLoopUnswitchSkewGrowthModerate();
+        }
+        const int maxGrowth = baseMaxGrowth + skewBonus;
 
         JITDUMP("Unswitch: " FMT_LP " body node counts: cond=%u fastOnly=%u slowOnly=%u shared=%u; estGrowth=%d "
-                "(max=%d)\n",
-                loop->GetIndex(), condNodes, fastOnly, slowOnly, sharedBody, estGrowth, maxGrowth);
+                "(maxBase=%d skewBonus=%d max=%d maxP=%.3f)\n",
+                loop->GetIndex(), condNodes, fastOnly, slowOnly, sharedBody, estGrowth, baseMaxGrowth, skewBonus,
+                maxGrowth, maxPCost);
+
+        // Bucket the shared body size for diagnostics, regardless of gate outcome.
+        if (sharedBody == 0)
+        {
+            Metrics.LoopsUnswitchSharedBody0++;
+        }
+        else if (sharedBody <= 3)
+        {
+            Metrics.LoopsUnswitchSharedBody1to3++;
+        }
+        else if (sharedBody <= 10)
+        {
+            Metrics.LoopsUnswitchSharedBody4to10++;
+        }
+        else if (sharedBody <= 30)
+        {
+            Metrics.LoopsUnswitchSharedBody11to30++;
+        }
+        else if (sharedBody <= 100)
+        {
+            Metrics.LoopsUnswitchSharedBody31to100++;
+        }
+        else
+        {
+            Metrics.LoopsUnswitchSharedBodyOver100++;
+        }
 
         if (estGrowth > maxGrowth)
         {
@@ -2769,14 +3433,19 @@ bool Compiler::optUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariant
 
         if (enclosingRegion != 0)
         {
+            // Mirror of the optCloneLoop fix above: when the lex-end of an enclosing
+            // region (`beforeSlowPreheader`, possibly redirected by fgFindInsertPoint)
+            // differs from the loop's lex bottom, we must extend any region ending at
+            // `beforeSlowPreheader` so DuplicateWithEH can in turn extend it across the
+            // cloned slow-path blocks.
             EHblkDsc* const ebd = ehGetDsc(enclosingRegion - 1);
             for (EHblkDsc* const HBtab : EHClauses(this, ebd))
             {
-                if (HBtab->ebdTryLast == bottom)
+                if (HBtab->ebdTryLast == beforeSlowPreheader)
                 {
                     fgSetTryEnd(HBtab, slowPreheader);
                 }
-                if (HBtab->ebdHndLast == bottom)
+                if (HBtab->ebdHndLast == beforeSlowPreheader)
                 {
                     fgSetHndEnd(HBtab, slowPreheader);
                 }

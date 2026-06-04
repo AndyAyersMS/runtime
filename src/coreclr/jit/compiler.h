@@ -9229,7 +9229,14 @@ public:
 
     bool optIsStackLocalInvariant(FlowGraphNaturalLoop* loop, unsigned lclNum);
     bool optTreeIsStructurallyLoopInvariant(FlowGraphNaturalLoop* loop, GenTree* tree);
+    bool optTreeIsLooseLoopInvariant(FlowGraphNaturalLoop* loop, GenTree* tree, bool requireArrayNonNull);
+    bool optTreeIsLooseLoopInvariantWithInvariantLoad(FlowGraphNaturalLoop* loop,
+                                                      GenTree*              tree,
+                                                      bool                  requireNonFaulting);
+    static bool optTreeContainsArrLen(GenTree* tree);
+    static bool optTreeContainsInvariantLoad(GenTree* tree);
     BasicBlock* optFindUnswitchCandidate(FlowGraphNaturalLoop* loop);
+    weight_t    optEstimateUnswitchImpact(FlowGraphNaturalLoop* loop, BasicBlock* candidate);
     bool optCanUnswitchLoop(FlowGraphNaturalLoop* loop, BasicBlock* invariantCondBlock);
     static fgWalkPreFn optCheckLocalStructurallyInvariantVisitor;
     bool optCloningHeuristic(FlowGraphNaturalLoop* loop, LoopCloneContext* context);
