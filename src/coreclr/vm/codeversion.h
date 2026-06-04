@@ -82,6 +82,11 @@ public:
         OptimizationTierOptimized, // may do less optimizations than tier 1
         OptimizationTier0Instrumented,
         OptimizationTier1Instrumented,
+        // Tier1OSR variant compiled with BBINSTR. Used as Stage B of a
+        // two-stage OSR (Tier0 -> Tier0+Instr-OSR -> Tier1-OSR) so that
+        // PGO data for a hot one-shot loop can be collected from within
+        // the OSR'd execution before the final optimized OSR compile.
+        OptimizationTier1OSRInstrumented,
         OptimizationTierUnknown = 0xFFFFFFFF
     };
 #ifdef FEATURE_TIERED_COMPILATION

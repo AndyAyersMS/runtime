@@ -1079,6 +1079,18 @@ CORJIT_FLAGS TieredCompilationManager::GetJitFlags(PrepareCodeConfig *config)
         Optimized:
             break;
 
+#ifdef FEATURE_ON_STACK_REPLACEMENT
+        case NativeCodeVersion::OptimizationTier1OSRInstrumented:
+            // Stage B of two-stage OSR: an OSR body compiled with BBINSTR
+            // and retaining patchpoints (so Stage C can re-OSR with PGO).
+            // It's structurally Tier0 + Instr + OSR.
+            _ASSERT(g_pConfig->TieredCompilation_QuickJit());
+            flags.Set(CORJIT_FLAGS::CORJIT_FLAG_OSR);
+            flags.Set(CORJIT_FLAGS::CORJIT_FLAG_BBINSTR);
+            flags.Set(CORJIT_FLAGS::CORJIT_FLAG_TIER0);
+            break;
+#endif
+
         default:
             UNREACHABLE();
     }

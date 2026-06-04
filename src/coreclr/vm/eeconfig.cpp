@@ -206,6 +206,7 @@ HRESULT EEConfig::Init()
     fTieredPGO = false;
     tieredPGO_InstrumentOnlyHotCode = false;
     tieredPGO_ScalableCountThreshold = 13;
+    fTC_OSRPgoStaging = false;
 #endif
 
 #if defined(FEATURE_READYTORUN)
@@ -775,6 +776,10 @@ HRESULT EEConfig::sync()
         {
             fTieredPGO = false;
         }
+
+        // Two-stage OSR is gated on TieredPGO being enabled.
+        fTC_OSRPgoStaging = fTieredPGO &&
+            (CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_TC_OSRPgoStaging) != 0);
     #endif
 
 #ifdef FEATURE_PGO
