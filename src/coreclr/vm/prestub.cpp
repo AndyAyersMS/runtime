@@ -1235,6 +1235,11 @@ PrepareCodeConfig::JitOptimizationTier PrepareCodeConfig::GetJitOptimizationTier
                 case NativeCodeVersion::OptimizationTier1Instrumented:
                     return JitOptimizationTier::InstrumentedTierOptimized;
 
+                case NativeCodeVersion::OptimizationTier1OSRInstrumented:
+                    // No dedicated JitOptimizationTier value for the instrumented
+                    // OSR stage; reuse OptimizedTier1OSR for ETW/event purposes.
+                    return JitOptimizationTier::OptimizedTier1OSR;
+
                 default:
                     UNREACHABLE();
             }

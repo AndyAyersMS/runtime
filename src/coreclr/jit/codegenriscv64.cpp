@@ -6442,7 +6442,8 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
     // For OSR, we must also adjust the SP to remove the Tier0 frame.
     if (m_compiler->opts.IsOSR())
     {
-        const int tier0FrameSize = m_compiler->info.compPatchpointInfo->TotalFrameSize();
+        const int tier0FrameSize = m_compiler->info.compPatchpointInfo->TotalFrameSize() +
+                                   m_compiler->info.compPatchpointInfo->AncestorFrameSize();
         JITDUMP("Extra SP adjust for OSR to pop off Tier0 frame: %d bytes\n", tier0FrameSize);
 
         if (emitter::isValidUimm11(tier0FrameSize))

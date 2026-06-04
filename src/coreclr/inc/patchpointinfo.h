@@ -42,6 +42,7 @@ struct PatchpointInfo
         m_calleeSaveRegisters               = 0;
         m_tier0Version                      = 0;
         m_totalFrameSize                    = totalFrameSize;
+        m_ancestorFrameSize                 = 0;
         m_numberOfLocals                    = localCount;
         m_genericContextArgOffset           = -1;
         m_keptAliveThisOffset               = -1;
@@ -57,6 +58,7 @@ struct PatchpointInfo
     {
         m_calleeSaveRegisters = original->m_calleeSaveRegisters;
         m_tier0Version = original->m_tier0Version;
+        m_ancestorFrameSize = original->m_ancestorFrameSize;
         m_genericContextArgOffset = original->m_genericContextArgOffset;
         m_keptAliveThisOffset = original->m_keptAliveThisOffset;
         m_securityCookieOffset = original->m_securityCookieOffset;
@@ -81,6 +83,22 @@ struct PatchpointInfo
     int32_t TotalFrameSize() const
     {
         return m_totalFrameSize;
+    }
+
+    // For staged OSR: cumulative size of any *ancestor* source frames
+    // still on the stack below this method's frame. The next-stage OSR's
+    // epilog must pop this additional amount after popping its own
+    // source frame so the stack is fully unwound back to the bottom of
+    // the original Tier0 method's frame.
+    //
+    int32_t AncestorFrameSize() const
+    {
+        return m_ancestorFrameSize;
+    }
+
+    void SetAncestorFrameSize(int32_t v)
+    {
+        m_ancestorFrameSize = v;
     }
 
     // Number of locals in the original method (including special locals)
@@ -252,6 +270,7 @@ private:
     PCODE    m_tier0Version;
     uint32_t m_numberOfLocals;
     int32_t      m_totalFrameSize;
+    int32_t      m_ancestorFrameSize;
     int32_t      m_genericContextArgOffset;
     int32_t      m_keptAliveThisOffset;
     int32_t      m_securityCookieOffset;

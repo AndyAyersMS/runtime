@@ -5656,8 +5656,18 @@ void Compiler::generatePatchpointInfo()
 
     patchpointInfo->Initialize(info.compLocalsCount, totalFrameSize);
 
-    JITDUMP("--OSR--- Total Frame Size %d, local offset adjust is %d\n", patchpointInfo->TotalFrameSize(),
-            offsetAdjust);
+    // If this method is itself an OSR variant (staged OSR), record the
+    // cumulative size of all source frames still on the stack below us.
+    // A future OSR transition out of this method must pop those too.
+    //
+    if (opts.IsOSR())
+    {
+        PatchpointInfo* const sourcePpi = info.compPatchpointInfo;
+        patchpointInfo->SetAncestorFrameSize(sourcePpi->TotalFrameSize() + sourcePpi->AncestorFrameSize());
+    }
+
+    JITDUMP("--OSR--- Total Frame Size %d (ancestor %d), local offset adjust is %d\n",
+            patchpointInfo->TotalFrameSize(), patchpointInfo->AncestorFrameSize(), offsetAdjust);
 
     // We record offsets for all the "locals" here. Could restrict
     // this to just the IL locals with some extra logic, and save a bit of space,

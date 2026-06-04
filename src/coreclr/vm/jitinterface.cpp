@@ -15106,6 +15106,7 @@ CORINFO_METHOD_HANDLE CEEJitInfo::getAsyncResumptionStub(void** entryPoint)
     case NativeCodeVersion::OptimizationTierOptimized: optimizationTierName = "Optimized"; break;
     case NativeCodeVersion::OptimizationTier0Instrumented: optimizationTierName = "Tier0Instrumented"; break;
     case NativeCodeVersion::OptimizationTier1Instrumented: optimizationTierName = "Tier1Instrumented"; break;
+    case NativeCodeVersion::OptimizationTier1OSRInstrumented: optimizationTierName = "Tier1OSRInstrumented"; break;
     default: break;
     }
 #endif // FEATURE_TIERED_COMPILATION

@@ -10512,7 +10512,7 @@ void CodeGen::genFnEpilog(BasicBlock* block)
             regMaskTP const tier0IntCalleeSaves        = tier0CalleeSaves & RBM_OSR_INT_CALLEE_SAVED;
             regMaskTP const osrIntCalleeSaves          = regSet.rsGetModifiedOsrIntCalleeSavedRegsMask();
             regMaskTP const allIntCalleeSaves          = osrIntCalleeSaves | tier0IntCalleeSaves;
-            unsigned const  tier0FrameSize             = patchpointInfo->TotalFrameSize() + REGSIZE_BYTES;
+            unsigned const  tier0FrameSize             = patchpointInfo->TotalFrameSize() + REGSIZE_BYTES + patchpointInfo->AncestorFrameSize();
             unsigned const  tier0IntCalleeSaveUsedSize = genCountBits(allIntCalleeSaves) * REGSIZE_BYTES;
             unsigned const  osrCalleeSaveSize          = m_compiler->compCalleeRegsPushed * REGSIZE_BYTES;
             unsigned const  osrFramePointerSize        = isFramePointerUsed() ? REGSIZE_BYTES : 0;

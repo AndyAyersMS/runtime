@@ -1252,7 +1252,8 @@ HCIMPLEND
 //
 // Returns the address of the jitted code.
 // Returns NULL if osr method can't be created.
-static PCODE JitPatchpointWorker(MethodDesc* pMD, const EECodeInfo& codeInfo, int ilOffset)
+static PCODE JitPatchpointWorker(MethodDesc* pMD, const EECodeInfo& codeInfo, int ilOffset,
+                                 NativeCodeVersion::OptimizationTier tier)
 {
     STANDARD_VM_CONTRACT;
     PCODE osrVariant = (PCODE)NULL;
@@ -1277,7 +1278,7 @@ static PCODE JitPatchpointWorker(MethodDesc* pMD, const EECodeInfo& codeInfo, in
 
         NativeCodeVersion currentNativeCodeVersion = codeInfo.GetNativeCodeVersion();
         ILCodeVersion ilCodeVersion = currentNativeCodeVersion.GetILCodeVersion();
-        HRESULT hr = ilCodeVersion.AddNativeCodeVersion(pMD, NativeCodeVersion::OptimizationTier1OSR, &osrNativeCodeVersion, patchpointInfo, ilOffset);
+        HRESULT hr = ilCodeVersion.AddNativeCodeVersion(pMD, tier, &osrNativeCodeVersion, patchpointInfo, ilOffset);
         if (FAILED(hr))
         {
             // Unexpected, but not fatal
@@ -1287,7 +1288,8 @@ static PCODE JitPatchpointWorker(MethodDesc* pMD, const EECodeInfo& codeInfo, in
     }
 
     // Invoke the jit to compile the OSR version
-    LOG((LF_TIEREDCOMPILATION, LL_INFO10, "JitPatchpointWorker: creating OSR version of Method=0x%pM (%s::%s) at offset %d\n",
+    LOG((LF_TIEREDCOMPILATION, LL_INFO10, "JitPatchpointWorker: creating %s OSR version of Method=0x%pM (%s::%s) at offset %d\n",
+        tier == NativeCodeVersion::OptimizationTier1OSRInstrumented ? "instrumented" : "optimized",
         pMD, pMD->m_pszDebugClassName, pMD->m_pszDebugMethodName, ilOffset));
 
     PrepareCodeConfigBuffer configBuffer(osrNativeCodeVersion);
@@ -1295,6 +1297,40 @@ static PCODE JitPatchpointWorker(MethodDesc* pMD, const EECodeInfo& codeInfo, in
     osrVariant = pMD->PrepareCode(config);
 
     return osrVariant;
+}
+
+// Pick the right tier for the next-stage OSR compile.
+//
+// When OSR PGO staging is on:
+//   * If the current code is uninstrumented Tier0 -> Stage B
+//     (OptimizationTier1OSRInstrumented).
+//   * If the current code is Stage B (OptimizationTier1OSRInstrumented) -> Stage C
+//     (OptimizationTier1OSR, the existing optimized OSR).
+//   * Otherwise (already Tier1/Optimized, or no PGO) -> existing
+//     OptimizationTier1OSR.
+//
+static NativeCodeVersion::OptimizationTier ChooseOSRTargetTier(const EECodeInfo& codeInfo)
+{
+#ifdef FEATURE_PGO
+    if (g_pConfig->TC_OSRPgoStaging())
+    {
+        NativeCodeVersion::OptimizationTier currentTier =
+            codeInfo.GetNativeCodeVersion().GetOptimizationTier();
+        switch (currentTier)
+        {
+            case NativeCodeVersion::OptimizationTier0:
+                // Stage A -> Stage B
+                return NativeCodeVersion::OptimizationTier1OSRInstrumented;
+            case NativeCodeVersion::OptimizationTier1OSRInstrumented:
+                // Stage B -> Stage C (final optimized OSR using the PGO data
+                // we just collected)
+                return NativeCodeVersion::OptimizationTier1OSR;
+            default:
+                break;
+        }
+    }
+#endif // FEATURE_PGO
+    return NativeCodeVersion::OptimizationTier1OSR;
 }
 
 static PCODE PatchpointOptimizationPolicy(TransitionBlock* pTransitionBlock, int* counter, int ilOffset, PerPatchpointInfo * ppInfo, const EECodeInfo& codeInfo, bool *pIsNewMethod)
@@ -1456,7 +1492,7 @@ static PCODE PatchpointOptimizationPolicy(TransitionBlock* pTransitionBlock, int
             LOG((LF_TIEREDCOMPILATION, LL_INFO10, "PatchpointOptimizationPolicy: patchpoint [%d] (0x%p) TRIGGER at count %d\n", ppId, ip, hitCount));
 
             // Invoke the helper to build the OSR method
-            osrMethodCode = JitPatchpointWorker(pMD, codeInfo, ilOffset);
+            osrMethodCode = JitPatchpointWorker(pMD, codeInfo, ilOffset, ChooseOSRTargetTier(codeInfo));
 
             // If that failed, mark the patchpoint as invalid.
             if (osrMethodCode == (PCODE)NULL)
@@ -1565,7 +1601,7 @@ static PCODE PatchpointRequiredPolicy(TransitionBlock* pTransitionBlock, int* co
             // (but consider: throw path in method with try/catch, OSR method will contain more than just the throw?)
             //
             LOG((LF_TIEREDCOMPILATION, LL_INFO10, "PatchpointRequiredPolicy: patchpoint [%d] (0x%p) TRIGGER\n", ppId, ip));
-            PCODE newMethodCode = JitPatchpointWorker(pMD, codeInfo, ilOffset);
+            PCODE newMethodCode = JitPatchpointWorker(pMD, codeInfo, ilOffset, ChooseOSRTargetTier(codeInfo));
 
             // If that failed, mark the patchpoint as invalid.
             // This is fatal, for partial compilation patchpoints
