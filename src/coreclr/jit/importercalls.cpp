@@ -7319,12 +7319,19 @@ void Compiler::pickGDV(GenTreeCall*           call,
     //
     PgoInfo pgoInfo(call->gtInlineContext);
 
-    // For context-sensitive class histograms, filter by the method whose IL
-    // literally contains this call (the immediate inline parent). PGO
-    // captured the caller as the standalone-compiled MethodDesc that hosted
-    // the call site at runtime, which corresponds to gtInlineContext->GetCallee().
+    // For context-sensitive histograms, filter by the method that is the
+    // *immediate caller* of the inlinee whose body contains this call. PGO
+    // records each entry's caller as the standalone-JIT'd MethodDesc that
+    // held the call site at instrumentation time (resolved from the captured
+    // return address). When M is inlined into A, the inline-tree frame for
+    // "A inlines M" has GetCallee()==M; the parent frame's GetCallee()==A is
+    // exactly the historical caller we want to match. When the call lives in
+    // the root method (or M is JIT'd standalone), GetParent() is nullptr and
+    // we pass 0, which `getLikelyClasses` interprets as "no filter" and
+    // returns the unfiltered aggregate.
     //
-    INT_PTR callerMethodHandle = (INT_PTR)(call->gtInlineContext->GetCallee());
+    InlineContext* parentCtx       = call->gtInlineContext->GetParent();
+    INT_PTR callerMethodHandle = parentCtx != nullptr ? (INT_PTR)parentCtx->GetCallee() : 0;
 
     const int               maxLikelyClasses = MAX_GDV_TYPE_CHECKS;
     LikelyClassMethodRecord likelyClasses[maxLikelyClasses];
@@ -9347,8 +9354,10 @@ void Compiler::impTransformDevirtualizedCall(GenTreeCall*            call,
         const int               maxLikelyClasses = 1;
         LikelyClassMethodRecord likelyClasses[maxLikelyClasses];
 
+        // Cross-check uses the aggregate (no caller filter) since it's just
+        // verifying that PGO agrees with the devirtualized class globally.
         UINT32 numberOfClasses = getLikelyClasses(likelyClasses, maxLikelyClasses, fgPgoSchema, fgPgoSchemaCount,
-                                                  fgPgoData, dcInfo->ilOffset, (INT_PTR)info.compMethodHnd);
+                                                  fgPgoData, dcInfo->ilOffset, /* callerMethodHandle */ 0);
         UINT32 likelihood      = likelyClasses[0].likelihood;
 
         CORINFO_CLASS_HANDLE likelyClass = (CORINFO_CLASS_HANDLE)likelyClasses[0].handle;

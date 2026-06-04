@@ -294,74 +294,94 @@ static unsigned getLikelyClassesOrMethods(LikelyClassMethodRecord*              
         if (isWithCallerHistogramCount && (schema[i].Count == 1) && ((i + 1) < countSchemaItems) &&
             (schema[i + 1].InstrumentationKind == expectedTableKind))
         {
-            const bool isInt32 = schema[i].InstrumentationKind ==
-                                 ICorJitInfo::PgoInstrumentationKind::HandleHistogramWithCallerIntCount;
-            LikelyClassMethodHistogram h((INT_PTR*)(pInstrumentationData + schema[i + 1].Offset),
-                                         schema[i + 1].Count, callerMethodHandle, isInt32);
+            // The WithCaller table is always laid out as pointer-sized
+            // (Handle, Caller) pairs regardless of the counter width: see
+            // HandleHistogramWithCaller32/64 in corjit.h, both of which use
+            // void* slots. The 32/64 suffix on the counter kind refers only
+            // to the counter, not the table.
 
-            // Fall through to the common formatting below by reusing the
-            // existing histogram-to-LikelyEntries lowering code.
-            // We do that by jumping into a small inline block to format the
-            // results from h.
+            // Two-attempt loop: first try the requested caller filter; if it
+            // yields no usable samples (either no matching pairs, or every
+            // matching pair has an unknown handle), retry once with the
+            // caller filter dropped. The unfiltered aggregate is exactly what
+            // a non-WithCaller histogram would have produced, so falling back
+            // never degrades behavior versus the pre-context-sensitive PGO.
             //
-            // (Implementation below is duplicated from the non-WithCaller path;
-            //  could be extracted but kept inline for clarity.)
-
-            if (h.countHistogramElements == 0)
+            INT_PTR effectiveCaller = callerMethodHandle;
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                // No matching entries (or no entries at all).
-                return 0;
-            }
+                LikelyClassMethodHistogram h((INT_PTR*)(pInstrumentationData + schema[i + 1].Offset),
+                                             schema[i + 1].Count, effectiveCaller, /* int32Data */ false);
 
-            LikelyClassMethodHistogramEntry sortedEntries[LIKELYCLASS_MAX_DISTINCT];
-            unsigned knownHandles           = 0;
-            bool     containsUnknownHandles = false;
-            for (unsigned m = 0; m < h.countHistogramElements; m++)
-            {
-                LikelyClassMethodHistogramEntry const hist = h.HistogramEntryAt(m);
-                if (!ICorJitInfo::IsUnknownHandle(hist.m_handle))
+                if (h.countHistogramElements == 0)
                 {
-                    sortedEntries[knownHandles++] = hist;
+                    if (effectiveCaller != 0)
+                    {
+                        // Filter eliminated every sample; retry caller-agnostic.
+                        effectiveCaller = 0;
+                        continue;
+                    }
+                    return 0;
                 }
-                else
+
+                LikelyClassMethodHistogramEntry sortedEntries[LIKELYCLASS_MAX_DISTINCT];
+                unsigned knownHandles           = 0;
+                bool     containsUnknownHandles = false;
+                for (unsigned m = 0; m < h.countHistogramElements; m++)
                 {
-                    containsUnknownHandles = true;
+                    LikelyClassMethodHistogramEntry const hist = h.HistogramEntryAt(m);
+                    if (!ICorJitInfo::IsUnknownHandle(hist.m_handle))
+                    {
+                        sortedEntries[knownHandles++] = hist;
+                    }
+                    else
+                    {
+                        containsUnknownHandles = true;
+                    }
                 }
+
+                if (knownHandles == 0)
+                {
+                    if (effectiveCaller != 0)
+                    {
+                        // All filtered samples were unknown; retry caller-agnostic.
+                        effectiveCaller = 0;
+                        continue;
+                    }
+                    return 0;
+                }
+
+                jitstd::sort(sortedEntries, sortedEntries + knownHandles,
+                             [](const LikelyClassMethodHistogramEntry& h1,
+                                const LikelyClassMethodHistogramEntry& h2) -> bool {
+                    return h1.m_count > h2.m_count;
+                });
+
+                const UINT32 numberOfClasses = min(knownHandles, maxLikelyClasses);
+
+                UINT32 totalLikelihood = 0;
+                for (size_t hIdx = 0; hIdx < numberOfClasses; hIdx++)
+                {
+                    LikelyClassMethodHistogramEntry const hc = sortedEntries[hIdx];
+                    pLikelyEntries[hIdx].handle              = hc.m_handle;
+                    pLikelyEntries[hIdx].likelihood          = hc.m_count * 100 / h.m_totalCount;
+                    totalLikelihood += pLikelyEntries[hIdx].likelihood;
+                }
+
+                assert(totalLikelihood <= 100);
+
+                if (!containsUnknownHandles)
+                {
+                    assert(numberOfClasses > 0);
+                    assert(totalLikelihood > 0);
+                    pLikelyEntries[0].likelihood += 100 - totalLikelihood;
+                    assert(pLikelyEntries[0].likelihood <= 100);
+                }
+
+                return numberOfClasses;
             }
 
-            if (knownHandles == 0)
-            {
-                return 0;
-            }
-
-            jitstd::sort(sortedEntries, sortedEntries + knownHandles,
-                         [](const LikelyClassMethodHistogramEntry& h1,
-                            const LikelyClassMethodHistogramEntry& h2) -> bool {
-                return h1.m_count > h2.m_count;
-            });
-
-            const UINT32 numberOfClasses = min(knownHandles, maxLikelyClasses);
-
-            UINT32 totalLikelihood = 0;
-            for (size_t hIdx = 0; hIdx < numberOfClasses; hIdx++)
-            {
-                LikelyClassMethodHistogramEntry const hc = sortedEntries[hIdx];
-                pLikelyEntries[hIdx].handle              = hc.m_handle;
-                pLikelyEntries[hIdx].likelihood          = hc.m_count * 100 / h.m_totalCount;
-                totalLikelihood += pLikelyEntries[hIdx].likelihood;
-            }
-
-            assert(totalLikelihood <= 100);
-
-            if (!containsUnknownHandles)
-            {
-                assert(numberOfClasses > 0);
-                assert(totalLikelihood > 0);
-                pLikelyEntries[0].likelihood += 100 - totalLikelihood;
-                assert(pLikelyEntries[0].likelihood <= 100);
-            }
-
-            return numberOfClasses;
+            return 0;
         }
 
         if (isHistogramCount && (schema[i].Count == 1) && ((i + 1) < countSchemaItems) &&
