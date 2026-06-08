@@ -8717,6 +8717,48 @@ GenTree* Compiler::fgOptimizeBitCast(GenTreeUnOp* bitCast)
         return op1;
     }
 
+#if defined(FEATURE_HW_INTRINSICS) && defined(TARGET_XARCH)
+    // Recognize:
+    //   BITCAST(fp, AND/OR/XOR(BITCAST(int, fp_a), BITCAST(int, fp_b)))
+    // and rewrite to:
+    //   Vector128.<Op>(CreateScalarUnsafe(fp_a), CreateScalarUnsafe(fp_b)).ToScalar()
+    // so the bitwise op happens in xmm via vandp[sd]/vorp[sd]/vxorp[sd] instead of
+    // round-tripping through a GP register with vmovd/vmovq.
+    var_types fpType = bitCast->TypeGet();
+    if (varTypeIsFloating(fpType) && op1->OperIs(GT_AND, GT_OR, GT_XOR) && (genTypeSize(op1) == genTypeSize(bitCast)) &&
+        compOpportunisticallyDependsOn(InstructionSet_X86Base))
+    {
+        GenTree* leftOp  = op1->gtGetOp1();
+        GenTree* rightOp = op1->gtGetOp2();
+
+        if (leftOp->OperIs(GT_BITCAST) && rightOp->OperIs(GT_BITCAST))
+        {
+            GenTree* leftFp  = leftOp->gtGetOp1();
+            GenTree* rightFp = rightOp->gtGetOp1();
+
+            if ((leftFp->TypeGet() == fpType) && (rightFp->TypeGet() == fpType))
+            {
+                GenTree* v1     = gtNewSimdCreateScalarUnsafeNode(TYP_SIMD16, leftFp, fpType, 16);
+                GenTree* v2     = gtNewSimdCreateScalarUnsafeNode(TYP_SIMD16, rightFp, fpType, 16);
+                GenTree* vec    = gtNewSimdBinOpNode(op1->OperGet(), TYP_SIMD16, v1, v2, fpType, 16);
+                GenTree* result = gtNewSimdToScalarNode(fpType, vec, fpType, 16);
+
+                if (fgGlobalMorph)
+                {
+                    result->SetMorphed(this, /* doChildren */ true);
+                }
+
+                DEBUG_DESTROY_NODE(leftOp);
+                DEBUG_DESTROY_NODE(rightOp);
+                DEBUG_DESTROY_NODE(op1);
+                DEBUG_DESTROY_NODE(bitCast);
+
+                return result;
+            }
+        }
+    }
+#endif // FEATURE_HW_INTRINSICS && TARGET_XARCH
+
     return nullptr;
 }
 
