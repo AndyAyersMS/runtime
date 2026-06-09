@@ -189,7 +189,7 @@ void emitter::emitAddressConstant(void* address)
 {
     // Load our module base from __r2r_start, then load our address constant, then sum them.
     // FIXME-WASM: Make this a named constant or a reloc that crossgen2 fills in.
-    emitIns_I(INS_global_get, EA_4BYTE, 1 /* __r2r_start */);
+    emitIns_I(INS_global_get, EA_4BYTE, IMAGE_BASE_GLOBAL /* __r2r_start */);
     emitIns_I(INS_i32_const_address, EA_SET_FLG(EA_PTRSIZE, EA_CNS_RELOC_FLG), (cnsval_ssize_t)address);
     emitIns(INS_i32_add);
 }
@@ -197,7 +197,7 @@ void emitter::emitAddressConstant(void* address)
 void emitter::emitFuncletAddressConstant(cnsval_ssize_t funcletId)
 {
     // Load our table base, then load our funclet pointer offset, then sum them.
-    emitIns_I(INS_global_get, EA_4BYTE, 2 /* __table_start */);
+    emitIns_I(INS_global_get, EA_4BYTE, TABLE_BASE_GLOBAL /* __table_start */);
     emitIns_I(INS_i32_const_funcletptr, EA_PTRSIZE, (cnsval_ssize_t)funcletId);
     emitIns(INS_i32_add);
 }

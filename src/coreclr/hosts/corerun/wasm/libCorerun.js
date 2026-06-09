@@ -234,7 +234,10 @@ function libCoreRunFactory() {
                         rtlRestoreContextTag: wasmExports.__coreclr_wasm_rtlrestorecontext_tag,
                         table: wasmTable,
                         tableBase: new WebAssembly.Global({ value: "i32", mutable: false }, tableStartIndex),
-                        imageBase: new WebAssembly.Global({ value: "i32", mutable: false }, payloadPtr)
+                        imageBase: new WebAssembly.Global({ value: "i32", mutable: false }, payloadPtr),
+                        // Runtime-async continuation return slot. Mutable so callees can store the
+                        // continuation reference; readers pick it up immediately after the call.
+                        asyncContinuation: new WebAssembly.Global({ value: "i32", mutable: true }, 0)
                     }});
             } catch (e) {
                 const errorMessage = e instanceof Error ? e.message : String(e);

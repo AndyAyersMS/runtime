@@ -226,6 +226,8 @@ protected:
     void                       ensureCurrentFuncIsUnwindable();
     void                       genEmitIf(WasmValueType blockType = WasmValueType::Invalid);
     void                       genEmitEndIf();
+    void                       genStoreAsyncContinuationGlobal();
+    void                       genClearAsyncContinuationGlobal();
 #endif
 
     void genEmitStartBlock(BasicBlock* block);

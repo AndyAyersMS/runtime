@@ -256,4 +256,28 @@
 
 // clang-format on
 
+// Wasm global indices. MUST be kept in sync with WasmObjectWriter.cs's
+// public `*GlobalIndex` constants and `_defaultGlobalImports` array; the
+// wasm object writer asserts the indices line up with the order globals
+// are emitted in the import section.
+//
+//  - STACK_POINTER_GLOBAL       (mut i32): the linear-memory stack pointer.
+//  - IMAGE_BASE_GLOBAL          (const i32): start of the R2R image in linear
+//                               memory; used by `emitAddressConstant` to turn
+//                               a per-image RVA into a runtime address.
+//  - TABLE_BASE_GLOBAL          (const i32): start of this module's slice in
+//                               the shared function table; used by
+//                               `emitFuncletAddressConstant`.
+//  - ASYNC_CONTINUATION_GLOBAL  (mut i32): runtime-async continuation return
+//                               slot. The callee writes the continuation
+//                               object reference here on the suspend path
+//                               (null on the normal-return path); the caller
+//                               reads it immediately after the call. This is
+//                               the Wasm analogue of `REG_ASYNC_CONTINUATION_RET`
+//                               on the fixed-register-set targets.
+const int STACK_POINTER_GLOBAL      = 0;
+const int IMAGE_BASE_GLOBAL         = 1;
+const int TABLE_BASE_GLOBAL         = 2;
+const int ASYNC_CONTINUATION_GLOBAL = 3;
+
 #include "registeropswasm.h"

@@ -13,8 +13,6 @@
 #include "gcinfoencoder.h"
 
 static const int LINEAR_MEMORY_INDEX = 0;
-// stackPointer is the 0th global in our generated Wasm modules
-static const int STACK_POINTER_GLOBAL = 0;
 
 #ifdef TARGET_64BIT
 static const instruction INS_I_load  = INS_i64_load;
@@ -922,6 +920,22 @@ void CodeGen::genCodeForTreeNode(GenTree* treeNode)
             genCkfinite(treeNode);
             break;
 
+        case GT_ASYNC_CONTINUATION:
+            genCodeForAsyncContinuation(treeNode);
+            break;
+
+        case GT_RETURN_SUSPEND:
+            genReturnSuspend(treeNode->AsUnOp());
+            break;
+
+        case GT_ASYNC_RESUME_INFO:
+            genAsyncResumeInfo(treeNode->AsVal());
+            break;
+
+        case GT_RECORD_ASYNC_RESUME:
+            genRecordAsyncResume(treeNode->AsVal());
+            break;
+
         default:
 #ifdef DEBUG
             if (JitConfig.JitWasmNyiToR2RUnsupported())
@@ -1023,6 +1037,141 @@ void CodeGen::genCatchArg(GenTree* treeNode)
     // The catch arg is passed as the 3rd parameter, so has Wasm local index 2.
     GetEmitter()->emitIns_I(INS_local_get, EA_GCREF, 2);
     WasmProduceReg(treeNode);
+}
+
+//------------------------------------------------------------------------
+// genStoreAsyncContinuationGlobal: Emit a `global.set` that pops the value
+// on top of the Wasm operand stack into the async continuation global.
+//
+// On Wasm, the runtime-async ABI uses a dedicated Wasm global in place of
+// the `REG_ASYNC_CONTINUATION_RET` register that other targets use. On a
+// normal return the callee sets the global to null; on a suspending
+// return (GT_RETURN_SUSPEND) the callee sets it to the continuation
+// reference. The caller reads the global immediately after the call via
+// GT_ASYNC_CONTINUATION.
+//
+void CodeGen::genStoreAsyncContinuationGlobal()
+{
+    GetEmitter()->emitIns_I(INS_global_set, EA_GCREF, ASYNC_CONTINUATION_GLOBAL);
+}
+
+//------------------------------------------------------------------------
+// genClearAsyncContinuationGlobal: Set the async continuation global to
+// null. Used on the normal-return path of async methods.
+//
+void CodeGen::genClearAsyncContinuationGlobal()
+{
+    emitter* emit = GetEmitter();
+    emit->emitIns_I(INS_I_const, EA_PTRSIZE, 0);
+    emit->emitIns_I(INS_global_set, EA_GCREF, ASYNC_CONTINUATION_GLOBAL);
+}
+
+//------------------------------------------------------------------------
+// genCodeForAsyncContinuation: Emit code for a GT_ASYNC_CONTINUATION node.
+//
+// Reads the async continuation global onto the operand stack. Lowering
+// positions this node immediately after its async call, so the global
+// value is guaranteed to be the one written by that call.
+//
+// Arguments:
+//    tree - The GT_ASYNC_CONTINUATION node (TYP_REF).
+//
+void CodeGen::genCodeForAsyncContinuation(GenTree* tree)
+{
+    assert(tree->OperIs(GT_ASYNC_CONTINUATION));
+    assert(tree->TypeIs(TYP_REF));
+
+    GetEmitter()->emitIns_I(INS_global_get, EA_GCREF, ASYNC_CONTINUATION_GLOBAL);
+    WasmProduceReg(tree);
+}
+
+//------------------------------------------------------------------------
+// genReturnSuspend: Emit code for a GT_RETURN_SUSPEND node.
+//
+// Pops the continuation operand into the async continuation global, then
+// pushes a zero of the function's native return type so the epilog's
+// `return`/`end` is well-typed. The caller checks the global first on
+// the suspending path and ignores the function's return value.
+//
+// Arguments:
+//    treeNode - The GT_RETURN_SUSPEND node.
+//
+void CodeGen::genReturnSuspend(GenTreeUnOp* treeNode)
+{
+    assert(treeNode->OperIs(GT_RETURN_SUSPEND));
+
+    GenTree* op = treeNode->gtGetOp1();
+    assert(op->TypeIs(TYP_REF));
+
+    genConsumeReg(op);
+    genStoreAsyncContinuationGlobal();
+
+    var_types retNativeType = m_compiler->info.compRetNativeType;
+    if (retNativeType != TYP_VOID)
+    {
+        emitter* emit = GetEmitter();
+        switch (genActualType(retNativeType))
+        {
+            case TYP_INT:
+            case TYP_REF:
+            case TYP_BYREF:
+                emit->emitIns_I(INS_i32_const, emitActualTypeSize(retNativeType), 0);
+                break;
+            case TYP_LONG:
+                emit->emitIns_I(INS_i64_const, EA_8BYTE, 0);
+                break;
+            case TYP_FLOAT:
+                emit->emitIns_I(INS_f32_const, EA_4BYTE, 0);
+                break;
+            case TYP_DOUBLE:
+                emit->emitIns_I(INS_f64_const, EA_8BYTE, 0);
+                break;
+            default:
+                NYI_WASM("genReturnSuspend: unhandled return type");
+                break;
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// genAsyncResumeInfo: Emit code for a GT_ASYNC_RESUME_INFO node.
+//
+// Should emit the address of the per-method resume-info entry for the
+// state index. The value is stored into the continuation's ResumeInfo
+// field at the suspension point.
+//
+// TODO-WASM-ASYNC: implement the per-method async resume info table for
+// Wasm. The shared `genEmitAsyncResumeInfoTable` / `genEmitAsyncResumeInfo`
+// are gated out on Wasm in codegencommon.cpp; the Wasm codegen also needs
+// a data-section-address idiom and Wasm-appropriate finalization for the
+// `Resume` and `DiagnosticIP` fields of CORINFO_AsyncResumeInfo.
+//
+// Until then we emit a null address; resumption at runtime would fault.
+//
+// Arguments:
+//    tree - The GT_ASYNC_RESUME_INFO node (TYP_I_IMPL, gtVal1 = state index).
+//
+void CodeGen::genAsyncResumeInfo(GenTreeVal* tree)
+{
+    assert(tree->OperIs(GT_ASYNC_RESUME_INFO));
+    assert(tree->TypeIs(TYP_I_IMPL));
+
+    GetEmitter()->emitIns_I(INS_I_const, EA_PTRSIZE, 0);
+    WasmProduceReg(tree);
+}
+
+//------------------------------------------------------------------------
+// genRecordAsyncResume: Emit code for a GT_RECORD_ASYNC_RESUME node.
+//
+// TODO-WASM-ASYNC: no-op until the per-method async resume info table is
+// implemented for Wasm. See genAsyncResumeInfo.
+//
+// Arguments:
+//    tree - The GT_RECORD_ASYNC_RESUME node (gtVal1 = state index).
+//
+void CodeGen::genRecordAsyncResume(GenTreeVal* tree)
+{
+    assert(tree->OperIs(GT_RECORD_ASYNC_RESUME));
 }
 
 //------------------------------------------------------------------------

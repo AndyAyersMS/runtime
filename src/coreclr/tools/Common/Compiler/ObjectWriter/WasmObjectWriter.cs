@@ -1032,9 +1032,10 @@ namespace ILCompiler.ObjectWriter
         }
 #nullable disable
 
-        public const int StackPointerGlobalIndex = 0;
-        public const int ImageBaseGlobalIndex = 1;
-        public const int TableBaseGlobalIndex = 2;
+        public const int StackPointerGlobalIndex = WasmGlobalImports.StackPointerGlobalIndex;
+        public const int ImageBaseGlobalIndex = WasmGlobalImports.ImageBaseGlobalIndex;
+        public const int TableBaseGlobalIndex = WasmGlobalImports.TableBaseGlobalIndex;
+        public const int AsyncContinuationGlobalIndex = WasmGlobalImports.AsyncContinuationGlobalIndex;
         public const int RtlRestoreContextTagIndex = 0;
 
         private static readonly WasmFuncType RtlRestoreContextTagSignature = new(
@@ -1050,6 +1051,7 @@ namespace ILCompiler.ObjectWriter
                 new WasmImport("webcil", "stackPointer", import: new WasmGlobalImportType(WasmValueType.I32, WasmMutabilityType.Mut), index: StackPointerGlobalIndex),
                 new WasmImport("webcil", "imageBase", import: new WasmGlobalImportType(WasmValueType.I32, WasmMutabilityType.Const), index: ImageBaseGlobalIndex),
                 new WasmImport("webcil", "tableBase", import: new WasmGlobalImportType(WasmValueType.I32, WasmMutabilityType.Const), index: TableBaseGlobalIndex),
+                new WasmImport("webcil", "asyncContinuation", import: new WasmGlobalImportType(WasmValueType.I32, WasmMutabilityType.Mut), index: AsyncContinuationGlobalIndex),
                 new WasmImport("webcil", "table", import: new WasmTableImportType(), index: 0),
                 new WasmImport("webcil", "rtlRestoreContextTag", import: new WasmTagImportType(rtlRestoreContextTagTypeIndex), index: RtlRestoreContextTagIndex),
             ];

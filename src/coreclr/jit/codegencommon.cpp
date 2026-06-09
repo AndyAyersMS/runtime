@@ -7405,8 +7405,18 @@ void CodeGen::genReturn(GenTree* treeNode)
 
     if (treeNode->OperIs(GT_RETURN) && m_compiler->compIsAsync())
     {
+#ifdef TARGET_WASM
+        // On Wasm the async continuation return value is carried in a Wasm
+        // global rather than a register; a normal return publishes null
+        // into it. The function's actual return value is already on top
+        // of the operand stack at this point and remains on top after the
+        // helper, since the helper pushes 0 and then pops it into the
+        // global.
+        genClearAsyncContinuationGlobal();
+#else
         instGen_Set_Reg_To_Zero(EA_PTRSIZE, REG_ASYNC_CONTINUATION_RET);
         gcInfo.gcMarkRegPtrVal(REG_ASYNC_CONTINUATION_RET, TYP_REF);
+#endif
     }
 
 #if defined(DEBUG) && defined(TARGET_XARCH)
