@@ -1147,14 +1147,13 @@ void CodeGen::genReturnSuspend(GenTreeUnOp* treeNode)
 //------------------------------------------------------------------------
 // genAsyncResumeInfo: Emit code for a GT_ASYNC_RESUME_INFO node.
 //
-// Should push the address of the per-method resume-info entry for the
-// state index onto the wasm stack. The value is stored into the
-// continuation's ResumeInfo field at the suspension point.
+// Pushes the address of the per-method resume-info entry for the state
+// index onto the wasm stack. The value is stored into the continuation's
+// ResumeInfo field at the suspension point.
 //
-// Allocates the table entry via the shared genEmitAsyncResumeInfo so the
-// later data-section emission produces a sized table. TODO-WASM-ASYNC: the
-// emitted constant is still null; computing the per-entry address requires
-// a wasm reloc against the JIT data section that does not yet exist.
+// The address is formed as `__r2r_start + dataOffsetReloc`, where the
+// data-offset reloc is resolved at link time to the offset of the entry
+// in the method's read-only data symbol.
 //
 // Arguments:
 //    tree - The GT_ASYNC_RESUME_INFO node (TYP_I_IMPL, gtVal1 = state index).
@@ -1164,11 +1163,12 @@ void CodeGen::genAsyncResumeInfo(GenTreeVal* tree)
     assert(tree->OperIs(GT_ASYNC_RESUME_INFO));
     assert(tree->TypeIs(TYP_I_IMPL));
 
-    // Ensure the per-method resume info table and the entry for this state
-    // are allocated; the returned handle is intentionally unused here.
-    (void)genEmitAsyncResumeInfo((unsigned)tree->gtVal1);
+    CORINFO_FIELD_HANDLE fieldHnd = genEmitAsyncResumeInfo((unsigned)tree->gtVal1);
+    assert(m_compiler->eeIsJitDataOffs(fieldHnd));
+    int dataOffs = m_compiler->eeGetJitDataOffs(fieldHnd);
+    assert(dataOffs >= 0);
 
-    GetEmitter()->emitIns_I(INS_I_const, EA_PTRSIZE, 0);
+    GetEmitter()->emitDataOffsetConstant((UNATIVE_OFFSET)dataOffs);
     WasmProduceReg(tree);
 }
 

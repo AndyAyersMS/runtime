@@ -202,6 +202,33 @@ void emitter::emitFuncletAddressConstant(cnsval_ssize_t funcletId)
     emitIns(INS_i32_add);
 }
 
+//------------------------------------------------------------------------
+// emitDataOffsetConstant: Emit a constant whose value is the linear-memory
+// address of an entry in this method's JIT-emitted data (constants) section.
+//
+// The encoding mirrors emitAddressConstant: we load __r2r_start (the module
+// image base), emit a relocated i32.const for the entry's offset, then add
+// them. At output time the reloc target is resolved to the host pointer of
+// the data section entry, which crossgen2 maps to the per-method
+// read-only data symbol + offset.
+//
+// Arguments:
+//    dataOffs - JIT data section offset of the entry (from
+//               Compiler::eeGetJitDataOffs / emitter::emitDataGenBeg).
+//
+void emitter::emitDataOffsetConstant(UNATIVE_OFFSET dataOffs)
+{
+    emitIns_I(INS_global_get, EA_4BYTE, IMAGE_BASE_GLOBAL /* __r2r_start */);
+
+    instrDesc* id = emitNewInstrSC(EA_SET_FLG(EA_PTRSIZE, EA_CNS_RELOC_FLG), (cnsval_ssize_t)dataOffs);
+    id->idIns(INS_i32_const_dataoffs);
+    id->idInsFmt(IF_DATAOFFS);
+    dispIns(id);
+    appendToCurIG(id);
+
+    emitIns(INS_i32_add);
+}
+
 /*****************************************************************************
  *
  *  Add a call instruction (direct or indirect).
@@ -679,6 +706,9 @@ unsigned emitter::instrDesc::idCodeSize() const
         case IF_FUNCLETIDX:
             size += PADDED_RELOC_SIZE; // funclet indices and pointers are always emitted as relocations
             break;
+        case IF_DATAOFFS:
+            size += PADDED_RELOC_SIZE; // data-section offsets are always emitted as relocations
+            break;
         case IF_CALL_INDIRECT:
         {
             size += idIsCnsReloc() ? PADDED_RELOC_SIZE : SizeOfULEB128(emitGetInsSC(this));
@@ -941,6 +971,19 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         {
             dst += emitOutputOpcode(dst, ins);
             dst += emitOutputConstantFunclet(dst, id, CorInfoReloc::WASM_TABLE_INDEX_SLEB);
+            break;
+        }
+        case IF_DATAOFFS:
+        {
+            // The constant carried by id is an offset into this method's JIT data
+            // section. Resolve it to a host pointer so the reloc system can map it
+            // to the per-method read-only data symbol, then record a memory-address
+            // reloc identical in shape to IF_MEMADDR.
+            dst += emitOutputOpcode(dst, ins);
+            UNATIVE_OFFSET dataOffs = (UNATIVE_OFFSET)emitGetInsSC(id);
+            BYTE*          target   = emitDataOffsetToPtr(dataOffs);
+            emitRecordRelocation(dst, target, CorInfoReloc::WASM_MEMORY_ADDR_REL_SLEB);
+            dst += emitOutputPaddedReloc(dst);
             break;
         }
         case IF_FUNCPTR:
@@ -1303,6 +1346,14 @@ void emitter::emitDispIns(
         {
             cnsval_ssize_t imm = emitGetInsSC(id);
             printf("funclet %lli", (int64_t)imm);
+            dispLclVarInfoIfAny();
+        }
+        break;
+
+        case IF_DATAOFFS:
+        {
+            cnsval_ssize_t imm = emitGetInsSC(id);
+            printf("data 0x%llx", (uint64_t)imm);
             dispLclVarInfoIfAny();
         }
         break;
