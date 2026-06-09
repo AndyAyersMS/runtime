@@ -1147,17 +1147,14 @@ void CodeGen::genReturnSuspend(GenTreeUnOp* treeNode)
 //------------------------------------------------------------------------
 // genAsyncResumeInfo: Emit code for a GT_ASYNC_RESUME_INFO node.
 //
-// Should emit the address of the per-method resume-info entry for the
-// state index. The value is stored into the continuation's ResumeInfo
-// field at the suspension point.
+// Should push the address of the per-method resume-info entry for the
+// state index onto the wasm stack. The value is stored into the
+// continuation's ResumeInfo field at the suspension point.
 //
-// TODO-WASM-ASYNC: implement the per-method async resume info table for
-// Wasm. The shared `genEmitAsyncResumeInfoTable` / `genEmitAsyncResumeInfo`
-// are gated out on Wasm in codegencommon.cpp; the Wasm codegen also needs
-// a data-section-address idiom and Wasm-appropriate finalization for the
-// `Resume` and `DiagnosticIP` fields of CORINFO_AsyncResumeInfo.
-//
-// Until then we emit a null address; resumption at runtime would fault.
+// Allocates the table entry via the shared genEmitAsyncResumeInfo so the
+// later data-section emission produces a sized table. TODO-WASM-ASYNC: the
+// emitted constant is still null; computing the per-entry address requires
+// a wasm reloc against the JIT data section that does not yet exist.
 //
 // Arguments:
 //    tree - The GT_ASYNC_RESUME_INFO node (TYP_I_IMPL, gtVal1 = state index).
@@ -1167,22 +1164,12 @@ void CodeGen::genAsyncResumeInfo(GenTreeVal* tree)
     assert(tree->OperIs(GT_ASYNC_RESUME_INFO));
     assert(tree->TypeIs(TYP_I_IMPL));
 
+    // Ensure the per-method resume info table and the entry for this state
+    // are allocated; the returned handle is intentionally unused here.
+    (void)genEmitAsyncResumeInfo((unsigned)tree->gtVal1);
+
     GetEmitter()->emitIns_I(INS_I_const, EA_PTRSIZE, 0);
     WasmProduceReg(tree);
-}
-
-//------------------------------------------------------------------------
-// genRecordAsyncResume: Emit code for a GT_RECORD_ASYNC_RESUME node.
-//
-// TODO-WASM-ASYNC: no-op until the per-method async resume info table is
-// implemented for Wasm. See genAsyncResumeInfo.
-//
-// Arguments:
-//    tree - The GT_RECORD_ASYNC_RESUME node (gtVal1 = state index).
-//
-void CodeGen::genRecordAsyncResume(GenTreeVal* tree)
-{
-    assert(tree->OperIs(GT_RECORD_ASYNC_RESUME));
 }
 
 //------------------------------------------------------------------------
