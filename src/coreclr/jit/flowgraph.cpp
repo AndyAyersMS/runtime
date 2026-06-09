@@ -7836,7 +7836,15 @@ FlowGraphTryRegions* FlowGraphTryRegions::Build(Compiler* comp, FlowGraphDfsTree
 
                         region->AddEntryEdge(edge);
                         region->SetHasSideEntry();
-                        regions->SetHasMultipleEntryTryRegions();
+
+                        // Only try/catch regions need to be reshaped into single-entry form for
+                        // Wasm codegen (they will be lowered to a wasm try_table). Try/fault and
+                        // try/finally are emitted differently and tolerate multi-entry.
+                        //
+                        if (dsc->HasCatchHandler())
+                        {
+                            regions->SetHasMultipleEntryTryRegions();
+                        }
                         continue;
                     }
 
