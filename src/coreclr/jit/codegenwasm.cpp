@@ -1050,6 +1050,17 @@ void CodeGen::genCatchArg(GenTree* treeNode)
 // reference. The caller reads the global immediately after the call via
 // GT_ASYNC_CONTINUATION.
 //
+// GC: the global is not reported as a GC root. Wasm is partially-
+// interruptible (see Compiler::fgSetOptions), so a GC can only run at an
+// explicit safepoint. Codegen ensures no safepoint occurs while the
+// global holds a reference:
+//   - GT_RETURN_SUSPEND: `local.get; global.set; <push 0>; return`.
+//   - Normal async return: `i32.const 0; global.set; return` (null only).
+//   - GT_ASYNC_CONTINUATION: Lowering pins it immediately after the
+//     async call (see Lowering::LowerAsyncContinuation), and the emitted
+//     `global.get; local.set` reaches a tracked shadow-stack slot before
+//     any further call or allocation.
+//
 void CodeGen::genStoreAsyncContinuationGlobal()
 {
     GetEmitter()->emitIns_I(INS_global_set, EA_GCREF, ASYNC_CONTINUATION_GLOBAL);
