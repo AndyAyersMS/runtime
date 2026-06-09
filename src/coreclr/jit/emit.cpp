@@ -8515,14 +8515,17 @@ void emitter::emitOutputDataSec(dataSecDsc* sec, AllocMemChunk* chunks)
                 // In those cases just encode null.
                 BYTE* target = emitLoc->Valid() ? emitOffsetToPtr(emitLoc->CodeOffset(this)) : nullptr;
 #ifdef TARGET_WASM
-                // TODO-WASM-ASYNC: Resume needs a wasm function-table-index reloc
-                // (host pointers and CorInfoReloc::DIRECT are not meaningful on wasm),
-                // and DiagnosticIP has no wasm equivalent (the field is documented
-                // as nullable for hand-rolled continuations). Emit zeros for now so
-                // the table layout is correct and downstream consumers can be added
-                // incrementally.
-                aDstRW[i].Resume       = 0;
+                // On Wasm, Resume is a function-table-index into the module's function table (not a host pointer)
+                // because wasm has no notion of function addresses. The runtime will dispatch via call_indirect.
+                // DiagnosticIP has no Wasm equivalent (the field is documented as nullable) so we always leave it null.
+                aDstRW[i].Resume       = (target_size_t)(uintptr_t)emitAsyncResumeStubEntryPoint;
                 aDstRW[i].DiagnosticIP = 0;
+
+                if (m_compiler->opts.compReloc)
+                {
+                    emitRecordRelocation(&aDstRW[i].Resume, emitAsyncResumeStubEntryPoint,
+                                         CorInfoReloc::WASM_TABLE_INDEX_I32);
+                }
 #else
                 aDstRW[i].Resume       = (target_size_t)(uintptr_t)emitAsyncResumeStubEntryPoint;
                 aDstRW[i].DiagnosticIP = (target_size_t)(uintptr_t)target;
