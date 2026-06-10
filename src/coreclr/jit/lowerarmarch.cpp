@@ -741,6 +741,13 @@ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenT
     GenTreeIntCon* offsetNode = addr->AsOp()->gtGetOp2()->AsIntCon();
     ssize_t        offset     = offsetNode->IconValue();
 
+    // Don't fold a constant that needs a relocation; we'd lose the relocation when we drop
+    // the offset node into the LEA's immediate.
+    if (offsetNode->ImmedValNeedsReloc(m_compiler))
+    {
+        return;
+    }
+
 #ifdef TARGET_ARM
     // All integer load/store instructions on Arm support offsets in range -255..255.
     // Of course, this is a rather conservative check.
