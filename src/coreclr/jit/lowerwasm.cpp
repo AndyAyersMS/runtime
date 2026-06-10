@@ -34,11 +34,13 @@ void Lowering::SetMultiplyUsed(GenTree* node DEBUGARG(const char* reason))
 // IsCallTargetInRange: Can a call target address be encoded in-place?
 //
 // Return Value:
-//    Always true since there are no encoding range considerations on WASM.
+//    Always false on Wasm: there is no "direct call by absolute address"
+//    encoding, and the PEP lowering requires every managed call to have an
+//    explicit control expression that materializes the entry-point address.
 //
 bool Lowering::IsCallTargetInRange(void* addr)
 {
-    return true;
+    return false;
 }
 
 //---------------------------------------------------------------------------------------------
