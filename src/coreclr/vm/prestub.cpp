@@ -29,6 +29,10 @@
 #include "interpexec.h"
 #endif
 
+#ifdef TARGET_WASM
+#include "wasmasynccontinuation.h"
+#endif
+
 #ifdef FEATURE_COMINTEROP
 #include "clrtocomcall.h"
 #endif
@@ -2057,9 +2061,16 @@ extern "C" void* STDCALL ExecuteInterpretedMethod(TransitionBlock* pTransitionBl
         pArgumentRegisters->r[2] = (INT64)*frames.interpreterFrame.GetContinuationPtr();
 #elif defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
         pArgumentRegisters->a[2] = (INT64)*frames.interpreterFrame.GetContinuationPtr();
-#elif defined(TARGET_WASM)
-        // We do not yet have an ABI for WebAssembly native code to handle here.
-#else
+    #elif defined(TARGET_WASM)
+        // Wasm has no async-continuation-return register. Write the slot to
+        // the shared `asyncContinuation` WebAssembly.Global that every R2R
+        // webcil imports (see wasmasynccontinuation.h). The R2R caller will
+        // observe it via `global.get 3` on the instruction immediately
+        // following the call into the interpreter.
+        // The pTransitionBlock argument-register area is unused on wasm and
+        // remains zero-initialized.
+        RuntimeAsync_StoreAsyncContinuation((int32_t)(uintptr_t)*frames.interpreterFrame.GetContinuationPtr());
+    #else
         #error Unsupported architecture
 #endif
 

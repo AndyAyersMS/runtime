@@ -30,11 +30,32 @@ function libCoreRunFactory() {
                 }
 
                 ENV["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "true";
+
+                // Single shared mutable i32 WebAssembly.Global used as the
+                // runtime-async continuation return slot. Every webcil image
+                // imports this same instance as `webcil.asyncContinuation`
+                // (index 3 in WasmGlobalImports), so a continuation written
+                // by callee A is observable to caller B even across different
+                // R2R modules. The C++ runtime accesses this slot via the
+                // RuntimeAsync_Load/StoreAsyncContinuation library functions
+                // below (e.g. when bridging interp <-> R2R continuations).
+                // Wasm MVP is single-threaded so no synchronization is needed;
+                // when multi-threading is enabled, this will need per-thread
+                // storage.
+                CORERUN.sharedAsyncContinuation = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
             },
         },
         $CORERUN__postset: "CORERUN.selfInitialize()",
         $CORERUN__deps: commonDeps,
         BrowserHost_ShutdownDotnet: (exitCode) => _corerun_shutdown(exitCode),
+        // C-callable accessors for the shared asyncContinuation global. The
+        // runtime calls these from interp <-> R2R boundary code (see
+        // prestub.cpp ExecuteInterpretedMethod and the call-stub generator),
+        // where the C++ side needs to read or write the continuation slot
+        // that R2R wasm modules access via `global.get`/`global.set` against
+        // import index 3 (WasmGlobalImports.AsyncContinuationGlobalIndex).
+        RuntimeAsync_LoadAsyncContinuation: () => CORERUN.sharedAsyncContinuation.value,
+        RuntimeAsync_StoreAsyncContinuation: (value) => { CORERUN.sharedAsyncContinuation.value = value >>> 0; },
         BrowserHost_ExternalAssemblyProbe: (pathPtr, outDataStartPtr, outSize) => {
             function asUint8Array(bufferSource) {
                 if (bufferSource instanceof ArrayBuffer) {
@@ -237,7 +258,10 @@ function libCoreRunFactory() {
                         imageBase: new WebAssembly.Global({ value: "i32", mutable: false }, payloadPtr),
                         // Runtime-async continuation return slot. Mutable so callees can store the
                         // continuation reference; readers pick it up immediately after the call.
-                        asyncContinuation: new WebAssembly.Global({ value: "i32", mutable: true }, 0)
+                        // Shared across all webcils (and visible to the C++ runtime via the
+                        // RuntimeAsync_Load/StoreAsyncContinuation accessors) so continuations
+                        // flow correctly across module boundaries and interp <-> R2R transitions.
+                        asyncContinuation: CORERUN.sharedAsyncContinuation
                     }});
             } catch (e) {
                 const errorMessage = e instanceof Error ? e.message : String(e);
