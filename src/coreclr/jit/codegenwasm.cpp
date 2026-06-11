@@ -559,28 +559,38 @@ void CodeGen::genEmitStartBlock(BasicBlock* block)
 {
     const unsigned cursor = getBlockIndex(block);
 
-    // Pop control flow intervals that end here (at most two, block and/or loop)
-    // and emit wasm END instructions for them.
+    // Pop control flow intervals that end here and emit wasm END instructions for them.
     //
     while (!wasmControlFlowStack->Empty() && (wasmControlFlowStack->Top()->End() == cursor))
     {
         instGen(INS_end);
         WasmInterval* interval = wasmControlFlowStack->Pop();
 
-        // After popping a TRY whose enclosing wrapping BLOCK shares the same End,
-        // the `catch_ref` handler will have branched to the end of the try_table
-        // leaving an exnref on the wasm operand stack. Consume it into the
-        // synthetic exnref local so the subsequent dispatch can either fall
-        // through to a continuation or rethrow it via `throw_ref`.
+        // For a TRY paired with an [exnref]-wrapper, the only path that lands on
+        // the wrapper's end with [exnref] on the operand stack is via catch_ref.
+        // try_table itself has void result sig, so its normal "fall-off-the-end"
+        // path leaves the operand stack empty — which would fail to validate
+        // against the wrapper's [exnref] sig. The IR is constructed so that the
+        // try region's last block always exits via a real terminator (br/return/
+        // throw), so reaching try_table's end normally never happens at runtime.
+        // Emit `unreachable` right after try_table's `end` to declare the rest
+        // of the wrapper's body polymorphic, which coerces the wrapper's end to
+        // [exnref] in the validator.
         //
-        if (interval->IsTry() && !wasmControlFlowStack->Empty())
+        if (interval->IsTry())
         {
-            WasmInterval* below = wasmControlFlowStack->Top();
-            if (below->IsBlock() && (below->End() == interval->End()))
-            {
-                assert(m_compiler->wasmExnRefLocalIndex != UINT_MAX);
-                GetEmitter()->emitIns_I(INS_local_set, EA_PTRSIZE, m_compiler->wasmExnRefLocalIndex);
-            }
+            instGen(INS_unreachable);
+        }
+
+        // For a TRY/wrapper pair, after the wrapper's end the operand stack
+        // has [exnref] (pushed by catch_ref's branch and absorbed via the
+        // wrapper's [exnref] result sig). Consume it via `local.set` so any
+        // later `throw_ref` site can reload it.
+        //
+        if (interval->IsExnRefWrapper())
+        {
+            assert(m_compiler->wasmExnRefLocalIndex != UINT_MAX);
+            GetEmitter()->emitIns_I(INS_local_set, EA_PTRSIZE, m_compiler->wasmExnRefLocalIndex);
         }
     }
 
@@ -607,35 +617,37 @@ void CodeGen::genEmitStartBlock(BasicBlock* block)
                 GenTree* const jTrue      = blockRange.LastNode();
                 assert(jTrue->OperIs(GT_WASM_JEXCEPT));
 
-                // Result sig is `exnref` so that `catch_ref` targeting the try_table
-                // itself (depth 0) supplies the [exnref] value the catch path needs.
-                // The body only ever falls through to `end` polymorphically (the try
-                // region always exits via `br`/`return`/`throw`), so wasm validation
-                // accepts the [exnref] result sig.
+                // Wasm catch handler labels are resolved in the scope *outside* the
+                // try_table. The paired ExnRef wrapper interval (already pushed just
+                // before this TRY) provides an [exnref]-sig block at depth 0 that
+                // `catch_ref TAG 0` can validly target. try_table itself uses void
+                // result sig so that any in-body `br` targeting it (e.g. a normal
+                // exit branch whose IR target happens to coincide with try_table's
+                // end) does not need to push an exnref. Reaching try_table's end
+                // normally is suppressed by the `unreachable` emitted just after
+                // the `end` (see pop loop above).
                 //
-                // One catch clause: `catch_ref RtlRestoreContextTag, depth 0`.
-                //
-                GetEmitter()->emitIns_Ty_I(INS_try_table, WasmValueType::ExnRef, 1);
+                GetEmitter()->emitIns_Ty_I(INS_try_table, WasmValueType::Invalid, 1);
 
-                // Post-catch continuation dispatch block is the true target.
-                // False target should be the next block.
+                // One catch clause: `catch_ref RtlRestoreContextTag, 0` (the wrapper).
+                // The dispatch block we ultimately want to reach is the true target of
+                // GT_WASM_JEXCEPT — passed only for disassembly readability.
                 //
                 assert(block->GetFalseTarget() == block->Next());
                 BasicBlock* const target = block->GetTrueTarget();
-                unsigned          depth  = findTargetDepth(target);
-
-                // The catch handler must always land at the try_table's own end label
-                // (depth 0 in wasm semantics inside a try_table) so the exnref result
-                // can be consumed into our synthetic local. This must coincide with the
-                // wrapping BLOCK being at the top of our control flow stack here.
-                //
-                assert(depth == 0);
-                GetEmitter()->emitIns_J(INS_catch_ref, EA_4BYTE, depth, target);
+                GetEmitter()->emitIns_J(INS_catch_ref, EA_4BYTE, 0, target);
             }
             else
             {
                 assert(interval->IsBlock());
-                GetEmitter()->emitIns_BlockTy(INS_block);
+                if (interval->IsExnRefWrapper())
+                {
+                    GetEmitter()->emitIns_BlockTy(INS_block, WasmValueType::ExnRef);
+                }
+                else
+                {
+                    GetEmitter()->emitIns_BlockTy(INS_block);
+                }
             }
 
             wasmCursor++;

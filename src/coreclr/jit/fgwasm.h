@@ -143,6 +143,9 @@ private:
     // kind of interval
     Kind m_kind;
 
+    // True if this is an ExnRef-result wrapper paired with a TRY (Block-kind).
+    bool m_isExnRefWrapper;
+
 public:
 
     WasmInterval(unsigned start, unsigned end, Kind kind)
@@ -151,6 +154,7 @@ public:
         , m_end(end)
         , m_chainEnd(end)
         , m_kind(kind)
+        , m_isExnRefWrapper(false)
     {
         m_chain = this;
     }
@@ -205,6 +209,15 @@ public:
         return m_kind == Kind::Try;
     }
 
+    // True if this Block-kind interval is the [exnref]-result wrapper around
+    // a paired TRY interval (so codegen emits `block (exnref)` instead of
+    // `block` and `local.set $exnref` after `end`).
+    //
+    bool IsExnRefWrapper() const
+    {
+        return m_isExnRefWrapper;
+    }
+
     void SetChain(WasmInterval* c)
     {
         m_chain       = c;
@@ -231,6 +244,18 @@ public:
             new (comp, CMK_WasmCfgLowering) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, Kind::Try);
         return result;
     }
+
+    // Construct the [exnref]-result wrapper paired with a TRY. It is recorded
+    // as a Block-kind interval (so the sort tiebreaker places it just outside
+    // the TRY) with the IsExnRefWrapper flag set.
+    //
+    static WasmInterval* NewExnRefWrapper(Compiler* comp, BasicBlock* start, BasicBlock* end)
+    {
+        WasmInterval* result =
+            new (comp, CMK_WasmCfgLowering) WasmInterval(start->bbPreorderNum, end->bbPreorderNum, Kind::Block);
+        result->m_isExnRefWrapper = true;
+        return result;
+    }
 #ifdef DEBUG
     void Dump(bool chainExtent = false)
     {
@@ -245,6 +270,10 @@ public:
             else if (m_kind == Kind::Try)
             {
                 printf("T");
+            }
+            else if (m_isExnRefWrapper)
+            {
+                printf("X");
             }
         }
 
@@ -264,7 +293,7 @@ public:
         switch (m_kind)
         {
             case Kind::Block:
-                return "Block";
+                return m_isExnRefWrapper ? "ExnRefWrapper" : "Block";
             case Kind::Loop:
                 return "Loop";
             case Kind::Try:
