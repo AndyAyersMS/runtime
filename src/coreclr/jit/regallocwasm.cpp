@@ -1187,16 +1187,18 @@ void WasmRegAlloc::ResolveReferences()
             }
         }
 
-        // Allocate a synthetic exnref wasm local in the root function when the method
-        // has try regions requiring runtime resumption. The Wasm EH dispatch path
-        // stashes the exnref produced by `catch_ref` into this local and reloads it
-        // for the `throw_ref` on the rethrow path. Funclets do not need this local —
-        // they are separate wasm functions that never execute `throw_ref`.
+        // Allocate a synthetic exnref wasm local in every function (root and funclets)
+        // when the method has try regions requiring runtime resumption. The Wasm EH
+        // dispatch path stashes the exnref produced by `catch_ref` into this local
+        // and reloads it for the `throw_ref` on the rethrow path. Each funclet
+        // may contain a rethrow block (when a nested try has its rethrow placed
+        // in an enclosing catch handler), so every wasm function gets its own
+        // exnref local with a per-function index.
         //
-        if ((funcInfo->funKind == FuncKind::FUNC_ROOT) && (m_compiler->lvaWasmResumeIP != BAD_VAR_NUM))
+        if (m_compiler->lvaWasmResumeIP != BAD_VAR_NUM)
         {
-            assert(m_compiler->wasmExnRefLocalIndex == UINT_MAX);
-            m_compiler->wasmExnRefLocalIndex = indexBase;
+            assert(funcInfo->funWasmExnRefLocalIndex == UINT_MAX);
+            funcInfo->funWasmExnRefLocalIndex = indexBase;
             decls->push_back({WasmValueType::ExnRef, 1});
         }
     }

@@ -1775,6 +1775,7 @@ struct FuncInfoDsc
 
     jitstd::vector<WasmLocalsDecl>* funWasmLocalDecls;
     unsigned funWasmFrameSize;
+    unsigned funWasmExnRefLocalIndex = UINT_MAX;
     bool needsUnwindableFrame;
     emitLocation* startLoc;
     emitLocation* endLoc;
@@ -4245,11 +4246,6 @@ public:
     unsigned lvaWasmFunctionIndex = BAD_VAR_NUM; // Wasm function index slot
     unsigned lvaWasmResumeIP = BAD_VAR_NUM; // Wasm catch resumption IP slot
 
-    // Wasm-level local index of the synthetic exnref local that holds the exception
-    // produced by a `catch_ref` while resumption dispatch executes. Set by the wasm
-    // register allocator for the root function when the method has any try region
-    // requiring runtime resumption. UINT_MAX means "no exnref local was allocated".
-    unsigned wasmExnRefLocalIndex = UINT_MAX;
 #endif // defined(TARGET_WASM)
 
     unsigned lvaInlinedPInvokeFrameVar = BAD_VAR_NUM; // variable representing the InlinedCallFrame

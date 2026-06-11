@@ -589,8 +589,9 @@ void CodeGen::genEmitStartBlock(BasicBlock* block)
         //
         if (interval->IsExnRefWrapper())
         {
-            assert(m_compiler->wasmExnRefLocalIndex != UINT_MAX);
-            GetEmitter()->emitIns_I(INS_local_set, EA_PTRSIZE, m_compiler->wasmExnRefLocalIndex);
+            unsigned const exnRefIdx = m_compiler->funCurrentFunc()->funWasmExnRefLocalIndex;
+            assert(exnRefIdx != UINT_MAX);
+            GetEmitter()->emitIns_I(INS_local_set, EA_PTRSIZE, exnRefIdx);
         }
     }
 
@@ -918,9 +919,12 @@ void CodeGen::genCodeForTreeNode(GenTree* treeNode)
         case GT_WASM_THROW_REF:
             // Rethrow the exception captured by the catch_ref handler.
             // The wasm exnref local was set at the catch landing in genEmitStartBlock.
-            assert(m_compiler->wasmExnRefLocalIndex != UINT_MAX);
-            GetEmitter()->emitIns_I(INS_local_get, EA_PTRSIZE, m_compiler->wasmExnRefLocalIndex);
-            GetEmitter()->emitIns(INS_throw_ref);
+            {
+                unsigned const exnRefIdx = m_compiler->funCurrentFunc()->funWasmExnRefLocalIndex;
+                assert(exnRefIdx != UINT_MAX);
+                GetEmitter()->emitIns_I(INS_local_get, EA_PTRSIZE, exnRefIdx);
+                GetEmitter()->emitIns(INS_throw_ref);
+            }
             break;
 
         case GT_CATCH_ARG:
