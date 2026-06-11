@@ -1674,7 +1674,82 @@ bool ScalarEvolutionContext::MayOverflowBeforeExit(ScevAddRec* lhs, Scev* rhs, V
     ValueNumPair rhsVNP = MaterializeVN(rhs);
     ValueNum relop = m_compiler->vnStore->VNForFunc(TYP_INT, exitOp, steppedValVNP.GetLiberal(), rhsVNP.GetLiberal());
     RelopEvaluationResult result = EvaluateRelop(relop);
-    return result != RelopEvaluationResult::True;
+    if (result == RelopEvaluationResult::True)
+    {
+        return false;
+    }
+
+    // The existing check proves no-overflow by showing that the post-step value
+    // still triggers the exit (i.e. wrap lands on the exit side). That fires
+    // mostly for step=1 LE/GE patterns; for step > 1 it almost never holds.
+    //
+    // Try a second proof: if a dominating relop bounds `rhs` such that
+    // `rhs + step` (and any worst-case post-step IV) cannot wrap, we're safe.
+    //
+    //   LT (post-exit GE): max post-step IV = rhs + step - 1
+    //                      need rhs <= INT_MAX - step + 1
+    //   LE (post-exit GT): max post-step IV = rhs + step
+    //                      need rhs <= INT_MAX - step
+    //   GT (post-exit LE): min post-step IV = rhs + step + 1  (step < 0)
+    //                      need rhs >= INT_MIN - step - 1
+    //   GE (post-exit LT): min post-step IV = rhs + step      (step < 0)
+    //                      need rhs >= INT_MIN - step
+    //
+    // We currently only handle the signed-int case; unsigned exits and TYP_LONG
+    // would need different bounds.
+    if (!rhsVNP.GetLiberal() || (m_compiler->vnStore->TypeOfVN(rhsVNP.GetLiberal()) != TYP_INT))
+    {
+        return true;
+    }
+
+    int64_t boundExtreme;
+    bool    boundIsUpper;
+    switch (exitOp)
+    {
+        case VNF_GE:
+            boundExtreme = (int64_t)INT32_MAX - stepCns + 1;
+            boundIsUpper = true;
+            break;
+        case VNF_GT:
+            boundExtreme = (int64_t)INT32_MAX - stepCns;
+            boundIsUpper = true;
+            break;
+        case VNF_LE:
+            boundExtreme = (int64_t)INT32_MIN - stepCns - 1;
+            boundIsUpper = false;
+            break;
+        case VNF_LT:
+            boundExtreme = (int64_t)INT32_MIN - stepCns;
+            boundIsUpper = false;
+            break;
+        default:
+            return true;
+    }
+
+    // Trivial: the int representation of rhs is always within range.
+    if (boundIsUpper && (boundExtreme >= INT32_MAX))
+    {
+        return false;
+    }
+    if (!boundIsUpper && (boundExtreme <= INT32_MIN))
+    {
+        return false;
+    }
+    if ((boundExtreme < INT32_MIN) || (boundExtreme > INT32_MAX))
+    {
+        return true;
+    }
+
+    ValueNum boundVN  = m_compiler->vnStore->VNForIntCon((int32_t)boundExtreme);
+    VNFunc   proofFunc = boundIsUpper ? VNF_LE : VNF_GE;
+    ValueNum proofVN  = m_compiler->vnStore->VNForFunc(TYP_INT, proofFunc, rhsVNP.GetLiberal(), boundVN);
+    if (EvaluateRelop(proofVN) == RelopEvaluationResult::True)
+    {
+        JITDUMP("    Dominating bound on rhs proves no overflow\n");
+        return false;
+    }
+
+    return true;
 }
 
 //------------------------------------------------------------------------
