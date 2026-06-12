@@ -177,7 +177,8 @@ internal sealed class MockCodeHeapListNode : TypedView
 {
     private const string NextFieldName = "Next";
     private const string StartAddressFieldName = "StartAddress";
-    private const string EndAddressFieldName = "EndAddress";
+    private const string BottomEndAddressFieldName = "BottomEndAddress";
+    private const string TopStartAddressFieldName = "TopStartAddress";
     private const string MapBaseFieldName = "MapBase";
     private const string HeaderMapFieldName = "HeaderMap";
     private const string HeapFieldName = "Heap";
@@ -186,7 +187,8 @@ internal sealed class MockCodeHeapListNode : TypedView
         => new SequentialLayoutBuilder("CodeHeapListNode", architecture)
             .AddPointerField(NextFieldName)
             .AddPointerField(StartAddressFieldName)
-            .AddPointerField(EndAddressFieldName)
+            .AddPointerField(BottomEndAddressFieldName)
+            .AddPointerField(TopStartAddressFieldName)
             .AddPointerField(MapBaseFieldName)
             .AddPointerField(HeaderMapFieldName)
             .AddPointerField(HeapFieldName)
@@ -204,10 +206,16 @@ internal sealed class MockCodeHeapListNode : TypedView
         set => WritePointerField(StartAddressFieldName, value);
     }
 
-    public ulong EndAddress
+    public ulong BottomEndAddress
     {
-        get => ReadPointerField(EndAddressFieldName);
-        set => WritePointerField(EndAddressFieldName, value);
+        get => ReadPointerField(BottomEndAddressFieldName);
+        set => WritePointerField(BottomEndAddressFieldName, value);
+    }
+
+    public ulong TopStartAddress
+    {
+        get => ReadPointerField(TopStartAddressFieldName);
+        set => WritePointerField(TopStartAddressFieldName, value);
     }
 
     public ulong MapBase
@@ -777,7 +785,9 @@ internal sealed class MockExecutionManagerBuilder
         MockCodeHeapListNode codeHeapListNode = AllocateAndCreate(CodeHeapListNodeLayout, "CodeHeapListNode", _rangeSectionMapAllocator);
         codeHeapListNode.Next = next;
         codeHeapListNode.StartAddress = startAddress;
-        codeHeapListNode.EndAddress = endAddress;
+        codeHeapListNode.BottomEndAddress = endAddress;
+        // Default to no upper used region; tests that exercise hot/cold splitting can set TopStartAddress directly.
+        codeHeapListNode.TopStartAddress = endAddress;
         codeHeapListNode.MapBase = mapBase;
         codeHeapListNode.HeaderMap = headerMap;
         codeHeapListNode.Heap = heap;

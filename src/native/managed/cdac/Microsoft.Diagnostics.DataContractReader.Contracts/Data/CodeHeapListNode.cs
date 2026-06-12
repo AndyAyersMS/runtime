@@ -8,7 +8,8 @@ internal sealed partial class CodeHeapListNode : IData<CodeHeapListNode>
 {
     [Field] public TargetPointer Next { get; }
     [Field] public TargetPointer StartAddress { get; }
-    [Field] public TargetPointer EndAddress { get; }
+    [Field] public TargetPointer BottomEndAddress { get; }
+    [Field] public TargetPointer TopStartAddress { get; }
     [Field] public TargetPointer MapBase { get; }
     [Field] public TargetPointer HeaderMap { get; }
     [Field] public TargetPointer Heap { get; }

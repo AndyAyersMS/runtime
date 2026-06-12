@@ -148,7 +148,8 @@ internal sealed class NibbleMapLinearLookup : INibbleMap
 
     public TargetPointer FindMethodCode(Data.CodeHeapListNode heapListNode, TargetCodePointer jittedCodeAddress)
     {
-        if (jittedCodeAddress < heapListNode.StartAddress || jittedCodeAddress > heapListNode.EndAddress)
+        if (jittedCodeAddress < heapListNode.StartAddress ||
+            (jittedCodeAddress > heapListNode.BottomEndAddress && jittedCodeAddress < heapListNode.TopStartAddress))
         {
             return TargetPointer.Null;
         }
