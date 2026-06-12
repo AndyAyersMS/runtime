@@ -3219,9 +3219,7 @@ template<typename TCodeHeader>
 void EECodeGenManager::AllocCode(MethodDesc* pMD, size_t hotBlockSize, size_t coldBlockSize, size_t reserveForJumpStubs, unsigned alignment,
                                  void** ppCodeHeader, void** ppCodeHeaderRW, void** ppColdCodeHeader, void** ppColdCodeHeaderRW,
                                  size_t* pAllocatedHotSize, size_t* pAllocatedColdSize, HeapList** ppCodeHeap , BYTE** ppRealHeader
-#ifdef FEATURE_EH_FUNCLETS
                                , UINT nUnwindInfos
-#endif
                                 )
 {
     CONTRACTL {
@@ -3266,7 +3264,6 @@ void EECodeGenManager::AllocCode(MethodDesc* pMD, size_t hotBlockSize, size_t co
     ColdCodeHeader * pColdCodeHdr   = NULL;
     ColdCodeHeader * pColdCodeHdrRW = NULL;
 
-    CodeHeapRequestInfo requestInfo(pMD);
     SIZE_T realHeaderSize;
 #ifdef FEATURE_INTERPRETER
     if (std::is_same<TCodeHeader, InterpreterCodeHeader>::value)
@@ -3304,7 +3301,8 @@ void EECodeGenManager::AllocCode(MethodDesc* pMD, size_t hotBlockSize, size_t co
             : &dummyRecordedCodePtr;
 
         *ppCodeHeap = NULL;
-        TADDR pCode = (TADDR) AllocCodeWorker(&requestInfo, sizeof(TCodeHeader), hotAllocSize, coldBlockSize, alignment, ppCodeHeap, (void**)&pColdCodeHdr);
+        TADDR pColdCode = NULL;
+        TADDR pCode = (TADDR) AllocCodeWorker(&requestInfo, sizeof(TCodeHeader), hotAllocSize, coldBlockSize, alignment, ppCodeHeap, (void**)&pColdCode);
         _ASSERTE(*ppCodeHeap);
         _ASSERTE(IS_ALIGNED(pCode, alignment));
 
@@ -3374,13 +3372,11 @@ void EECodeGenManager::AllocCode(MethodDesc* pMD, size_t hotBlockSize, size_t co
         }
         pCodeHdrRW->SetMethodDesc(pMDTarget);
 
-#ifdef FEATURE_EH_FUNCLETS
         if (std::is_same<TCodeHeader, CodeHeader>::value)
         {
             ((CodeHeader*)pCodeHdrRW)->SetNumberOfUnwindInfos(nUnwindInfos);
             ((CodeHeader*)pCodeHdrRW)->SetColdCodeHeader(pColdCodeHdr);
         }
-#endif
 
         if (isDynamic)
         {

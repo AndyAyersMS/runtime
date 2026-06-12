@@ -181,7 +181,6 @@ public:
 
     PTR_MethodDesc      phdrMDesc;
 
-#ifdef FEATURE_EH_FUNCLETS
     PTR_ColdCodeHeader  pColdCodeHeader;
     DWORD               nUnwindInfos;
     T_RUNTIME_FUNCTION  unwindInfos[0];
@@ -280,7 +279,6 @@ public:
         pRealCodeHeader = (PTR_RealCodeHeader)kind;
     }
 
-#if defined(FEATURE_EH_FUNCLETS)
     PTR_ColdCodeHeader GetColdCodeHeader()
     {
         return pRealCodeHeader->pColdCodeHeader;
@@ -332,7 +330,7 @@ struct ColdCodeHeader
     }
 };
 
-static_assert_no_msg(sizeof(CodeHeader) == sizeof(ColdCodeHeader));
+static_assert(sizeof(CodeHeader) == sizeof(ColdCodeHeader), "CodeHeader and ColdCodeHeader must be the same size for the nibble map");
 
 typedef DPTR(RealCodeHeader) PTR_RealCodeHeader;
 typedef DPTR(InterpreterRealCodeHeader) PTR_InterpreterRealCodeHeader;
@@ -2023,9 +2021,7 @@ public:
     void AllocCode(MethodDesc* pMD, size_t hotBlockSize, size_t coldBlockSize, size_t reserveForJumpStubs, unsigned alignment,
                    void** ppCodeHeader, void** ppCodeHeaderRW, void** ppColdCodeHeader, void** ppColdCodeHeaderRW,
                    size_t* pAllocatedHotSize, size_t* pAllocatedColdSize, HeapList** ppCodeHeap , BYTE** ppRealHeader
-#ifdef FEATURE_EH_FUNCLETS
                  , UINT nUnwindInfos
-#endif
                   );
 
     BYTE *AllocFromJitMetaHeap(MethodDesc *pMD, size_t blockSize);
@@ -2816,7 +2812,6 @@ inline void EEJitManager::JitTokenToMethodRegionInfo(const METHODTOKEN& MethodTo
     methodRegionInfo->hotStartAddress = pCodeHeader->GetCodeStartAddress();
     methodRegionInfo->hotSize         = GetCodeManager()->GetFunctionSize(GetGCInfoToken(MethodToken));
 
-#ifdef FEATURE_EH_FUNCLETS
     ColdCodeHeader * pColdCodeHeader = pCodeHeader->GetColdCodeHeader();
     if (pColdCodeHeader != NULL)
     {
@@ -2832,7 +2827,6 @@ inline void EEJitManager::JitTokenToMethodRegionInfo(const METHODTOKEN& MethodTo
         methodRegionInfo->hotSize -= methodRegionInfo->coldSize;
     }
     else
-#endif // FEATURE_EH_FUNCLETS
     {
         methodRegionInfo->coldStartAddress = 0;
         methodRegionInfo->coldSize         = 0;
