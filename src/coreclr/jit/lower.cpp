@@ -4312,6 +4312,46 @@ GenTree* Lowering::OptimizeConstCompare(GenTree* cmp)
                 BlockRange().Remove(cast);
             }
         }
+#ifdef TARGET_XARCH
+        else if (varTypeIsSmall(castToType) && FitsIn(castToType, op2Value) &&
+                 (varTypeIsUnsigned(castToType) || !cmp->IsUnsigned()))
+        {
+            //
+            // Mirror of the TYP_UBYTE narrowing above for the remaining small types
+            // (TYP_BYTE, TYP_SHORT, TYP_USHORT). Comparing the cast source directly
+            // in its narrow form produces the same condition flags as the original
+            // sign- or zero-extended 32-bit compare, but saves the explicit
+            // movsx/movzx and (for byte-sized cases) yields a more compact encoding.
+            //
+            // Signed cast types are only narrowed for signed compares; unsigned cast
+            // types narrow unconditionally and rely on LowerCompare to switch the
+            // compare to unsigned afterwards.
+            //
+            bool removeCast =
+                castOp->OperIs(GT_LCL_VAR, GT_CALL, GT_OR, GT_XOR, GT_AND) || IsContainableMemoryOp(castOp);
+
+            if (removeCast)
+            {
+                assert(!castOp->gtOverflowEx());
+
+                castOp->gtType = castToType;
+                op2->gtType    = castToType;
+
+                castOp->ClearContained();
+
+                if (castOp->OperIs(GT_OR, GT_XOR, GT_AND))
+                {
+                    castOp->gtGetOp1()->ClearContained();
+                    castOp->gtGetOp2()->ClearContained();
+                    ContainCheckBinary(castOp->AsOp());
+                }
+
+                cmp->AsOp()->gtOp1 = castOp;
+
+                BlockRange().Remove(cast);
+            }
+        }
+#endif
     }
     else if (op1->OperIs(GT_AND) && cmp->OperIs(GT_EQ, GT_NE))
     {
