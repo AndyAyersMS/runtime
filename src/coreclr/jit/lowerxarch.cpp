@@ -282,6 +282,12 @@ GenTree* Lowering::LowerBinaryArithmetic(GenTreeOp* binOp)
             {
                 return replacementNode->gtNext;
             }
+
+            replacementNode = TryLowerAndOpToZeroHighBits(binOp);
+            if (replacementNode != nullptr)
+            {
+                return replacementNode->gtNext;
+            }
         }
         else if (binOp->OperIs(GT_XOR))
         {
@@ -6468,6 +6474,185 @@ GenTree* Lowering::TryLowerAndOpToAndNot(GenTreeOp* andNode)
     ContainCheckHWIntrinsic(andnNode);
 
     return andnNode;
+}
+
+//----------------------------------------------------------------------------------------------
+// Lowering::TryLowerAndOpToZeroHighBits: Lowers `AND(value, SUB(LSH(1, k), 1))` to
+// `HWIntrinsic::ZeroHighBits` (BMI2 BZHI) when BMI2 is available.
+//
+// Arguments:
+//    andNode - GT_AND node of integral type (TYP_INT or TYP_LONG)
+//
+// Return Value:
+//    Returns the replacement node if one is created, else nullptr indicating no replacement.
+//
+// Notes:
+//    BZHI's index operand reads only bits[7:0]. When that value is < operand size,
+//    BZHI returns `value & ((1 << index) - 1)`; otherwise it returns `value` unchanged.
+//    The C# expression `(1 << k) - 1` with `k >= operandSize` evaluates to 0 because
+//    the IL shift count is masked, so the two formulations only match when `k` is in
+//    [0, operandSize). When IntegralRange cannot prove that bound, we mask `k` with
+//    `operandSize - 1` so the transform stays correctness-preserving.
+//
+//    Performs containment checks on the replacement node if one is created.
+//
+GenTree* Lowering::TryLowerAndOpToZeroHighBits(GenTreeOp* andNode)
+{
+    assert(andNode->OperIs(GT_AND) && varTypeIsIntegral(andNode));
+
+    if (!andNode->TypeIs(TYP_INT, TYP_LONG))
+    {
+        return nullptr;
+    }
+
+    // The AND is commutative; the SUB/ADD can be on either side.
+    GenTree* op1   = andNode->gtGetOp1();
+    GenTree* op2   = andNode->gtGetOp2();
+    GenTree* value = nullptr;
+    GenTree* mask  = nullptr;
+
+    if (op2->OperIs(GT_SUB, GT_ADD))
+    {
+        value = op1;
+        mask  = op2;
+    }
+    else if (op1->OperIs(GT_SUB, GT_ADD))
+    {
+        value = op2;
+        mask  = op1;
+    }
+    else
+    {
+        return nullptr;
+    }
+
+    // Shape: SUB(LSH(1, k), 1)  or  ADD(LSH(1, k), -1).
+    // Morph canonicalizes `x - 1` to `x + (-1)`, so accept either.
+    GenTree* lsh     = mask->gtGetOp1();
+    GenTree* maskRhs = mask->gtGetOp2();
+
+    if (mask->OperIs(GT_SUB))
+    {
+        if (!maskRhs->IsIntegralConst(1))
+        {
+            return nullptr;
+        }
+    }
+    else
+    {
+        assert(mask->OperIs(GT_ADD));
+        if (!maskRhs->IsIntegralConst(-1))
+        {
+            return nullptr;
+        }
+    }
+
+    if (!lsh->OperIs(GT_LSH))
+    {
+        return nullptr;
+    }
+
+    GenTree* lshOp1 = lsh->gtGetOp1();
+    GenTree* k      = lsh->gtGetOp2();
+    if (!lshOp1->IsIntegralConst(1))
+    {
+        return nullptr;
+    }
+
+    // Subsequent nodes may rely on CPU flags set by these nodes in which case we cannot remove them.
+    if (((andNode->gtFlags & GTF_SET_FLAGS) != 0) || ((mask->gtFlags & GTF_SET_FLAGS) != 0) ||
+        ((lsh->gtFlags & GTF_SET_FLAGS) != 0))
+    {
+        return nullptr;
+    }
+
+    NamedIntrinsic intrinsic;
+    unsigned       operandSize;
+    if (andNode->TypeIs(TYP_LONG) && m_compiler->compOpportunisticallyDependsOn(InstructionSet_AVX2_X64))
+    {
+        intrinsic   = NamedIntrinsic::NI_AVX2_X64_ZeroHighBits;
+        operandSize = 64;
+    }
+    else if (andNode->TypeIs(TYP_INT) && m_compiler->compOpportunisticallyDependsOn(InstructionSet_AVX2))
+    {
+        intrinsic   = NamedIntrinsic::NI_AVX2_ZeroHighBits;
+        operandSize = 32;
+    }
+    else
+    {
+        return nullptr;
+    }
+
+    LIR::Use use;
+    if (!BlockRange().TryGetUse(andNode, &use))
+    {
+        return nullptr;
+    }
+
+    // Decide whether we need to insert an explicit mask on `k` to make the BZHI
+    // semantics match the original `(1 << k) - 1` form for `k >= operandSize`.
+    // First try a direct check for the common `AND(x, mask)` pattern: morph wraps
+    // every non-constant shift count in such an AND with `operandSize - 1`, so the
+    // mask is usually already present in the IR. IntegralRange can also prove it
+    // for explicitly bounded values.
+    bool kInRange = false;
+    if (k->OperIs(GT_AND))
+    {
+        GenTree* andRhs = k->gtGetOp2();
+        if (andRhs->IsIntegralConst())
+        {
+            int64_t maskVal = andRhs->AsIntConCommon()->IntegralValue();
+            if ((maskVal >= 0) && (static_cast<uint64_t>(maskVal) < operandSize))
+            {
+                kInRange = true;
+            }
+        }
+    }
+    if (!kInRange)
+    {
+        IntegralRange kRange      = IntegralRange::ForNode(k, m_compiler);
+        int64_t       kLowerBound = IntegralRange::SymbolicToRealValue(kRange.GetLowerBound());
+        int64_t       kUpperBound = IntegralRange::SymbolicToRealValue(kRange.GetUpperBound());
+        kInRange                  = (kLowerBound >= 0) && (kUpperBound < operandSize);
+    }
+
+    GenTree* indexNode = k;
+    if (!kInRange)
+    {
+        // BZHI's index reads only bits[7:0]. Masking with `operandSize - 1` before
+        // BZHI normalizes out-of-range counts to match the IL shift's mod semantics.
+        var_types kType   = genActualType(k->TypeGet());
+        GenTree*  maskCns = m_compiler->gtNewIconNode(static_cast<ssize_t>(operandSize - 1), kType);
+        GenTree*  maskedK = m_compiler->gtNewOperNode(GT_AND, kType, k, maskCns);
+        BlockRange().InsertBefore(andNode, maskCns, maskedK);
+        indexNode = maskedK;
+    }
+
+    // ZeroHighBits convention (see impSpecialIntrinsic): the node holds (index, value).
+    GenTreeHWIntrinsic* bzhiNode =
+        m_compiler->gtNewScalarHWIntrinsicNode(andNode->TypeGet(), indexNode, value, intrinsic);
+
+    JITDUMP("Lower: optimize AND(X, SUB(LSH(1, k), 1))\n");
+    DISPNODE(andNode);
+    JITDUMP("to:\n");
+    DISPNODE(bzhiNode);
+
+    BlockRange().InsertBefore(andNode, bzhiNode);
+    use.ReplaceWith(bzhiNode);
+
+    BlockRange().Remove(andNode);
+    BlockRange().Remove(mask);
+    BlockRange().Remove(maskRhs);
+    BlockRange().Remove(lsh);
+    BlockRange().Remove(lshOp1);
+
+    if (!kInRange)
+    {
+        LowerNode(indexNode);
+    }
+    ContainCheckHWIntrinsic(bzhiNode);
+
+    return bzhiNode;
 }
 
 //----------------------------------------------------------------------------------------------
