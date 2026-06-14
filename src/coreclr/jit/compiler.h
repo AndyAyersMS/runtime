@@ -2002,10 +2002,18 @@ struct NaturalLoopIterInfo
     // allowMissingBaseCase=true.
     bool NeedsZeroTripGuard : 1;
 
+    // Whether the IV's stride is a compile-time constant. When false the
+    // stride is a loop-invariant local (see StrideLclNum). Consumers that
+    // require a known direction must bail when this is false.
+    bool HasConstStride : 1;
+
     // Constant peeled from the loop limit so that the effective limit is
     // `LimitBase() + LimitOffset`. Non-zero only for HasInvariantLocalLimit
     // and HasArrayLengthLimit.
     int LimitOffset = 0;
+
+    // Local number of the IV's stride when HasConstStride is false; BAD_VAR_NUM otherwise.
+    unsigned StrideLclNum = BAD_VAR_NUM;
 
     NaturalLoopIterInfo()
         : ExitedOnTrue(false)
@@ -2015,6 +2023,7 @@ struct NaturalLoopIterInfo
         , HasInvariantLocalLimit(false)
         , HasArrayLengthLimit(false)
         , NeedsZeroTripGuard(false)
+        , HasConstStride(false)
     {
     }
 

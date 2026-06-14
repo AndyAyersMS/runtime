@@ -5688,6 +5688,45 @@ bool FlowGraphNaturalLoop::AnalyzeIteration(NaturalLoopIterInfo* info, bool allo
             continue;
         }
 
+        // Classify the IV's stride: const, or loop-invariant local. The
+        // local case requires the stride lcl be unmodified inside the loop
+        // (same check we use for the limit).
+        GenTree* incrVal        = iterTree->AsLclVar()->Data()->gtGetOp2();
+        bool     strideOk       = true;
+        unsigned strideLclNum   = BAD_VAR_NUM;
+        bool     hasConstStride = false;
+        if (incrVal->OperIs(GT_CNS_INT))
+        {
+            hasConstStride = true;
+        }
+        else if (incrVal->OperIs(GT_LCL_VAR))
+        {
+            const unsigned lclNum = incrVal->AsLclVarCommon()->GetLclNum();
+            if (comp->lvaGetDesc(lclNum)->IsAddressExposed())
+            {
+                JITDUMP("    Stride var V%02u is address exposed\n", lclNum);
+                strideOk = false;
+            }
+            else if (FindDef(lclNum) != nullptr)
+            {
+                JITDUMP("    Stride var V%02u modified inside the loop\n", lclNum);
+                strideOk = false;
+            }
+            else
+            {
+                strideLclNum = lclNum;
+            }
+        }
+        else
+        {
+            strideOk = false;
+        }
+
+        if (!strideOk)
+        {
+            continue;
+        }
+
         bool result = VisitDefs([=](GenTreeLclVarCommon* def) {
             if ((def->GetLclNum() != iterVar) || (def == iterTree))
                 return true;
@@ -5701,10 +5740,12 @@ bool FlowGraphNaturalLoop::AnalyzeIteration(NaturalLoopIterInfo* info, bool allo
             continue;
         }
 
-        info->TestBlock    = cond;
-        info->IterVar      = iterVar;
-        info->IterTree     = iterTree;
-        info->ExitedOnTrue = exitEdge->getDestinationBlock() == cond->GetTrueTarget();
+        info->TestBlock      = cond;
+        info->IterVar        = iterVar;
+        info->IterTree       = iterTree;
+        info->ExitedOnTrue   = exitEdge->getDestinationBlock() == cond->GetTrueTarget();
+        info->HasConstStride = hasConstStride;
+        info->StrideLclNum   = strideLclNum;
         break;
     }
 
@@ -6817,6 +6858,7 @@ bool FlowGraphNaturalLoop::IsPostDominatedOnLoopIteration(BasicBlock* block, Bas
 //
 int NaturalLoopIterInfo::IterConst()
 {
+    assert(HasConstStride);
     GenTree* value = IterTree->AsLclVar()->Data();
     return (int)value->gtGetOp2()->AsIntCon()->IconValue();
 }
@@ -6891,6 +6933,14 @@ bool NaturalLoopIterInfo::IsIncreasingLoop()
     // such loops visit indices [init, limit) provided that "init <= limit" holds on entry.
     // Stride must be ±1 to avoid parity/overflow issues where the IV could skip past the limit
     // (e.g. "for (i = 0; i != 5; i += 2)" never terminates and wraps around).
+    //
+    // A variable stride cannot be classified here -- the direction depends on the
+    // runtime sign of the stride local. Consumers that want to handle variable
+    // strides must do so directly.
+    if (!HasConstStride)
+    {
+        return false;
+    }
     const genTreeOps testOp = TestOper();
     if (GenTree::StaticOperIs(testOp, GT_LT, GT_LE))
     {
@@ -6916,6 +6966,10 @@ bool NaturalLoopIterInfo::IsDecreasingLoop()
     // "+=", make sure the constant is negative to give an effect of decrementing the iterator.
     // As with IsIncreasingLoop, we also recognize "!=" against a limit when the IV step is exactly -1
     // (or +1 with GT_SUB); the stride must be exactly +/-1 to avoid parity/overflow issues.
+    if (!HasConstStride)
+    {
+        return false;
+    }
     const genTreeOps testOp = TestOper();
     if (GenTree::StaticOperIs(testOp, GT_GT, GT_GE))
     {

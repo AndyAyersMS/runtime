@@ -260,9 +260,14 @@ unsigned Compiler::optIsLoopIncrTree(GenTree* incr)
                 return BAD_VAR_NUM;
         }
 
-        // Increment should be by a const int.
-        // TODO-CQ: CLONE: allow variable increments.
-        if (!incrVal->OperIs(GT_CNS_INT) || !incrVal->TypeIs(TYP_INT))
+        // The increment value must be integral and match the IV's type. Both
+        // constants and loop-invariant locals are accepted here; AnalyzeIteration
+        // verifies invariance for the local case.
+        if (!varTypeIsIntegral(incrVal) || incrVal->TypeIs(TYP_REF))
+        {
+            return BAD_VAR_NUM;
+        }
+        if (!incrVal->OperIs(GT_CNS_INT) && !incrVal->OperIs(GT_LCL_VAR))
         {
             return BAD_VAR_NUM;
         }
@@ -1340,9 +1345,10 @@ bool Compiler::optTryUnrollLoop(FlowGraphNaturalLoop* loop, bool* changedIR)
     }
 
     // Check for required flags:
-    // HasConstInit  - required because this transform only handles full unrolls
-    // HasConstLimit - required because this transform only handles full unrolls
-    if (!iterInfo.HasConstInit || !iterInfo.HasConstLimit)
+    // HasConstInit   - required because this transform only handles full unrolls
+    // HasConstLimit  - required because this transform only handles full unrolls
+    // HasConstStride - required to compute a constant trip count
+    if (!iterInfo.HasConstInit || !iterInfo.HasConstLimit || !iterInfo.HasConstStride)
     {
         // Don't print to the JitDump about this common case.
         return false;

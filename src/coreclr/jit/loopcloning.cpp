@@ -3227,6 +3227,11 @@ bool Compiler::optObtainLoopCloningOpts(LoopCloneContext* context)
         if (loop->AnalyzeIteration(&iterInfo, /* allowMissingBaseCase */ true))
         {
             context->SetLoopIterInfo(loop->GetIndex(), new (this, CMK_LoopClone) NaturalLoopIterInfo(iterInfo));
+
+            if (!iterInfo.HasConstStride)
+            {
+                Metrics.LoopsWithVariableStride++;
+            }
         }
 
         if (optIsLoopClonable(loop, context) && optIdentifyLoopOptInfo(loop, context))
