@@ -7047,6 +7047,31 @@ unsigned NaturalLoopIterInfo::VarLimit()
 }
 
 //------------------------------------------------------------------------
+// MDArrayLengthLimit: Extract the array local, dim, and rank for an MD-array
+// per-dim length limit `MDARR_LENGTH(arr, dim, rank)`.
+//
+// Parameters:
+//   arrLcl - [out] loop-invariant array local
+//   dim    - [out] dimension index
+//   rank   - [out] total rank of the MD array
+//
+// Remarks:
+//   Only valid if HasMDArrayLengthLimit is true.
+//
+void NaturalLoopIterInfo::MDArrayLengthLimit(unsigned* arrLcl, unsigned* dim, unsigned* rank)
+{
+    assert(HasMDArrayLengthLimit);
+    GenTree* limit = LimitBase();
+    assert(limit->OperIs(GT_MDARR_LENGTH));
+    GenTreeMDArr* mdLen = limit->AsMDArr();
+    GenTree*      arr   = mdLen->ArrRef();
+    assert(arr->OperIs(GT_LCL_VAR));
+    *arrLcl = arr->AsLclVarCommon()->GetLclNum();
+    *dim    = mdLen->Dim();
+    *rank   = mdLen->Rank();
+}
+
+//------------------------------------------------------------------------
 // ArrLenLimit: Get the array length used in the loop condition, i.e. when the
 // loop condition is "i RELOP arr.len".
 //

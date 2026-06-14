@@ -2038,6 +2038,10 @@ struct NaturalLoopIterInfo
     unsigned VarLimit();
     bool ArrLenLimit(Compiler* comp, ArrIndex* index);
 
+    // For HasMDArrayLengthLimit: extract the per-dim array length limit info.
+    // Returns the loop-invariant array local, the dimension, and the rank.
+    void MDArrayLengthLimit(unsigned* arrLcl, unsigned* dim, unsigned* rank);
+
 private:
     bool IsReversed();
 };
@@ -9230,6 +9234,8 @@ public:
     bool optCloningHeuristic(FlowGraphNaturalLoop* loop, LoopCloneContext* context);
     bool optExtractArrIndex(GenTree* tree, ArrIndex* result, unsigned lhsNum, bool* topLevelIsFinal);
     bool optExtractSpanIndex(GenTree* tree, SpanIndex* result);
+    bool optExtractMdArrayPerDimBndsChk(
+        GenTree* tree, unsigned* arrLcl, unsigned* origIdx, unsigned* dim, unsigned* rank);
     bool optReconstructArrIndexHelp(GenTree* tree, ArrIndex* result, unsigned lhsNum, bool* topLevelIsFinal);
     bool optReconstructArrIndex(GenTree* tree, ArrIndex* result);
     bool optIdentifyLoopOptInfo(FlowGraphNaturalLoop* loop, LoopCloneContext* context);

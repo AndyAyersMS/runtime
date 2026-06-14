@@ -125,8 +125,13 @@ GenTree* LC_Array::ToGenTree(Compiler* comp, BasicBlock* bb)
     }
     else
     {
-        // TODO-CQ: Optimize for MD Array.
-        assert(!"Optimize for MD Array");
+        assert(type == MdArray);
+        assert(oper == ArrLen);
+        assert(mdRank > 0);
+        assert((dim >= 0) && ((unsigned)dim < mdRank));
+        GenTree* arr   = comp->gtNewLclvNode(arrIndex->arrLcl, comp->lvaTable[arrIndex->arrLcl].lvType);
+        GenTree* mdLen = comp->gtNewMDArrLen(arr, (unsigned)dim, mdRank);
+        return mdLen;
     }
     return nullptr;
 }
@@ -1505,6 +1510,29 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
             context->EnsureConditions(loop->GetIndex())->Push(geZero);
         }
     }
+    else if (iterInfo->HasMDArrayLengthLimit)
+    {
+        // For an MD-array per-dim length limit, build `ident` as a symbolic
+        // MDARR_LENGTH so per-access conditions can compare against it.
+        // MDARR_LENGTH is non-negative and bounded by Array.MaxLength, so no
+        // extra ge-zero guard is needed.
+        if (isIncreasingLoop)
+        {
+            unsigned mdArrLcl = BAD_VAR_NUM;
+            unsigned mdDim    = 0;
+            unsigned mdRank   = 0;
+            iterInfo->MDArrayLengthLimit(&mdArrLcl, &mdDim, &mdRank);
+
+            ArrIndex* limitIdx = new (this, CMK_LoopClone) ArrIndex(getAllocator(CMK_LoopClone));
+            limitIdx->arrLcl   = mdArrLcl;
+            limitIdx->arrType  = TYP_REF;
+            limitIdx->rank     = mdRank;
+
+            LC_Array arr(LC_Array::MdArray, limitIdx, (int)mdDim, LC_Array::ArrLen);
+            arr.mdRank = mdRank;
+            ident      = LC_Ident::CreateArrAccess(arr, iterInfo->LimitOffset);
+        }
+    }
     else
     {
         JITDUMP("> Undetected limit\n");
@@ -1573,13 +1601,20 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
             case LcOptInfo::LcMdArray:
             {
                 LcMdArrayOptInfo* mdArrInfo = optInfo->AsLcMdArrayOptInfo();
-                LC_Array arrLen(LC_Array(LC_Array::MdArray, mdArrInfo->GetArrIndexForDim(getAllocator(CMK_LoopClone)),
-                                         mdArrInfo->dim, LC_Array::None));
-                LC_Ident arrLenIdent = LC_Ident::CreateArrAccess(arrLen);
+
+                // Build a synthetic ArrIndex referring to the MD array local. The
+                // MdArray LC_Array path materializes `MDARR_LENGTH(arr, dim, rank)`
+                // and only needs the arrLcl + dim + rank — indLcls are unused.
+                ArrIndex* mdIndex = new (this, CMK_LoopClone) ArrIndex(getAllocator(CMK_LoopClone));
+                mdIndex->arrLcl   = mdArrInfo->arrLcl;
+                mdIndex->arrType  = TYP_REF;
+                mdIndex->rank     = mdArrInfo->rank;
+
+                LC_Array arrLen(LC_Array::MdArray, mdIndex, (int)mdArrInfo->dim, LC_Array::ArrLen);
+                arrLen.mdRank            = mdArrInfo->rank;
+                LC_Ident     arrLenIdent = LC_Ident::CreateArrAccess(arrLen);
                 LC_Condition cond(opLimitCondition, LC_Expr(ident), LC_Expr(arrLenIdent));
                 context->EnsureConditions(loop->GetIndex())->Push(cond);
-
-                // TODO: ensure array is dereference-able?
             }
             break;
 
@@ -2016,8 +2051,28 @@ void Compiler::optPerformStaticOptimizations(FlowGraphNaturalLoop*     loop,
             }
             break;
             case LcOptInfo::LcMdArray:
-                // TODO-CQ: CLONE: Implement.
-                break;
+            {
+                LcMdArrayOptInfo* mdInfo = optInfo->AsLcMdArrayOptInfo();
+                compCurBB                = mdInfo->useBlock;
+                // The outer COMMA is COMMA(STORE_LCL_VAR(effIdx, SUB), COMMA(BOUNDS_CHECK, LCL_VAR effIdx)).
+                // optRemoveCommaBasedRangeCheck wants the inner COMMA whose op1 is the BOUNDS_CHECK.
+                GenTree* innerComma = mdInfo->bndsChkComma->gtGetOp2();
+                assert(innerComma->OperIs(GT_COMMA));
+                if (innerComma->gtGetOp1()->OperIs(GT_BOUNDS_CHECK))
+                {
+                    JITDUMP("Remove MD bounds check ");
+                    DBEXEC(verbose, printTreeID(innerComma->gtGetOp1()));
+                    JITDUMP(" for " FMT_STMT " V%02u dim %u\n", mdInfo->stmt->GetID(), mdInfo->arrLcl, mdInfo->dim);
+                    optRemoveCommaBasedRangeCheck(innerComma, mdInfo->stmt);
+                }
+                else
+                {
+                    JITDUMP("  MD bounds check already removed\n");
+                    assert(innerComma->gtGetOp1()->OperIs(GT_NOP));
+                }
+                DBEXEC(dynamicPath, optDebugLogLoopCloning(mdInfo->useBlock, mdInfo->stmt));
+            }
+            break;
             case LcOptInfo::LcTypeTest:
             case LcOptInfo::LcMethodAddrTest:
             {
@@ -2131,18 +2186,6 @@ bool Compiler::optIsLoopClonable(FlowGraphNaturalLoop* loop, LoopCloneContext* c
     {
         assert(iterInfo->HasConstLimit || iterInfo->HasInvariantLocalLimit || iterInfo->HasArrayLengthLimit ||
                iterInfo->HasMDArrayLengthLimit);
-
-        // Loop cloning emission doesn't materialize MD per-dim lengths yet
-        // (LC_Array::ToGenTree MdArray path is unimplemented and the
-        // bounds-check stripping needs the body-side index analysis to
-        // peel `effIdx = idx - MDARR_LOWER_BOUND`). Recognition succeeded
-        // so other consumers (LICM, IV widening) still benefit.
-        if (iterInfo->HasMDArrayLengthLimit)
-        {
-            JITDUMP("Loop cloning: rejecting loop " FMT_LP ". MD-array length limit not yet supported by cloning.\n",
-                    loop->GetIndex());
-            return false;
-        }
 
         // TODO-CQ: Handle other loops like:
         // - The ones whose limit operator is "==" or "!="
@@ -2559,6 +2602,116 @@ bool Compiler::optExtractArrIndex(GenTree* tree, ArrIndex* result, unsigned lhsN
 }
 
 //---------------------------------------------------------------------------------------------------------------
+//  optExtractMdArrayPerDimBndsChk: Try to extract a multi-dimensional per-dim bounds check from "tree".
+//
+//  fgMorphArrayOps lowers a GT_ARR_ELEM into per-dim BOUNDS_CHECK trees with a shape:
+//
+//    COMMA
+//      STORE_LCL_VAR  effIdx
+//        SUB                                <-- effective index = idx - lower bound
+//          <origIdx>
+//          MDARR_LOWER_BOUND (arr, dim, rank)
+//      COMMA
+//        BOUNDS_CHECK
+//          LCL_VAR        effIdx
+//          MDARR_LENGTH   (arr, dim, rank)
+//        LCL_VAR          effIdx           <-- COMMA-value used in linearized address
+//
+//  This routine matches that exact shape and returns the array local, the original
+//  index local, and which dimension's check this is. Only LCL_VAR forms are accepted
+//  for the array reference, original index, and effIdx.
+//
+//  Arguments:
+//      tree     - candidate outer COMMA
+//      arrLcl   - [out] MD array local
+//      origIdx  - [out] original (pre-lower-bound) index local (loop iter var candidate)
+//      dim      - [out] dimension this bounds check covers
+//      rank     - [out] total rank of the MD array
+//
+//  Return Value:
+//      True on a match; false otherwise.
+//
+bool Compiler::optExtractMdArrayPerDimBndsChk(
+    GenTree* tree, unsigned* arrLcl, unsigned* origIdx, unsigned* dim, unsigned* rank)
+{
+    if (!tree->OperIs(GT_COMMA))
+    {
+        return false;
+    }
+    GenTree* outerOp1 = tree->gtGetOp1();
+    GenTree* outerOp2 = tree->gtGetOp2();
+    if (!outerOp1->OperIs(GT_STORE_LCL_VAR) || !outerOp2->OperIs(GT_COMMA))
+    {
+        return false;
+    }
+
+    GenTreeLclVar* effIdxStore = outerOp1->AsLclVar();
+    GenTree*       storeRhs    = effIdxStore->Data();
+    if (!storeRhs->OperIs(GT_SUB))
+    {
+        return false;
+    }
+
+    GenTree* origIdxNode = storeRhs->gtGetOp1();
+    GenTree* lowerBound  = storeRhs->gtGetOp2();
+    if (!origIdxNode->OperIs(GT_LCL_VAR) || !lowerBound->OperIs(GT_MDARR_LOWER_BOUND))
+    {
+        return false;
+    }
+
+    GenTreeMDArr* lbMD     = lowerBound->AsMDArr();
+    GenTree*      lbArrRef = lbMD->ArrRef();
+    if (!lbArrRef->OperIs(GT_LCL_VAR))
+    {
+        return false;
+    }
+
+    GenTree* innerBndsComma = outerOp2;
+    GenTree* bndsChk        = innerBndsComma->gtGetOp1();
+    GenTree* effIdxUse      = innerBndsComma->gtGetOp2();
+    if (!bndsChk->OperIs(GT_BOUNDS_CHECK) || !effIdxUse->OperIs(GT_LCL_VAR))
+    {
+        return false;
+    }
+    if (effIdxUse->AsLclVar()->GetLclNum() != effIdxStore->GetLclNum())
+    {
+        return false;
+    }
+
+    GenTreeBoundsChk* bchk = bndsChk->AsBoundsChk();
+    GenTree*          idx  = bchk->GetIndex();
+    GenTree*          len  = bchk->GetArrayLength();
+    if (!idx->OperIs(GT_LCL_VAR) || (idx->AsLclVar()->GetLclNum() != effIdxStore->GetLclNum()))
+    {
+        return false;
+    }
+    if (!len->OperIs(GT_MDARR_LENGTH))
+    {
+        return false;
+    }
+
+    GenTreeMDArr* lenMD     = len->AsMDArr();
+    GenTree*      lenArrRef = lenMD->ArrRef();
+    if (!lenArrRef->OperIs(GT_LCL_VAR))
+    {
+        return false;
+    }
+
+    // Length and lower-bound must reference the same array and dimension.
+    if ((lenArrRef->AsLclVar()->GetLclNum() != lbArrRef->AsLclVar()->GetLclNum()) || (lenMD->Dim() != lbMD->Dim()) ||
+        (lenMD->Rank() != lbMD->Rank()))
+    {
+        return false;
+    }
+
+    *arrLcl  = lenArrRef->AsLclVar()->GetLclNum();
+    *origIdx = origIdxNode->AsLclVar()->GetLclNum();
+    *dim     = lenMD->Dim();
+    *rank    = lenMD->Rank();
+    return true;
+}
+
+//---------------------------------------------------------------------------------------------------------------
 //  optExtractSpanIndex: Try to extract the Span element access from "tree".
 //
 //  Arguments:
@@ -2794,6 +2947,38 @@ bool Compiler::optReconstructArrIndex(GenTree* tree, ArrIndex* result)
 //
 Compiler::fgWalkResult Compiler::optCanOptimizeByLoopCloning(GenTree* tree, LoopCloneVisitorInfo* info)
 {
+    // Check for a multi-dimensional per-dim bounds check, after fgMorphArrayOps
+    // has lowered GT_ARR_ELEM into:
+    //   COMMA(STORE_LCL_VAR(effIdx, SUB(origIdx, MDARR_LOWER_BOUND(arr, dim, rank))),
+    //         COMMA(BOUNDS_CHECK(effIdx, MDARR_LENGTH(arr, dim, rank)), LCL_VAR effIdx))
+    if (info->cloneForArrayBounds && tree->OperIs(GT_COMMA))
+    {
+        unsigned mdArrLcl  = BAD_VAR_NUM;
+        unsigned mdOrigIdx = BAD_VAR_NUM;
+        unsigned mdDim     = 0;
+        unsigned mdRank    = 0;
+        if (optExtractMdArrayPerDimBndsChk(tree, &mdArrLcl, &mdOrigIdx, &mdDim, &mdRank))
+        {
+            NaturalLoopIterInfo* iterInfo = info->context->GetLoopIterInfo(info->loop->GetIndex());
+            if ((iterInfo != nullptr) && (iterInfo->IterVar == mdOrigIdx) &&
+                optIsStackLocalInvariant(info->loop, mdArrLcl))
+            {
+                JITDUMP("Loop " FMT_LP " can be cloned for MD ArrIndex V%02u[..., V%02u, ...] dim %u of rank %u\n",
+                        info->loop->GetIndex(), mdArrLcl, mdOrigIdx, mdDim, mdRank);
+                info->context->EnsureLoopOptInfo(info->loop->GetIndex())
+                    ->Push(new (this, CMK_LoopOpt)
+                               LcMdArrayOptInfo(mdArrLcl, mdDim, mdRank, tree, compCurBB, info->stmt));
+            }
+            else if (iterInfo != nullptr)
+            {
+                JITDUMP("MD ArrIndex V%02u dim %u: orig index V%02u %s iter V%02u\n", mdArrLcl, mdDim, mdOrigIdx,
+                        (iterInfo->IterVar == mdOrigIdx) ? "matches but arr not invariant" : "doesn't match",
+                        iterInfo->IterVar);
+            }
+            return WALK_SKIP_SUBTREES;
+        }
+    }
+
     ArrIndex arrIndex(getAllocator(CMK_LoopClone));
 
     // Check if array index can be optimized.
@@ -3334,6 +3519,7 @@ bool Compiler::optCloningHeuristic(FlowGraphNaturalLoop* loop, LoopCloneContext*
                 break;
             case LcOptInfo::LcMdArray:
                 cyclesSaved = 3.0;
+                checkBlock  = info->AsLcMdArrayOptInfo()->useBlock;
                 break;
             case LcOptInfo::LcTypeTest:
                 cyclesSaved = 3.0;
