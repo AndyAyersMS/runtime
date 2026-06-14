@@ -5938,6 +5938,36 @@ bool FlowGraphNaturalLoop::MatchLimit(unsigned iterVar, GenTree* test, NaturalLo
 
         info->HasArrayLengthLimit = true;
     }
+    else if (limitOp->OperIs(GT_MDARR_LENGTH))
+    {
+        // Multi-dimensional array per-dim length: `Array.GetLength(d)` is
+        // expanded by the importer into this node so analysis can treat it
+        // canonically (a positive int bounded by Array.MaxLength). The array
+        // reference must be a loop-invariant local.
+        GenTree* const array = limitOp->AsArrCommon()->ArrRef();
+
+        if (!array->OperIs(GT_LCL_VAR))
+        {
+            JITDUMP("    MD array limit tree [%06u] not analyzable\n", Compiler::dspTreeID(limitOp));
+            return false;
+        }
+
+        if (comp->lvaGetDesc(array->AsLclVarCommon())->IsAddressExposed())
+        {
+            JITDUMP("    MD array base local V%02u is address exposed\n", array->AsLclVarCommon()->GetLclNum());
+            return false;
+        }
+
+        GenTreeLclVarCommon* def = FindDef(array->AsLclVarCommon()->GetLclNum());
+        if (def != nullptr)
+        {
+            JITDUMP("    MD array limit var V%02u modified by [%06u]\n", array->AsLclVarCommon()->GetLclNum(),
+                    Compiler::dspTreeID(def));
+            return false;
+        }
+
+        info->HasMDArrayLengthLimit = true;
+    }
     else
     {
         JITDUMP("    Loop limit tree [%06u] not analyzable\n", Compiler::dspTreeID(limitOp));
@@ -5946,7 +5976,8 @@ bool FlowGraphNaturalLoop::MatchLimit(unsigned iterVar, GenTree* test, NaturalLo
 
     // Were we able to successfully analyze the limit?
     //
-    assert(info->HasConstLimit || info->HasInvariantLocalLimit || info->HasArrayLengthLimit);
+    assert(info->HasConstLimit || info->HasInvariantLocalLimit || info->HasArrayLengthLimit ||
+           info->HasMDArrayLengthLimit);
 
     info->TestTree = relop;
     return true;

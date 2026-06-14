@@ -1993,6 +1993,12 @@ struct NaturalLoopIterInfo
     // length of an invariant array.
     bool HasArrayLengthLimit : 1;
 
+    // Whether or not the loop test compares the induction variable with a
+    // multi-dimensional array's per-dimension length (`Array.GetLength(d)`
+    // expanded to GT_MDARR_LENGTH). Mutually exclusive with the other Has*
+    // limit flags.
+    bool HasMDArrayLengthLimit : 1;
+
     // Whether the consumer must emit its own runtime entry guard for this loop.
     // Set when AnalyzeIteration could not prove statically that the loop
     // condition [IterVar TestOper Limit] holds on entry (so the analysis
@@ -2014,6 +2020,7 @@ struct NaturalLoopIterInfo
         , HasSimdLimit(false)
         , HasInvariantLocalLimit(false)
         , HasArrayLengthLimit(false)
+        , HasMDArrayLengthLimit(false)
         , NeedsZeroTripGuard(false)
     {
     }

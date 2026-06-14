@@ -2129,7 +2129,20 @@ bool Compiler::optIsLoopClonable(FlowGraphNaturalLoop* loop, LoopCloneContext* c
 
     if (requireIterable)
     {
-        assert(iterInfo->HasConstLimit || iterInfo->HasInvariantLocalLimit || iterInfo->HasArrayLengthLimit);
+        assert(iterInfo->HasConstLimit || iterInfo->HasInvariantLocalLimit || iterInfo->HasArrayLengthLimit ||
+               iterInfo->HasMDArrayLengthLimit);
+
+        // Loop cloning emission doesn't materialize MD per-dim lengths yet
+        // (LC_Array::ToGenTree MdArray path is unimplemented and the
+        // bounds-check stripping needs the body-side index analysis to
+        // peel `effIdx = idx - MDARR_LOWER_BOUND`). Recognition succeeded
+        // so other consumers (LICM, IV widening) still benefit.
+        if (iterInfo->HasMDArrayLengthLimit)
+        {
+            JITDUMP("Loop cloning: rejecting loop " FMT_LP ". MD-array length limit not yet supported by cloning.\n",
+                    loop->GetIndex());
+            return false;
+        }
 
         // TODO-CQ: Handle other loops like:
         // - The ones whose limit operator is "==" or "!="
@@ -3166,9 +3179,10 @@ Compiler::fgWalkResult Compiler::optCanOptimizeByLoopCloningVisitor(GenTree** pT
 //
 bool Compiler::optIdentifyLoopOptInfo(FlowGraphNaturalLoop* loop, LoopCloneContext* context)
 {
-    NaturalLoopIterInfo* iterInfo               = context->GetLoopIterInfo(loop->GetIndex());
-    const bool           canCloneForArrayBounds = ((optMethodFlags & OMF_HAS_ARRAYREF) != 0) && (iterInfo != nullptr);
-    const bool           canCloneForTypeTests   = ((optMethodFlags & OMF_HAS_GUARDEDDEVIRT) != 0);
+    NaturalLoopIterInfo* iterInfo = context->GetLoopIterInfo(loop->GetIndex());
+    const bool           canCloneForArrayBounds =
+        ((optMethodFlags & (OMF_HAS_ARRAYREF | OMF_HAS_MDARRAYREF)) != 0) && (iterInfo != nullptr);
+    const bool canCloneForTypeTests = ((optMethodFlags & OMF_HAS_GUARDEDDEVIRT) != 0);
 
     if (!canCloneForArrayBounds && !canCloneForTypeTests)
     {
