@@ -11421,6 +11421,81 @@ GenTree* Compiler::fgMorphSmpOpOptional(GenTreeOp* tree, bool* optAssertionPropD
                 }
             }
 
+            // Fold "(x >>{>} N) << N" into "x & ~((1 << N) - 1)".
+            //
+            // For GT_RSZ the high N bits are zero; LSH puts them back. For GT_RSH
+            // the high N bits hold the sign extension; the outer LSH discards them.
+            // Either way the result equals x with the low N bits cleared.
+            //
+            if (op2->IsCnsIntOrI() && op1->OperIs(GT_RSH, GT_RSZ) && op1->AsOp()->gtGetOp2()->IsCnsIntOrI() &&
+                varTypeIsIntegral(tree))
+            {
+                ssize_t        outerShift = op2->AsIntConCommon()->IconValue();
+                ssize_t        innerShift = op1->AsOp()->gtGetOp2()->AsIntConCommon()->IconValue();
+                unsigned const width      = genTypeSize(genActualType(tree->TypeGet())) * 8;
+                unsigned const shiftMask  = width - 1;
+
+                if (((outerShift & shiftMask) == (innerShift & shiftMask)) && ((outerShift & shiftMask) != 0))
+                {
+                    unsigned const n          = static_cast<unsigned>(outerShift & shiftMask);
+                    GenTree*       x          = op1->AsOp()->gtGetOp1();
+                    GenTree*       innerCount = op1->AsOp()->gtGetOp2();
+                    ssize_t        andMask    = ~((static_cast<ssize_t>(1) << n) - 1);
+
+                    tree->ChangeOper(GT_AND, GenTree::PRESERVE_VN);
+                    tree->AsOp()->gtOp1 = x;
+                    tree->gtFlags       = (tree->gtFlags & ~GTF_ALL_EFFECT) | (x->gtFlags & GTF_ALL_EFFECT);
+
+                    op2->gtType = tree->TypeGet();
+                    op2->AsIntConCommon()->SetValueTruncating(andMask);
+                    fgUpdateConstTreeValueNumber(op2);
+                    tree->gtFlags |= (op2->gtFlags & GTF_ALL_EFFECT);
+
+                    DEBUG_DESTROY_NODE(innerCount);
+                    DEBUG_DESTROY_NODE(op1);
+                }
+            }
+
+            break;
+
+        case GT_RSZ:
+
+            // Fold "(x << N) >>> N" into "x & ((1 << (W - N)) - 1)".
+            //
+            // The outer logical right shift zeros the top N bits that LSH had
+            // shifted in; the bits that survive are the low (W - N) bits of x.
+            // Equivalent only for unsigned right shift; an arithmetic shift
+            // would sign-extend bit (W - N - 1) instead.
+            //
+            if (op2->IsCnsIntOrI() && op1->OperIs(GT_LSH) && op1->AsOp()->gtGetOp2()->IsCnsIntOrI() &&
+                varTypeIsIntegral(tree))
+            {
+                ssize_t        outerShift = op2->AsIntConCommon()->IconValue();
+                ssize_t        innerShift = op1->AsOp()->gtGetOp2()->AsIntConCommon()->IconValue();
+                unsigned const width      = genTypeSize(genActualType(tree->TypeGet())) * 8;
+                unsigned const shiftMask  = width - 1;
+
+                if (((outerShift & shiftMask) == (innerShift & shiftMask)) && ((outerShift & shiftMask) != 0))
+                {
+                    unsigned const n          = static_cast<unsigned>(outerShift & shiftMask);
+                    GenTree*       x          = op1->AsOp()->gtGetOp1();
+                    GenTree*       innerCount = op1->AsOp()->gtGetOp2();
+                    ssize_t        andMask    = (static_cast<ssize_t>(1) << (width - n)) - 1;
+
+                    tree->ChangeOper(GT_AND, GenTree::PRESERVE_VN);
+                    tree->AsOp()->gtOp1 = x;
+                    tree->gtFlags       = (tree->gtFlags & ~GTF_ALL_EFFECT) | (x->gtFlags & GTF_ALL_EFFECT);
+
+                    op2->gtType = tree->TypeGet();
+                    op2->AsIntConCommon()->SetValueTruncating(andMask);
+                    fgUpdateConstTreeValueNumber(op2);
+                    tree->gtFlags |= (op2->gtFlags & GTF_ALL_EFFECT);
+
+                    DEBUG_DESTROY_NODE(innerCount);
+                    DEBUG_DESTROY_NODE(op1);
+                }
+            }
+
             break;
 
         case GT_INIT_VAL:
