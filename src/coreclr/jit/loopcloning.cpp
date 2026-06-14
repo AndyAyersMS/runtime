@@ -196,8 +196,8 @@ GenTree* LC_Ident::ToGenTree(Compiler* comp, BasicBlock* bb)
                 return comp->gtNewMethodTableLookup(addr);
             }
 
-            addr                 = comp->gtNewOperNode(GT_ADD, TYP_BYREF, addr,
-                                                       comp->gtNewIconNode(static_cast<ssize_t>(indirOffs), TYP_I_IMPL));
+            addr = comp->gtNewOperNode(GT_ADD, TYP_BYREF, addr,
+                                       comp->gtNewIconNode(static_cast<ssize_t>(indirOffs), TYP_I_IMPL));
             GenTree* const indir = comp->gtNewIndir(TYP_I_IMPL, addr, GTF_IND_INVARIANT);
             return indir;
         }
@@ -1213,18 +1213,39 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
         return false;
     }
 
-    const bool isIncreasingLoop = iterInfo->IsIncreasingLoop();
-    if (!isIncreasingLoop && !iterInfo->IsDecreasingLoop())
+    // Infer the loop's iteration direction. For const-stride loops use the
+    // existing classifier; for variable-stride loops the direction depends
+    // on the runtime sign of the stride. We currently only support
+    // increasing variable-stride loops (LT/LE); decreasing variable-stride
+    // would require a signed cap condition which the unsigned LC_Ident
+    // constant form can't express. NE is rejected (parity).
+    bool       isIncreasingLoop = iterInfo->IsIncreasingLoop();
+    bool       isDecreasingLoop = iterInfo->IsDecreasingLoop();
+    const bool hasVarStride     = !iterInfo->HasConstStride;
+    if (hasVarStride)
+    {
+        const genTreeOps testOp = iterInfo->TestOper();
+        if (GenTree::StaticOperIs(testOp, GT_LT, GT_LE))
+        {
+            isIncreasingLoop = true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    if (!isIncreasingLoop && !isDecreasingLoop)
     {
         // Normally, we reject weird-looking loops in optIsLoopClonable, but it's not the case
         // when we have both GDVs and array checks inside such loops.
         return false;
     }
 
-    // We already know that this is either increasing or decreasing loop and the
-    // stride is (> 0) or (< 0). Here, just take the abs() value and check if it
-    // is beyond the limit.
-    int stride = abs(iterInfo->IterConst());
+    // For const stride we know the magnitude up front; for variable stride
+    // the magnitude is enforced via a runtime cap (stride <= 57 / >= -57)
+    // emitted as a cloning condition below.
+    int stride = hasVarStride ? (INT32_MAX - (CORINFO_Array_MaxLength - 1)) : abs(iterInfo->IterConst());
 
     static_assert(INT32_MAX >= CORINFO_Array_MaxLength);
     if (stride >= (INT32_MAX - (CORINFO_Array_MaxLength - 1) + 1))
@@ -1235,6 +1256,34 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
         // (int.MaxValue - (Array.MaxLength - 1) + 1), which is
         // (0X7fffffff - 0x7fffffc7 + 2) = 0x3a or 58.
         return false;
+    }
+
+    // Variable-stride span cloning would need a runtime overflow guard against
+    // the stride local; defer until a workload demands it.
+    if (hasVarStride && hasSpans)
+    {
+        JITDUMP("> Variable stride with Span access not yet supported\n");
+        return false;
+    }
+
+    // For variable strides emit two runtime cloning conditions:
+    //  * sign  : stride > 0 (we only support increasing for now).
+    //  * cap   : stride <= 57 so the post-step IV stays in range for an
+    //            array limit (matches the const-stride compile-time cap).
+    if (hasVarStride)
+    {
+        assert(isIncreasingLoop);
+        const unsigned  strideLcl   = iterInfo->StrideLclNum;
+        const var_types strideTyp   = lvaGetDesc(strideLcl)->TypeGet();
+        LC_Ident        strideIdent = LC_Ident::CreateVar(strideLcl, strideTyp);
+
+        const unsigned cap = INT32_MAX - (CORINFO_Array_MaxLength - 1); // 57
+
+        LC_Condition signCond(GT_GT, LC_Expr(strideIdent), LC_Expr(LC_Ident::CreateConst(0u)));
+        LC_Condition capCond(GT_LE, LC_Expr(strideIdent), LC_Expr(LC_Ident::CreateConst(cap)));
+        context->EnsureConditions(loop->GetIndex())->Push(signCond);
+        context->EnsureConditions(loop->GetIndex())->Push(capCond);
+        JITDUMP("Added variable-stride guards: V%02u > 0 && V%02u <= %u\n", strideLcl, strideLcl, cap);
     }
 
     // Span<>.Length can be INT32_MAX, unlike Array.MaxLength. For an
@@ -2136,11 +2185,23 @@ bool Compiler::optIsLoopClonable(FlowGraphNaturalLoop* loop, LoopCloneContext* c
         // - The incrementing operator is multiple and divide
         // - The ones that are inverted are not handled here for cases like "i *= 2" because
         //   they are converted to "i + i".
-        if (!iterInfo->IsIncreasingLoop() && !iterInfo->IsDecreasingLoop())
+        //
+        // Variable-stride loops are accepted here; the direction is inferred
+        // from the test op and verified at runtime by a stride-sign guard
+        // emitted in optDeriveLoopCloningConditions.
+        if (!iterInfo->IsIncreasingLoop() && !iterInfo->IsDecreasingLoop() && iterInfo->HasConstStride)
         {
             JITDUMP("Loop cloning: rejecting loop " FMT_LP
                     ". Loop test (%s) doesn't agree with the direction (%s) of the loop.\n",
                     loop->GetIndex(), GenTree::OpName(iterInfo->TestOper()), GenTree::OpName(iterInfo->IterOper()));
+            return false;
+        }
+
+        if (!iterInfo->HasConstStride && !GenTree::StaticOperIs(iterInfo->TestOper(), GT_LT, GT_LE))
+        {
+            JITDUMP("Loop cloning: rejecting loop " FMT_LP
+                    ". Variable stride only supported with LT/LE tests (have %s).\n",
+                    loop->GetIndex(), GenTree::OpName(iterInfo->TestOper()));
             return false;
         }
 
