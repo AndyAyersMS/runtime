@@ -2107,11 +2107,13 @@ class FlowGraphNaturalLoop
 
     BitVecTraits LoopBlockTraits();
 
-    template<typename TFunc>
+public:
+    template <typename TFunc>
     bool VisitDefs(TFunc func);
 
     GenTreeLclVarCommon* FindDef(unsigned lclNum);
 
+private:
     bool MatchLimit(unsigned iterVar, GenTree* test, NaturalLoopIterInfo* info);
     bool FindConstInit(BasicBlock* preheader, NaturalLoopIterInfo* info);
     bool CheckLoopConditionBaseCase(BasicBlock* initBlock, NaturalLoopIterInfo* info);
@@ -9223,6 +9225,7 @@ public:
     bool optCloningHeuristic(FlowGraphNaturalLoop* loop, LoopCloneContext* context);
     bool optExtractArrIndex(GenTree* tree, ArrIndex* result, unsigned lhsNum, bool* topLevelIsFinal);
     bool optExtractSpanIndex(GenTree* tree, SpanIndex* result);
+    bool optBoundsCheckIndexMatchesIterVar(unsigned indLcl, unsigned iterVar, FlowGraphNaturalLoop* loop);
     bool optReconstructArrIndexHelp(GenTree* tree, ArrIndex* result, unsigned lhsNum, bool* topLevelIsFinal);
     bool optReconstructArrIndex(GenTree* tree, ArrIndex* result);
     bool optIdentifyLoopOptInfo(FlowGraphNaturalLoop* loop, LoopCloneContext* context);

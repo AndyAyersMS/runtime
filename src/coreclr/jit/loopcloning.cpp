@@ -1398,8 +1398,13 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
         }
         else if (iterInfo->HasInvariantLocalLimit)
         {
-            const unsigned limitLcl = iterInfo->VarLimit();
-            if (genActualType(lvaGetDesc(limitLcl)->TypeGet()) != ivType)
+            const unsigned  limitLcl     = iterInfo->VarLimit();
+            const var_types limitVarType = genActualType(lvaGetDesc(limitLcl)->TypeGet());
+            // See note in the regular limit-conditions section: allow int limit
+            // with long IV (cast-peeled `(long)span.Length` pattern).
+            const bool typesCompatible =
+                (limitVarType == ivType) || ((ivType == TYP_LONG) && (limitVarType == TYP_INT));
+            if (!typesCompatible)
             {
                 JITDUMP("> NeedsZeroTripGuard: limit var V%02u type does not match IV\n", limitLcl);
                 return false;
@@ -1496,8 +1501,15 @@ bool Compiler::optDeriveLoopCloningConditions(FlowGraphNaturalLoop* loop, LoopCl
     }
     else if (iterInfo->HasInvariantLocalLimit)
     {
-        const unsigned limitLcl = iterInfo->VarLimit();
-        if (genActualType(lvaGetDesc(limitLcl)->TypeGet()) != ivType)
+        const unsigned  limitLcl     = iterInfo->VarLimit();
+        const var_types limitVarType = genActualType(lvaGetDesc(limitLcl)->TypeGet());
+        // Allow an int-typed limit lcl when the IV is long: this happens when
+        // MatchLimit peeled a `CAST long <- int` from the limit expression
+        // (e.g. `for (nint i = 0; i < span.Length; i++)`). LC_Condition::ToGenTree
+        // auto-widens int operands when comparing against long, so the cloning
+        // condition is materialized correctly.
+        const bool typesCompatible = (limitVarType == ivType) || ((ivType == TYP_LONG) && (limitVarType == TYP_INT));
+        if (!typesCompatible)
         {
             JITDUMP("> Limit var V%02u type does not match IV\n", limitLcl);
             return false;
@@ -2814,6 +2826,54 @@ bool Compiler::optReconstructArrIndex(GenTree* tree, ArrIndex* result)
 }
 
 //----------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------------------------
+//  optBoundsCheckIndexMatchesIterVar: Determine whether `indLcl` (the local used as the index
+//  in a bounds check) is the loop's iter var, either directly or via a single-level temp
+//  copy that morph commonly introduces.
+//
+//  Specifically, this routine returns true if `indLcl == iterVar`, OR if the loop body
+//  contains a unique def of `indLcl` of the form:
+//
+//      STORE_LCL_VAR(indLcl, LCL_VAR(<type>, iterVar))
+//
+//  i.e. `indLcl` is a temp whose only definition copies the iter var (possibly through a
+//  same-bit narrowing typed read, which morph uses to lower `(int)V_long`). This pattern
+//  shows up for nint iter vars indexing a Span<T>, where the get_Item intrinsic spills
+//  the index into a temp before the bounds check.
+//
+//  Arguments:
+//      indLcl  - local used as the bounds-check index
+//      iterVar - loop iteration variable
+//      loop    - the loop being analyzed
+//
+//  Return Value:
+//      True if indLcl effectively is the iter var; false otherwise.
+//
+bool Compiler::optBoundsCheckIndexMatchesIterVar(unsigned indLcl, unsigned iterVar, FlowGraphNaturalLoop* loop)
+{
+    if (indLcl == iterVar)
+    {
+        return true;
+    }
+
+    GenTreeLclVarCommon* def = loop->FindDef(indLcl);
+    if ((def == nullptr) || !def->OperIs(GT_STORE_LCL_VAR))
+    {
+        return false;
+    }
+
+    GenTree* data = def->AsLclVar()->Data();
+    if (data->OperIs(GT_LCL_VAR) && (data->AsLclVarCommon()->GetLclNum() == iterVar))
+    {
+        // STORE_LCL_VAR(indLcl, LCL_VAR(<type>, iterVar)): same-bit copy
+        // (typed-int read of a long iter var is the common case here).
+        return true;
+    }
+
+    return false;
+}
+
+//---------------------------------------------------------------------------------------------------------------
 //  optCanOptimizeByLoopCloning: Check if the tree can be optimized by loop cloning and if so,
 //      identify as potential candidate and update the loop context.
 //
@@ -2870,7 +2930,7 @@ Compiler::fgWalkResult Compiler::optCanOptimizeByLoopCloning(GenTree* tree, Loop
         for (unsigned dim = 0; dim < arrIndex.rank; ++dim)
         {
             // Is index variable also used as the loop iter var?
-            if (arrIndex.indLcls[dim] == iterInfo->IterVar)
+            if (optBoundsCheckIndexMatchesIterVar(arrIndex.indLcls[dim], iterInfo->IterVar, info->loop))
             {
                 // Check the previous indices are all loop invariant.
                 for (unsigned dim2 = 0; dim2 < dim; ++dim2)
@@ -2912,7 +2972,7 @@ Compiler::fgWalkResult Compiler::optCanOptimizeByLoopCloning(GenTree* tree, Loop
         }
 
         unsigned iterVar = info->context->GetLoopIterInfo(info->loop->GetIndex())->IterVar;
-        if (spanIndex.indLcl == iterVar)
+        if (optBoundsCheckIndexMatchesIterVar(spanIndex.indLcl, iterVar, info->loop))
         {
             // Update the loop context.
             info->context->EnsureLoopOptInfo(info->loop->GetIndex())
