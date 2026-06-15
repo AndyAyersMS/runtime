@@ -128,6 +128,28 @@ public class MdArrayCloning
         return sum;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    static int Sum2DStride2(int[,] a)
+    {
+        // Non-unit (constant) stride.
+        int sum = 0;
+        for (int i = 0; i < a.GetLength(0); i += 2)
+            for (int j = 0; j < a.GetLength(1); j += 2)
+                sum += a[i, j];
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    static int Sum2DDecreasing(int[,] a)
+    {
+        // Decreasing IV (i--).
+        int sum = 0;
+        for (int i = a.GetLength(0) - 1; i >= 0; i--)
+            for (int j = a.GetLength(1) - 1; j >= 0; j--)
+                sum += a[i, j];
+        return sum;
+    }
+
     // ---- Sum reference (slow but obviously correct) -----------------------
 
     static int Sum2DSlow(int[,] a, int limit0, int limit1)
@@ -209,6 +231,33 @@ public class MdArrayCloning
         int want = 0;
         for (int i = 0; i < 10; i++)
             want += a[i, 2];
+        Assert.Equal(want, got);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(3, 5)]
+    [InlineData(10, 20)]
+    public static void Stride2_AlwaysSafe(int rows, int cols)
+    {
+        var a   = Make2D(rows, cols);
+        int got = Sum2DStride2(a);
+        int want = 0;
+        for (int i = 0; i < rows; i += 2)
+            for (int j = 0; j < cols; j += 2)
+                want += a[i, j];
+        Assert.Equal(want, got);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(3, 5)]
+    [InlineData(10, 20)]
+    public static void Decreasing_AlwaysSafe(int rows, int cols)
+    {
+        var a   = Make2D(rows, cols);
+        int got = Sum2DDecreasing(a);
+        int want = Sum2DSlow(a, rows, cols);
         Assert.Equal(want, got);
     }
 
