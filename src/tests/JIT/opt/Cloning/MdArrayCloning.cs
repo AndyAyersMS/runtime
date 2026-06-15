@@ -150,6 +150,17 @@ public class MdArrayCloning
         return sum;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    static int Sum2DDecStride2(int[,] a)
+    {
+        // Decreasing non-unit stride.
+        int sum = 0;
+        for (int i = a.GetLength(0) - 1; i >= 0; i -= 2)
+            for (int j = a.GetLength(1) - 1; j >= 0; j -= 2)
+                sum += a[i, j];
+        return sum;
+    }
+
     // ---- Sum reference (slow but obviously correct) -----------------------
 
     static int Sum2DSlow(int[,] a, int limit0, int limit1)
@@ -258,6 +269,21 @@ public class MdArrayCloning
         var a   = Make2D(rows, cols);
         int got = Sum2DDecreasing(a);
         int want = Sum2DSlow(a, rows, cols);
+        Assert.Equal(want, got);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(3, 5)]
+    [InlineData(10, 20)]
+    public static void DecStride2_AlwaysSafe(int rows, int cols)
+    {
+        var a   = Make2D(rows, cols);
+        int got = Sum2DDecStride2(a);
+        int want = 0;
+        for (int i = rows - 1; i >= 0; i -= 2)
+            for (int j = cols - 1; j >= 0; j -= 2)
+                want += a[i, j];
         Assert.Equal(want, got);
     }
 
