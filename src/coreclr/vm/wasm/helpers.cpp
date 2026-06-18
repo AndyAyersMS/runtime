@@ -822,7 +822,15 @@ void InvokeCalliStub(CalliStubParam* pParam)
     _ASSERTE(pParam->ftn != (PCODE)NULL);
     _ASSERTE(pParam->cookie != NULL);
 
-    (pParam->cookie)(pParam->ftn, pParam->pArgs, pParam->pRet);
+    if (pParam->pContinuationRet != nullptr)
+    {
+        typedef void (*AsyncInterpreterCalliCookie)(PCODE, int8_t*, int8_t*, Object**);
+        ((AsyncInterpreterCalliCookie)(void*)pParam->cookie)(pParam->ftn, pParam->pArgs, pParam->pRet, pParam->pContinuationRet);
+    }
+    else
+    {
+        (pParam->cookie)(pParam->ftn, pParam->pArgs, pParam->pRet);
+    }
 }
 
 void InvokeUnmanagedCalli(PCODE ftn, InterpreterCalliCookie cookie, int8_t *pArgs, int8_t *pRet)
@@ -1036,6 +1044,13 @@ namespace
         {
             if (pos < maxSize)
                 keyBuffer[pos] = 'i';
+            pos++;
+        }
+
+        if (sig.HasAsyncContinuation())
+        {
+            if (pos < maxSize)
+                keyBuffer[pos] = 'a';
             pos++;
         }
 

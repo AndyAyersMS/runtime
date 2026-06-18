@@ -1071,7 +1071,10 @@ The string format is:
 
 1. **Generic context** (`i`): present when the method requires an inst method desc or
    method table argument.
-2. **Async continuation** (`i`): present for async calls.
+2. **Async continuation** (`a`): present for async calls. The underlying
+   Wasm `FuncType` parameter is pointer-shaped (`i32` on wasm32), but the
+   signature string uses a distinct marker so async and non-async thunk keys
+   cannot collide.
 
 Note: the hidden return buffer pointer is **not** encoded in the signature string. Its
 presence is implied by the return type being `S<N>` — when the caller sees a struct return,

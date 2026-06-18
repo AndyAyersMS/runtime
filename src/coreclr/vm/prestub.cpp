@@ -2152,8 +2152,24 @@ void ExecuteInterpretedMethodWithArgs_PortableEntryPoint_Complex(PCODE portableE
             if (targetIp == NULL)
             {
                 _ASSERTE(!PortableEntryPoint::PrefersInterpreterEntryPoint(portableEntrypoint));
-                ManagedMethodParam param = { pMethod, args, retBuff, (PCODE)targetIp, nullptr /* WASM-TODO, handle RuntimeAsync */};
+                Object* continuationRet = nullptr;
+                Object** pContinuationRet = nullptr;
+#ifdef TARGET_WASM
+                MetaSig targetSig(pMethod);
+                if (targetSig.HasAsyncContinuation())
+                {
+                    continuationRet = (Object*)(uintptr_t)RuntimeAsync_LoadAsyncContinuation();
+                    pContinuationRet = &continuationRet;
+                }
+#endif // TARGET_WASM
+                ManagedMethodParam param = { pMethod, args, retBuff, (PCODE)targetIp, pContinuationRet };
                 InvokeManagedMethod(&param);
+#ifdef TARGET_WASM
+                if (pContinuationRet != nullptr)
+                {
+                    RuntimeAsync_StoreAsyncContinuation((int32_t)(uintptr_t)continuationRet);
+                }
+#endif // TARGET_WASM
             }
 
             UNINSTALL_UNWIND_AND_CONTINUE_HANDLER;

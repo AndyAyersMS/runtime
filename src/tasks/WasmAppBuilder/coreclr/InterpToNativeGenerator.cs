@@ -103,6 +103,9 @@ internal sealed class InterpToNativeGenerator
                     // Portable entrypoints have an extra hidden parameter for the portable entrypoint context, so we need to adjust the signature and result accordingly for the call function generation
                     tokens.RemoveAt(tokens.Count - 1);
                 }
+
+                RemoveAsyncCallMarker(tokens);
+
                 var args = Args(tokens);
                 var portabilityAssert = returnToken[0] == 'S' ? "PORTABILITY_ASSERT(\"Indirect struct return is not yet implemented.\");\n        " : "";
 
@@ -141,6 +144,7 @@ internal sealed class InterpToNativeGenerator
                 bool isPortableEntryPointCall = IsPortableEntryPointCall(tokens);
                 if (isPortableEntryPointCall)
                     tokens.RemoveAt(tokens.Count - 1);
+                RemoveAsyncCallMarker(tokens);
                 return $"    {{ \"M{initialSignature}\", (void*)&{CallFuncName(Args(tokens), SignatureMapper.TokenToNameType(tokens[0]), isPortableEntryPointCall)} }}";
             }
             )}}
@@ -174,6 +178,16 @@ internal sealed class InterpToNativeGenerator
         static bool IsPortableEntryPointCall(List<string> tokens)
         {
             return tokens.Count > 0 && tokens[tokens.Count - 1] == "p";
+        }
+
+        static bool RemoveAsyncCallMarker(List<string> tokens)
+        {
+            int asyncMarkerIndex = tokens.IndexOf("a");
+            if (asyncMarkerIndex < 0)
+                return false;
+
+            tokens.RemoveAt(asyncMarkerIndex);
+            return true;
         }
     }
 }
