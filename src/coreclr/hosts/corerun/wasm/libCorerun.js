@@ -176,7 +176,27 @@ function libCoreRunFactory() {
             try {
                 wasmBytes = FS.readFile(wasmPath);
             } catch (e) {
-                return false;
+                // For simple-name probes (e.g. System.Private.CoreLib.dll),
+                // also try the directory containing the corerun script so
+                // R2R-compiled .wasm siblings placed in Core_Root are found.
+                if (typeof process !== "undefined" && process.argv && process.argv[1] &&
+                    wasmPath && wasmPath.indexOf("/") === -1 && wasmPath.indexOf("\\") === -1) {
+                    const scriptPath = process.argv[1].replace(/\\/g, "/");
+                    const scriptDir = scriptPath.substring(0, scriptPath.lastIndexOf("/"));
+                    if (scriptDir) {
+                        const fallbackPath = scriptDir + "/" + wasmPath;
+                        try {
+                            wasmBytes = FS.readFile(fallbackPath);
+                            wasmPath = fallbackPath;
+                        } catch (e2) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
             }
             let wasmModule;
             try {
