@@ -10435,6 +10435,32 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
 
     op1 = nullptr;
 
+    // Math.Pow(x, c) / MathF.Pow(x, c) with a small constant exponent can be expanded inline,
+    // avoiding the call entirely. We do this up front so it also applies to tail-call positions.
+    // These rewrites are exact for all IEEE inputs:
+    //    Pow(x, 1) == x
+    //    Pow(x, 2) == x * x   (a single rounding, the same as Pow)
+    if ((intrinsicName == NI_System_Math_Pow) && (sig->numArgs == 2) && impStackTop(0).val->IsCnsFltOrDbl())
+    {
+        double exponent = impStackTop(0).val->AsDblCon()->DconValue();
+
+        if ((exponent == 1.0) || (exponent == 2.0))
+        {
+            impPopStack(); // exponent
+            op1        = impImplicitR4orR8Cast(impPopStack().val, callType);
+            *isSpecial = false;
+
+            if (exponent == 1.0)
+            {
+                return op1;
+            }
+
+            GenTree* op1Clone;
+            op1 = impCloneExpr(op1, &op1Clone, CHECK_SPILL_ALL, nullptr DEBUGARG("Cloning x for Math.Pow(x, 2)"));
+            return gtNewOperNode(GT_MUL, genActualType(callType), op1, op1Clone);
+        }
+    }
+
     bool isIntrinsicImplementedByUserCall = IsIntrinsicImplementedByUserCall(intrinsicName);
 
     if (isIntrinsicImplementedByUserCall)
