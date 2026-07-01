@@ -620,14 +620,25 @@ void DBG_PrintInterpreterStack()
         InterpMethodContextFrame* cxtFrame = pInterpFrame->GetTopInterpMethodContextFrame();
         while (cxtFrame != NULL)
         {
-            MethodDesc* currentMD = cxtFrame->startIp->Method->methodHnd;
+            InterpMethod* currentInterpMethod = (cxtFrame->startIp != NULL) ? cxtFrame->startIp->Method : NULL;
+            MethodDesc* currentMD = (currentInterpMethod != NULL) ? currentInterpMethod->methodHnd : NULL;
 
             size_t irOffset = ((size_t)cxtFrame->ip - (size_t)(&cxtFrame->startIp[1])) / sizeof(size_t);
-            fprintf(stderr, "%4d) %s::%s, IR_%04zx\n",
-                frameCount++,
-                currentMD->GetMethodTable()->GetDebugClassName(),
-                currentMD->GetName(),
-                irOffset);
+            if (currentMD != NULL)
+            {
+                fprintf(stderr, "%4d) %s::%s, IR_%04zx\n",
+                    frameCount++,
+                    currentMD->GetMethodTable()->GetDebugClassName(),
+                    currentMD->GetName(),
+                    irOffset);
+            }
+            else
+            {
+                // A null MethodDesc can occur for a malformed/uninitialized interpreter frame
+                // (e.g. a bad R2R->interpreter transition). Don't dereference it -- reporting the
+                // stack must not crash on the fatal-error path.
+                fprintf(stderr, "%4d) <null MethodDesc>, IR_%04zx\n", frameCount++, irOffset);
+            }
             cxtFrame = cxtFrame->pParent;
         }
     }
