@@ -393,7 +393,10 @@ extern "C" void InterpreterStub()
 
 extern "C" UINT_PTR STDCALL GetCurrentIP(void)
 {
-    PORTABILITY_ASSERT("GetCurrentIP is not implemented on wasm");
+    // Wasm has no native instruction pointer to report. This is used only on the
+    // fatal-error / failfast reporting path (EEPOLICY_HANDLE_FATAL_ERROR); 0 means
+    // "IP unavailable". Returning here (instead of asserting) keeps the fatal-error
+    // path from cascading into a secondary crash on wasm.
     return 0;
 }
 
