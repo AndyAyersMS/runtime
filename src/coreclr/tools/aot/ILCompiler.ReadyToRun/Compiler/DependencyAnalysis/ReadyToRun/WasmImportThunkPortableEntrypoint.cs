@@ -87,7 +87,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 // even if the underlying method is UnmanagedCallersOnly, because the thunk is
                 // called from R2R-generated managed code.
                 WasmLowering.LoweringFlags flags = WasmLowering.GetLoweringFlags(method) & ~WasmLowering.LoweringFlags.IsUnmanagedCallersOnly;
-                wasmSignature = WasmLowering.GetSignature(method.Signature, flags);
+                wasmSignature = WasmLowering.GetSignature(WasmLowering.GetWasmCallConvSignature(method), flags);
             }
             builder.EmitReloc(factory.WasmImportThunk(wasmSignature, HelperId, _import.Table, UseVirtualCall, UseJumpableStub), tableIndexPointerRelocType);
             builder.EmitReloc(_import, RelocType.IMAGE_REL_BASED_ADDR32NB);

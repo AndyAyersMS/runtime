@@ -3581,6 +3581,18 @@ namespace Internal.JitInterface
             {
                 var sig = HandleToObject(callSig->methodSignature);
 
+                // NEWOBJ on String is compiled as an allocating call (static, returns String);
+                // the wasm call-site signature must match that, not the declared
+                // void .ctor(this, ...). See WasmLowering.GetWasmCallConvSignature.
+                if (methodHandle != null)
+                {
+                    MethodDesc targetMethod = HandleToObject(methodHandle);
+                    if (targetMethod.IsConstructor && targetMethod.OwningType.IsString)
+                    {
+                        sig = WasmLowering.GetWasmCallConvSignature(targetMethod);
+                    }
+                }
+
                 WasmLowering.LoweringFlags flags = 0;
                 if (callSig->hasTypeArg())
                 {

@@ -256,7 +256,27 @@ namespace Internal.JitInterface
         /// <returns></returns>
         public static WasmSignature GetSignature(MethodDesc method)
         {
-            return GetSignature(method.Signature, GetLoweringFlags(method));
+            return GetSignature(GetWasmCallConvSignature(method), GetLoweringFlags(method));
+        }
+
+        // NEWOBJ on String is compiled as a call to a static allocator method that returns the
+        // String and takes no `this` (see StringAllocatorMethodNode and the string-constructor
+        // special casing in CorInfoImpl.getCallInfo). The R2R entrypoint and the JIT-emitted call
+        // both use that allocating signature, so the wasm calling-convention signature must match
+        // it. Otherwise the delay-load thunk / import fixup is generated from the declared
+        // `void .ctor(this, ...)` signature and the wasm call_indirect traps with
+        // "function signature mismatch".
+        public static MethodSignature GetWasmCallConvSignature(MethodDesc method)
+        {
+            MethodSignature signature = method.Signature;
+            if (method.IsConstructor && method.OwningType.IsString)
+            {
+                MethodSignatureBuilder builder = new MethodSignatureBuilder(signature);
+                builder.Flags = MethodSignatureFlags.Static;
+                builder.ReturnType = method.OwningType;
+                signature = builder.ToSignature();
+            }
+            return signature;
         }
 
         public static LoweringFlags GetLoweringFlags(MethodDesc method)
