@@ -12247,6 +12247,20 @@ GenTree* Compiler::impUnsupportedNamedIntrinsic(unsigned              helper,
                                                 CORINFO_SIG_INFO*     sig,
                                                 bool                  mustExpand)
 {
+#ifdef TARGET_WASM
+    // On wasm, an unsupported architecture-specific intrinsic reaching here would bake a hard
+    // PlatformNotSupportedException throw into the R2R method (e.g. a wasm-specific SIMD op the
+    // JIT cannot codegen). The interpreter instead reports IsSupported=false and takes the
+    // managed scalar fallback, so bail R2R and let the method be interpreted rather than
+    // emitting the throw. Gated on the same config flags crossgen2 uses for NYI R2R fallback.
+    if ((helper == CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED) &&
+        ((JitConfig.JitWasmNyiToR2RUnsupported() > 0) || (JitConfig.JitWasmSimdNyiToR2RUnsupported() > 0)))
+    {
+        JITDUMP("Failing R2R codegen: unsupported intrinsic would throw PlatformNotSupportedException\n");
+        implReadyToRunUnsupported();
+    }
+#endif // TARGET_WASM
+
     // We've hit some error case and may need to return a node for the given error.
     //
     // When `mustExpand=true`, we are in a GT_CALL to the intrinsic and are attempting to JIT it. This will generally
