@@ -14319,6 +14319,15 @@ BOOL LoadDynamicInfoEntry(Module *currentModule,
 
             _ASSERTE(pMethod->IsPInvoke());
             PInvokeMethodDesc *pMD = (PInvokeMethodDesc*)pMethod;
+#ifndef HAS_PINVOKE_IMPORT_PRECODE
+            // On platforms with no lazy P/Invoke import precode (e.g. wasm, where a typed
+            // call_indirect cannot dispatch a generic import thunk), resolve the target
+            // eagerly so the indirection holds the real target rather than the unusable glue.
+            if (pMD->PInvokeTargetIsImportThunk())
+            {
+                PInvoke::ResolvePInvokeTarget(pMD);
+            }
+#endif // !HAS_PINVOKE_IMPORT_PRECODE
             result = (size_t)(LPVOID)&(pMD->m_pPInvokeTarget);
         }
         break;
