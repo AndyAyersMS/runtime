@@ -680,14 +680,57 @@ extern "C" void STDCALL GenericPInvokeCalliHelper(void)
     PORTABILITY_ASSERT("GenericPInvokeCalliHelper is not implemented on wasm");
 }
 
-EXTERN_C void JIT_PInvokeBegin(InlinedCallFrame* pFrame)
+// Does the pinvoke frame transition; the naked wrappers below have already set the wasm
+// __stack_pointer global to sp so it is safe to run native code here.
+EXTERN_C void JIT_PInvokeBeginImpl(void* sp, InlinedCallFrame* pFrame, PCODE pep)
 {
-    PORTABILITY_ASSERT("JIT_PInvokeBegin is not implemented on wasm");
+    Thread* pThread = GetThread();
+
+    // Initialize the JIT-provided frame storage, deriving its state from sp/pep since wasm
+    // has no machine registers to read the caller SP / return address from.
+    ::new ((void*)pFrame) InlinedCallFrame();
+    pFrame->m_pCallSiteSP          = sp;
+    pFrame->m_pCallerReturnAddress = (TADDR)pep;
+    pFrame->m_pCalleeSavedFP       = (TADDR)sp;
+    pFrame->m_pThread              = pThread;
+
+    // Link the frame and transition to preemptive GC mode for the native call.
+    pFrame->Push();
+    pThread->EnablePreemptiveGC();
 }
 
-EXTERN_C void JIT_PInvokeEnd(InlinedCallFrame* pFrame)
+EXTERN_C void JIT_PInvokeEndImpl(void* sp, InlinedCallFrame* pFrame, PCODE pep)
 {
-    PORTABILITY_ASSERT("JIT_PInvokeEnd is not implemented on wasm");
+    Thread* pThread = (Thread*)pFrame->m_pThread;
+
+    // Transition back to cooperative GC mode and unlink the frame.
+    pThread->DisablePreemptiveGC();
+    pFrame->Pop();
+}
+
+// R2R keeps its shadow SP in a local and leaves the __stack_pointer global stale, so publish
+// the incoming sp to __stack_pointer before any native code runs and leave it there so the
+// subsequent native pinvoke target is also safe.
+extern "C" __attribute__((naked)) void JIT_PInvokeBegin(void* sp, InlinedCallFrame* pFrame, PCODE pep)
+{
+    asm("local.get 0\n"                /* sp */
+        "global.set __stack_pointer\n" /* __stack_pointer = sp before any native code runs */
+        "local.get 0\n"                /* sp */
+        "local.get 1\n"                /* pFrame */
+        "local.get 2\n"                /* pep */
+        "call %0\n"
+        "return" ::"i"(JIT_PInvokeBeginImpl));
+}
+
+extern "C" __attribute__((naked)) void JIT_PInvokeEnd(void* sp, InlinedCallFrame* pFrame, PCODE pep)
+{
+    asm("local.get 0\n"                /* sp */
+        "global.set __stack_pointer\n" /* __stack_pointer = sp before any native code runs */
+        "local.get 0\n"                /* sp */
+        "local.get 1\n"                /* pFrame */
+        "local.get 2\n"                /* pep */
+        "call %0\n"
+        "return" ::"i"(JIT_PInvokeEndImpl));
 }
 
 extern "C" void STDCALL JIT_StackProbe()
