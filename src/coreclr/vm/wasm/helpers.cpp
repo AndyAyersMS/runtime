@@ -1097,7 +1097,7 @@ namespace
     // Returns the total number of characters needed (excluding null terminator).
     // Only writes characters while pos < maxSize, so the buffer is never overflowed.
     // Callers should check if the return value >= maxSize and retry with a larger buffer.
-    uint32_t GetSignatureKey(MetaSig& sig, char prefix, char* keyBuffer, uint32_t maxSize)
+    uint32_t GetSignatureKey(MetaSig& sig, char prefix, char* keyBuffer, uint32_t maxSize, bool isStringCtor = false)
     {
         CONTRACTL
         {
@@ -1113,7 +1113,18 @@ namespace
             keyBuffer[pos] = prefix;
         pos++;
 
-        if (sig.IsReturnTypeVoid())
+        // String constructors are compiled and invoked as allocating methods: static,
+        // returning the constructed String (a reference => i32), taking the declared
+        // instance args but no 'this'. This mirrors WasmLowering.GetStringCtorActualSignature
+        // on the crossgen2 side, so the interpreter->R2R calli cookie matches the allocating
+        // R2R code the call targets.
+        if (isStringCtor)
+        {
+            if (pos < maxSize)
+                keyBuffer[pos] = 'i';
+            pos++;
+        }
+        else if (sig.IsReturnTypeVoid())
         {
             if (pos < maxSize)
                 keyBuffer[pos] = 'v';
@@ -1127,7 +1138,7 @@ namespace
             pos += AppendTypeCode(cr, keyBuffer, pos, maxSize);
         }
 
-        if (sig.HasThis())
+        if (!isStringCtor && sig.HasThis())
         {
             if (pos < maxSize)
                 keyBuffer[pos] = 'T';
@@ -1200,7 +1211,7 @@ namespace
     }
 
     // This is a simple signature computation routine for signatures currently supported in the wasm environment.
-    InterpreterCalliCookie ComputeCalliSigThunk(MetaSig& sig)
+    InterpreterCalliCookie ComputeCalliSigThunk(MetaSig& sig, bool isStringCtor = false)
     {
         STANDARD_VM_CONTRACT;
         _ASSERTE(sizeof(int32_t) == sizeof(void*));
@@ -1221,7 +1232,7 @@ namespace
         char fixedBuffer[64];
         char* keyBuffer = fixedBuffer;
         uint32_t keyBufferLen = sizeof(fixedBuffer);
-        uint32_t needed = GetSignatureKey(sig, 'M', keyBuffer, keyBufferLen);
+        uint32_t needed = GetSignatureKey(sig, 'M', keyBuffer, keyBufferLen, isStringCtor);
         if (needed == UINT32_MAX)
             return NULL;
         if (needed >= keyBufferLen)
@@ -1229,7 +1240,7 @@ namespace
             keyBufferLen = needed + 1;
             keyBuffer = (char*)alloca(keyBufferLen);
             sig.Reset();
-            needed = GetSignatureKey(sig, 'M', keyBuffer, keyBufferLen);
+            needed = GetSignatureKey(sig, 'M', keyBuffer, keyBufferLen, isStringCtor);
             if (needed == UINT32_MAX || needed >= keyBufferLen)
                 return NULL;
         }
@@ -1414,7 +1425,13 @@ InterpreterCalliCookie GetCookieForCalliSig(MetaSig metaSig, MethodDesc *pContex
 {
     STANDARD_VM_CONTRACT;
 
-    InterpreterCalliCookie thunk = ComputeCalliSigThunk(metaSig);
+    // String constructors are invoked as allocating methods (static, returning the
+    // constructed String). Compute the calli cookie from that shape so it matches the
+    // allocating R2R code the call targets (see the R2R string ctor dispatch in
+    // ExecuteInterpretedMethodWithArgs_PortableEntryPoint_Complex).
+    bool isStringCtor = (pContextMD != NULL) && pContextMD->IsCtor() && pContextMD->GetMethodTable()->IsString();
+
+    InterpreterCalliCookie thunk = ComputeCalliSigThunk(metaSig, isStringCtor);
     if (thunk == NULL)
     {
         PORTABILITY_ASSERT("GetCookieForCalliSig: unknown thunk signature");

@@ -2486,15 +2486,25 @@ PCODE MethodDesc::DoPrestub(MethodTable *pDispatchingMT, CallerGCMode callerGCMo
             // This is because the FCall may have been compiled to an IL stub that needs to be interpreted.
             if (helperMD->ShouldCallPrestub())
                 (void)helperMD->DoPrestub(NULL /* MethodTable */, CallerGCMode::Coop);
-            void* ilStubInterpData = helperMD->GetInterpreterCode();
-            // WASM-TODO: update this when we will have codegen
-            _ASSERTE(ilStubInterpData != NULL);
-            SetInterpreterCode((InterpByteCodeStart*)ilStubInterpData);
 
             // Use this method's own PortableEntryPoint rather than the helper's.
             // It is required to maintain 1:1 mapping between MethodDesc and its entrypoint.
             PCODE entryPoint = GetPortableEntryPoint();
-            PortableEntryPoint::SetInterpreterData(entryPoint, (PCODE)(TADDR)ilStubInterpData);
+
+            if (PortableEntryPoint::HasNativeEntryPoint(pCode))
+            {
+                // The managed FCall implementation was compiled to native (R2R) code
+                // (e.g. the allocating String constructor helpers). Point this method's
+                // entrypoint directly at that code.
+                PortableEntryPoint::SetActualCode(entryPoint, (PCODE)PortableEntryPoint::GetActualCode(pCode));
+            }
+            else
+            {
+                void* ilStubInterpData = helperMD->GetInterpreterCode();
+                _ASSERTE(ilStubInterpData != NULL);
+                SetInterpreterCode((InterpByteCodeStart*)ilStubInterpData);
+                PortableEntryPoint::SetInterpreterData(entryPoint, (PCODE)(TADDR)ilStubInterpData);
+            }
             pCode = entryPoint;
         }
 #else // !FEATURE_PORTABLE_ENTRYPOINTS
