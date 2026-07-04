@@ -1078,10 +1078,11 @@ PhaseStatus Compiler::fgWasmTransformSccs()
     FlowGraphTryRegions*  tryRegions = FlowGraphTryRegions::Build(this, dfsTree);
     ArrayStack<FlowEdge*> temporaryEdges(getAllocator(CMK_WasmSccTransform));
 
+    JITDUMPEXEC(FlowGraphTryRegions::Dump(tryRegions));
+
     if (tryRegions->HasMultipleEntryTryRegions())
     {
         JITDUMP("\nThere are try regions with multiple entries.\n");
-        JITDUMPEXEC(FlowGraphTryRegions::Dump(tryRegions));
         tryRegions->AddMultipleEntryRegionEdges(temporaryEdges);
     }
 
