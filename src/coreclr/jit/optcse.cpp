@@ -3156,7 +3156,13 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     assert(features != nullptr);
     CSE_Candidate candidate(this, cse);
 
-    int enregCount = 0;
+    // Count enregisterable locals split by register class. These previously
+    // shared a single `enreg_count` slot that lumped SIMD and mask registers
+    // together with the integer budget (see note at the top of optcse.h).
+    int enregCountInt   = 0;
+    int enregCountFloat = 0;
+    int enregCountSimd  = 0;
+    int enregCountMsk   = 0;
 
     for (unsigned trackedIndex = 0; trackedIndex < m_compiler->lvaTrackedCount; trackedIndex++)
     {
@@ -3175,14 +3181,26 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
             continue;
         }
 
-        if (!varTypeIsFloating(varTyp))
+        if (varTypeUsesMaskReg(varTyp))
         {
-            enregCount++;
+            enregCountMsk++;
+        }
+        else if (varTypeIsSIMD(varTyp))
+        {
+            enregCountSimd++;
+        }
+        else if (varTypeUsesFloatReg(varTyp))
+        {
+            enregCountFloat++;
+        }
+        else
+        {
+            enregCountInt++;
 
 #ifndef TARGET_64BIT
             if (varTyp == TYP_LONG)
             {
-                enregCount++; // on 32-bit targets longs use two registers
+                enregCountInt++; // on 32-bit targets longs use two registers
             }
 #endif // TARGET_64BIT
         }
@@ -3215,31 +3233,38 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
 
     const unsigned blockSpread = maxPostorderNum - minPostorderNum;
 
-    int type = rlHookTypeOther;
+    // Bucket the CSE expression type into an rlHookType* value. LONG is
+    // checked before the generic integral fallback so that 64-bit values
+    // are tracked separately. BYREF/REF/small-integer types share the
+    // integer register class and are folded into INT (previously they
+    // were bucketed as OTHER).
+    var_types exprType = candidate.Expr()->TypeGet();
+    int       type     = rlHookTypeOther;
 
-    if (candidate.Expr()->TypeIs(TYP_INT))
-    {
-        type = rlHookTypeInt;
-    }
-    else if (candidate.Expr()->TypeIs(TYP_LONG))
+    if (exprType == TYP_LONG)
     {
         type = rlHookTypeLong;
     }
-    else if (candidate.Expr()->TypeIs(TYP_FLOAT))
+    else if (exprType == TYP_FLOAT)
     {
         type = rlHookTypeFloat;
     }
-    else if (candidate.Expr()->TypeIs(TYP_DOUBLE))
+    else if (exprType == TYP_DOUBLE)
     {
         type = rlHookTypeDouble;
     }
-    else if (candidate.Expr()->TypeIs(TYP_STRUCT))
+    else if (exprType == TYP_STRUCT)
     {
         type = rlHookTypeStruct;
     }
-    else if (varTypeIsSIMD(candidate.Expr()->TypeGet()))
+    else if (varTypeIsSIMD(exprType))
     {
         type = rlHookTypeSimd;
+    }
+    else if (varTypeIsIntegralOrI(exprType))
+    {
+        // Covers TYP_INT plus TYP_BOOL/BYTE/UBYTE/SHORT/USHORT/BYREF/REF.
+        type = rlHookTypeInt;
     }
 
     int i         = 0;
@@ -3261,7 +3286,10 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     features[i++] = cse->numLocalOccurrences;
     features[i++] = numBBs;
     features[i++] = blockSpread;
-    features[i++] = enregCount;
+    features[i++] = enregCountInt;
+    features[i++] = enregCountFloat;
+    features[i++] = enregCountSimd;
+    features[i++] = enregCountMsk;
 
     assert(i <= maxFeatures);
 
@@ -3272,13 +3300,14 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
 }
 
 // These need to match the features above, and match the field name of MethodContext
-// in src/coreclr/scripts/cse_ml/jitml/method_context.py
+// in jitml/method_context.py in dotnet/jitutils, under src/jit-rl-cse-py/.
 const char* const CSE_HeuristicRLHook::s_featureNameAndType[] = {
     "type",         "viable",       "live_across_call", "const",
     "shared_const", "make_cse",     "has_call",         "containable",
     "cost_ex",      "cost_sz",      "use_count",        "def_count",
     "use_wt_cnt",   "def_wt_cnt",   "distinct_locals",  "local_occurrences",
-    "bb_count",     "block_spread", "enreg_count",
+    "bb_count",     "block_spread",
+    "enreg_count_int", "enreg_count_float", "enreg_count_simd", "enreg_count_msk",
 };
 
 //------------------------------------------------------------------------

@@ -243,11 +243,13 @@ public:
 
 #ifdef DEBUG
 
-// NOTE: The RL and Parameterized heuristic support has not
-// been updated to properly track enregistration for different
-// register types and still classifies simd/masks under the
-// integer budget. This and the relevant training scripts should
-// be updated to support this the next time they are touched.
+// NOTE: The Parameterized CSE heuristic (CSE_HeuristicParameterized /
+// CSE_HeuristicRL) still classifies SIMD and mask locals under the
+// integer register budget; the relevant training scripts should be
+// updated the next time they are touched.
+//
+// The RLHook heuristic below emits separate enreg counts per register
+// class (int / float / simd / msk).
 
 // General Reinforcement Learning CSE heuristic hook.
 //
@@ -263,7 +265,7 @@ private:
 
     enum
     {
-        maxFeatures = 19,
+        maxFeatures = 22,
     };
 
     enum
