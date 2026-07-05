@@ -3146,8 +3146,9 @@ void CSE_HeuristicRLHook::DumpMetrics()
 //
 //   Features do not need to be stable across builds, they can be changed,
 //   added, or removed.  However, the corresponding code needs to be updated
-//   to match: src/coreclr/scripts/cse_ml/jitml/method_context.py
-//   See src/coreclr/scripts/cse_ml/README.md for more information.
+//   to match: jitml/method_context.py in dotnet/jitutils, under
+//   src/jit-rl-cse-py/. See src/jit-rl-cse-py/README.md there for more
+//   information.
 //
 void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
 {
