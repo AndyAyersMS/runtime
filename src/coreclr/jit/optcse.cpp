@@ -3275,13 +3275,23 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     features[i++] = cse->csdIsSharedConst ? 1 : 0;
     features[i++] = isMakeCse ? 1 : 0;
     features[i++] = ((cse->csdTreeList.tslTree->gtFlags & GTF_CALL) != 0) ? 1 : 0;
+    // `containable`: a coarse "simple op that a target back end may fold
+    // into a downstream containment slot" signal. Currently a hardcoded
+    // whitelist of GT_ADD / GT_NOT / GT_MUL / GT_LSH, which covers the
+    // common LEA-foldable and single-use bit-op patterns on x86/x64. Not a
+    // precise containment query -- treat as a rough hint only.
     features[i++] = cse->csdTreeList.tslTree->OperIs(GT_ADD, GT_NOT, GT_MUL, GT_LSH) ? 1 : 0;
     features[i++] = cse->csdTreeList.tslTree->GetCostEx();
     features[i++] = cse->csdTreeList.tslTree->GetCostSz();
     features[i++] = cse->csdUseCount;
     features[i++] = cse->csdDefCount;
-    features[i++] = (int)cse->csdUseWtCnt;
-    features[i++] = (int)cse->csdDefWtCnt;
+    // Weighted use/def counts are stored as ``weight_t`` (double) internally.
+    // The feature array is int, so emit as a scaled fixed-point value at
+    // 100x resolution (so 0.5 becomes 50, 1.25 becomes 125, etc.) and let
+    // the ML side divide by 100.0 to recover the true weight. The old
+    // truncating ``(int)`` cast dropped all fractional weight information.
+    features[i++] = (int)(cse->csdUseWtCnt * 100.0 + 0.5);
+    features[i++] = (int)(cse->csdDefWtCnt * 100.0 + 0.5);
     features[i++] = cse->numDistinctLocals;
     features[i++] = cse->numLocalOccurrences;
     features[i++] = numBBs;
@@ -3302,12 +3312,12 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
 // These need to match the features above, and match the field name of MethodContext
 // in jitml/method_context.py in dotnet/jitutils, under src/jit-rl-cse-py/.
 const char* const CSE_HeuristicRLHook::s_featureNameAndType[] = {
-    "type",         "viable",       "live_across_call", "const",
-    "shared_const", "make_cse",     "has_call",         "containable",
-    "cost_ex",      "cost_sz",      "use_count",        "def_count",
-    "use_wt_cnt",   "def_wt_cnt",   "distinct_locals",  "local_occurrences",
-    "bb_count",     "block_spread",
-    "enreg_count_int", "enreg_count_float", "enreg_count_simd", "enreg_count_msk",
+    "type",             "viable",           "live_across_call",  "const",
+    "shared_const",     "make_cse",         "has_call",          "containable",
+    "cost_ex",          "cost_sz",          "use_count",         "def_count",
+    "use_wt_cnt_x100",  "def_wt_cnt_x100",  "distinct_locals",   "local_occurrences",
+    "bb_count",         "block_spread",
+    "enreg_count_int",  "enreg_count_float","enreg_count_simd",  "enreg_count_msk",
 };
 
 //------------------------------------------------------------------------
