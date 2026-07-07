@@ -263,6 +263,7 @@ private:
     static const char* const s_methodFeatureNames[];
 
     void Initialize();
+    void CaptureLocalWeights();
     void GetFeatures(CSEdsc* cse, int* features);
     void GetMethodFeatures(int* features);
 
@@ -275,6 +276,17 @@ private:
     bool     m_hugeFrame;
     bool     m_initialized;
 
+    // Register-pressure state, mirrored from CSE_HeuristicParameterized.
+    // Together with CSE_HeuristicCommon::m_addCSEcount (bumped by
+    // PerformCSE on each accepted CSE) these drive the spill / stopping
+    // signal emitted on the ``method`` line: as more CSEs are applied,
+    // the effective register budget (m_registerPressure - m_addCSEcount)
+    // shrinks and the weight of the LclVar that would spill next drops.
+    // Deliberately mirrored rather than shared with the parameterized
+    // heuristic; if we later want to dedupe, hoist to CSE_HeuristicCommon.
+    unsigned                m_registerPressure;
+    jitstd::vector<double>* m_localWeights;
+
     enum
     {
         // Per-candidate features emitted per CSEdsc. See s_featureNameAndType
@@ -282,7 +294,7 @@ private:
         maxFeatures = 30,
         // Method-level features emitted once per invocation on the ``method``
         // line. See s_methodFeatureNames for the ordered list.
-        maxMethodFeatures = 5,
+        maxMethodFeatures = 7,
     };
 
     enum

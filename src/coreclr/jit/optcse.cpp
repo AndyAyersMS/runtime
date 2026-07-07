@@ -3020,6 +3020,8 @@ CSE_HeuristicRLHook::CSE_HeuristicRLHook(Compiler* pCompiler)
     , m_largeFrame(false)
     , m_hugeFrame(false)
     , m_initialized(false)
+    , m_registerPressure(CNT_CALLEE_TRASH_FOR_CSE + CNT_CALLEE_SAVED_FOR_CSE)
+    , m_localWeights(nullptr)
 {
 }
 
@@ -3249,6 +3251,56 @@ void CSE_HeuristicRLHook::Initialize()
 
     m_aggressiveRefCnt = max(BB_UNITY_WEIGHT / 2, m_aggressiveRefCnt);
     m_moderateRefCnt   = max(BB_UNITY_WEIGHT, m_moderateRefCnt);
+
+    // Build the sorted local-weight vector used by the spill/stopping
+    // signal we emit on the ``method`` line. Deliberately deferred to
+    // after the ref-count cutoffs above so the two computations are
+    // grouped together.
+    CaptureLocalWeights();
+}
+
+//------------------------------------------------------------------------
+// CaptureLocalWeights: build a sorted vector of normalized enregisterable
+//   local weights (highest to lowest).
+//
+// Notes:
+//    Used to estimate where the temp introduced by a CSE would rank
+//    compared to other locals in the method, as they compete for
+//    registers. Mirrors CSE_HeuristicParameterized::CaptureLocalWeights
+//    (optcse.cpp near line 2394); kept in sync deliberately so both
+//    heuristics see the same local-weight distribution. If we later
+//    dedupe, hoist to CSE_HeuristicCommon.
+//
+void CSE_HeuristicRLHook::CaptureLocalWeights()
+{
+    CompAllocator allocator = m_compiler->getAllocator(CMK_SSA);
+    m_localWeights          = new (allocator) jitstd::vector<double>(allocator);
+
+    for (unsigned trackedIndex = 0; trackedIndex < m_compiler->lvaTrackedCount; trackedIndex++)
+    {
+        LclVarDsc* const varDsc = m_compiler->lvaGetDescByTrackedIndex(trackedIndex);
+
+        if (varDsc->lvRefCnt() == 0)
+        {
+            continue;
+        }
+
+        if (varDsc->lvDoNotEnregister)
+        {
+            continue;
+        }
+
+        // Match the parameterized heuristic's "int-only" filter -- CSE
+        // temps at the point this feeds are compared against the
+        // integer-class register budget only. If we later want a
+        // per-class spill signal, split into three vectors.
+        if (varTypeIsFloating(varDsc->TypeGet()) || varTypeIsMask(varDsc->TypeGet()))
+        {
+            continue;
+        }
+
+        m_localWeights->push_back(varDsc->lvRefCntWtd() / BB_UNITY_WEIGHT);
+    }
 }
 
 //------------------------------------------------------------------------
@@ -3257,6 +3309,16 @@ void CSE_HeuristicRLHook::Initialize()
 //
 void CSE_HeuristicRLHook::ConsiderCandidates()
 {
+    // Snapshot method-level state (aggressiveRefCnt / moderateRefCnt /
+    // frame flags / m_localWeights / m_registerPressure) BEFORE we
+    // start applying prior CSE decisions. m_addCSEcount then advances
+    // naturally as PerformCSE runs for each replayed CSE, and the
+    // spill/stopping feature emitted later reads
+    // (m_registerPressure - m_addCSEcount) against the pre-CSE local
+    // weight distribution -- matching CSE_HeuristicParameterized's
+    // sequencing exactly.
+    Initialize();
+
     if (JitConfig.JitRLHookCSEDecisions() != nullptr)
     {
         ConfigIntArray JitRLHookCSEDecisions;
@@ -3627,6 +3689,50 @@ void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
     // Compiler::codeOptimize: 0=BLENDED_CODE, 1=SMALL_CODE, 2=FAST_CODE.
     features[i++] = (int)CodeOptKind();
 
+    // Number of CSEs already applied on this call to
+    // ConsiderCandidates. When invoked via
+    // JitRLHookCSEDecisions=[c0, c1, ...] this equals the length of
+    // that list at the time DumpMetrics runs. Emitted as a raw count
+    // so the ML side can compute any function it needs of "how far
+    // into the CSE sequence are we".
+    features[i++] = (int)m_addCSEcount;
+
+    // Register-pressure / spill signal. Mirrors what
+    // CSE_HeuristicParameterized::GetStoppingFeatures emits as its
+    // feature[24]. Reads (m_registerPressure - m_addCSEcount) as the
+    // current effective register budget; looks up the weight of the
+    // LclVar that would spill next given that budget. Log-transformed
+    // with the same deMinimusAdj offset the parameterized heuristic
+    // uses, then x1000 fixed-point.
+    //
+    // Non-negative; typical range ~0..14000. As m_addCSEcount rises
+    // (more CSEs already accepted), spillAtWeight drops, so this
+    // feature decreases monotonically over a rollout for a given
+    // method -- giving the RL model a natural "we're running out of
+    // budget" signal without hand-coding a penalty.
+    {
+        const double deMinimis    = 1e-3;
+        const double deMinimusAdj = -log(deMinimis);
+        double       spillAtWeight = deMinimis;
+        unsigned     currentPressure = m_registerPressure;
+
+        if (currentPressure > m_addCSEcount)
+        {
+            currentPressure -= m_addCSEcount;
+        }
+        else
+        {
+            currentPressure = 0;
+        }
+
+        if ((m_localWeights != nullptr) && (currentPressure < m_localWeights->size()))
+        {
+            spillAtWeight = (*m_localWeights)[currentPressure];
+        }
+
+        features[i++] = (int)((deMinimusAdj + log(max(deMinimis, spillAtWeight))) * 1000.0 + 0.5);
+    }
+
     assert(i <= maxMethodFeatures);
 
     for (; i < maxMethodFeatures; i++)
@@ -3654,6 +3760,10 @@ const char* const CSE_HeuristicRLHook::s_featureNameAndType[] = {
 // line. Ordering must match GetMethodFeatures.
 const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
     "aggressive_ref_cnt_x1000", "moderate_ref_cnt_x1000", "large_frame", "huge_frame", "code_opt_kind",
+    // Sequence-aware additions: how many CSEs have been applied so
+    // far, and the register-pressure-aware spill signal that shrinks
+    // as more CSEs consume the budget.
+    "add_cse_count",            "spill_at_weight_x1000",
 };
 
 //------------------------------------------------------------------------
