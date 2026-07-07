@@ -3015,6 +3015,11 @@ void CSE_HeuristicParameterized::DumpChoices(ArrayStack<Choice>& choices, CSEdsc
 //
 CSE_HeuristicRLHook::CSE_HeuristicRLHook(Compiler* pCompiler)
     : CSE_HeuristicCommon(pCompiler)
+    , m_aggressiveRefCnt(0)
+    , m_moderateRefCnt(0)
+    , m_largeFrame(false)
+    , m_hugeFrame(false)
+    , m_initialized(false)
 {
 }
 
@@ -3030,6 +3035,220 @@ CSE_HeuristicRLHook::CSE_HeuristicRLHook(Compiler* pCompiler)
 bool CSE_HeuristicRLHook::ConsiderTree(GenTree* tree, bool isReturn)
 {
     return CanConsiderTree(tree, isReturn);
+}
+
+//------------------------------------------------------------------------
+// Initialize: compute the method-level state that the hand-tuned
+//   CSE_Heuristic surfaces via aggressiveRefCnt / moderateRefCnt /
+//   largeFrame / hugeFrame. Idempotent -- safe to call multiple times.
+//
+// Notes:
+//   This mirrors CSE_Heuristic::Initialize() so we can expose the same
+//   promotion-cutoff and frame-size class signals to the external RL
+//   learner. Any change to the classic Initialize() should be mirrored
+//   here (or vice versa). We duplicate rather than share to keep the
+//   default heuristic path risk-free.
+//
+void CSE_HeuristicRLHook::Initialize()
+{
+    if (m_initialized)
+    {
+        return;
+    }
+    m_initialized = true;
+
+    unsigned   frameSize           = 0;
+    unsigned   regAvailEstimateInt = CNT_MODERATE_ENREG + 1;
+    unsigned   regAvailEstimateFlt = CNT_MODERATE_ENREG_FLT + 1;
+    unsigned   regAvailEstimateMsk = CNT_MODERATE_ENREG_MSK + 1;
+    unsigned   enregCountInt       = 0;
+    unsigned   enregCountFlt       = 0;
+    unsigned   enregCountMsk       = 0;
+    unsigned   lclNum;
+    LclVarDsc* varDsc;
+
+    for (lclNum = 0, varDsc = m_compiler->lvaTable; lclNum < m_compiler->lvaCount; lclNum++, varDsc++)
+    {
+        if (varDsc->lvRefCnt() == 0)
+        {
+            continue;
+        }
+
+        if (varDsc->lvIsParam && !varDsc->lvIsRegArg)
+        {
+            continue;
+        }
+
+#if FEATURE_FIXED_OUT_ARGS
+        noway_assert(m_compiler->lvaOutgoingArgSpaceVar != BAD_VAR_NUM);
+        if (lclNum == m_compiler->lvaOutgoingArgSpaceVar)
+        {
+            continue;
+        }
+#endif // FEATURE_FIXED_OUT_ARGS
+
+        unsigned* pRegAvailEstimate;
+
+        if (varTypeUsesIntReg(varDsc->TypeGet()))
+        {
+            pRegAvailEstimate = &regAvailEstimateInt;
+        }
+        else if (varTypeUsesMaskReg(varDsc->TypeGet()))
+        {
+            pRegAvailEstimate = &regAvailEstimateMsk;
+        }
+        else
+        {
+            assert(varTypeUsesFloatReg(varDsc->TypeGet()));
+            pRegAvailEstimate = &regAvailEstimateFlt;
+        }
+
+        bool onStack = (*pRegAvailEstimate) == 0;
+
+        if (varDsc->lvDoNotEnregister)
+        {
+            onStack = true;
+        }
+
+#ifdef TARGET_X86
+        if (varTypeIsLong(varDsc->TypeGet()))
+        {
+            onStack = true;
+        }
+#endif // TARGET_X86
+
+        if (onStack && !varTypeHasUnknownSize(varDsc))
+        {
+            frameSize += m_compiler->lvaLclStackHomeSize(lclNum);
+        }
+        else
+        {
+            if (varDsc->lvRefCnt() <= 2)
+            {
+                *pRegAvailEstimate -= 1;
+            }
+            else
+            {
+                if (*pRegAvailEstimate >= 2)
+                {
+                    *pRegAvailEstimate -= 2;
+                }
+                else
+                {
+                    *pRegAvailEstimate = 0;
+                }
+            }
+        }
+
+#ifdef TARGET_XARCH
+        if (frameSize > 0x080)
+        {
+            m_largeFrame = true;
+            break;
+        }
+#elif defined(TARGET_ARM)
+        if (frameSize > 0x0400)
+        {
+            m_largeFrame = true;
+        }
+        if (frameSize > 0x10000)
+        {
+            m_hugeFrame = true;
+            break;
+        }
+#elif defined(TARGET_ARM64)
+        if (frameSize > 0x1000)
+        {
+            m_largeFrame = true;
+            break;
+        }
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+        if (frameSize > 0x7ff)
+        {
+            m_largeFrame = true;
+            break;
+        }
+#endif
+    }
+
+    for (unsigned trackedIndex = 0; trackedIndex < m_compiler->lvaTrackedCount; trackedIndex++)
+    {
+        LclVarDsc* tvDsc = m_compiler->lvaGetDescByTrackedIndex(trackedIndex);
+        var_types  varTyp = tvDsc->TypeGet();
+
+        if (tvDsc->lvRefCnt() == 0)
+        {
+            continue;
+        }
+
+        if (tvDsc->lvDoNotEnregister)
+        {
+            continue;
+        }
+
+        unsigned enregCount;
+        unsigned cntAggressiveEnreg;
+        unsigned cntModerateEnreg;
+
+        if (varTypeUsesIntReg(varTyp))
+        {
+            enregCountInt++;
+
+#ifndef TARGET_64BIT
+            if (varTyp == TYP_LONG)
+            {
+                enregCountInt++;
+            }
+#endif
+
+            enregCount         = enregCountInt;
+            cntAggressiveEnreg = CNT_AGGRESSIVE_ENREG;
+            cntModerateEnreg   = CNT_MODERATE_ENREG;
+        }
+        else if (varTypeUsesMaskReg(varTyp))
+        {
+            enregCountMsk++;
+            enregCount         = enregCountMsk;
+            cntAggressiveEnreg = CNT_AGGRESSIVE_ENREG_MSK;
+            cntModerateEnreg   = CNT_MODERATE_ENREG_MSK;
+        }
+        else
+        {
+            assert(varTypeUsesFloatReg(varTyp));
+            enregCountFlt++;
+            enregCount         = enregCountFlt;
+            cntAggressiveEnreg = CNT_AGGRESSIVE_ENREG_FLT;
+            cntModerateEnreg   = CNT_MODERATE_ENREG_FLT;
+        }
+
+        if ((m_aggressiveRefCnt == 0) && (enregCount > cntAggressiveEnreg))
+        {
+            if (CodeOptKind() == Compiler::SMALL_CODE)
+            {
+                m_aggressiveRefCnt = tvDsc->lvRefCnt();
+            }
+            else
+            {
+                m_aggressiveRefCnt = tvDsc->lvRefCntWtd();
+            }
+            m_aggressiveRefCnt += BB_UNITY_WEIGHT;
+        }
+        if ((m_moderateRefCnt == 0) && (enregCount > cntModerateEnreg))
+        {
+            if (CodeOptKind() == Compiler::SMALL_CODE)
+            {
+                m_moderateRefCnt = tvDsc->lvRefCnt();
+            }
+            else
+            {
+                m_moderateRefCnt = tvDsc->lvRefCntWtd();
+            }
+            m_moderateRefCnt += (BB_UNITY_WEIGHT / 2);
+        }
+    }
+
+    m_aggressiveRefCnt = max(BB_UNITY_WEIGHT / 2, m_aggressiveRefCnt);
+    m_moderateRefCnt   = max(BB_UNITY_WEIGHT, m_moderateRefCnt);
 }
 
 //------------------------------------------------------------------------
@@ -3089,6 +3308,10 @@ void CSE_HeuristicRLHook::ConsiderCandidates()
 //
 void CSE_HeuristicRLHook::DumpMetrics()
 {
+    // Populate m_aggressiveRefCnt / m_moderateRefCnt / m_largeFrame /
+    // m_hugeFrame before we emit method-level features. Idempotent.
+    Initialize();
+
     // Feature names, if requested
     if (JitConfig.JitRLHookEmitFeatureNames() > 0)
     {
@@ -3096,6 +3319,24 @@ void CSE_HeuristicRLHook::DumpMetrics()
         for (int i = 0; i < maxFeatures; i++)
         {
             printf("%s%s", (i == 0) ? "" : ",", s_featureNameAndType[i]);
+        }
+        printf(" methodFeatureNames ");
+        for (int i = 0; i < maxMethodFeatures; i++)
+        {
+            printf("%s%s", (i == 0) ? "" : ",", s_methodFeatureNames[i]);
+        }
+    }
+
+    // Method-level features (one row per method, always emitted so the
+    // consuming ML side sees the same schema regardless of whether feature
+    // names were requested).
+    {
+        int methodFeatures[maxMethodFeatures];
+        GetMethodFeatures(methodFeatures);
+        printf(" method");
+        for (int j = 0; j < maxMethodFeatures; j++)
+        {
+            printf(",%d", methodFeatures[j]);
         }
     }
 
@@ -3270,8 +3511,10 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     int i         = 0;
     features[i++] = type;
     features[i++] = cse->IsViable() ? 1 : 0;
-    features[i++] = cse->csdLiveAcrossCall ? 1 : 0;
-    features[i++] = cse->csdTreeList.tslTree->OperIsConst() ? 1 : 0;
+    const bool isLiveAcrossCall = cse->csdLiveAcrossCall;
+    features[i++] = isLiveAcrossCall ? 1 : 0;
+    const bool isConst = cse->csdTreeList.tslTree->OperIsConst();
+    features[i++] = isConst ? 1 : 0;
     features[i++] = cse->csdIsSharedConst ? 1 : 0;
     features[i++] = isMakeCse ? 1 : 0;
     features[i++] = ((cse->csdTreeList.tslTree->gtFlags & GTF_CALL) != 0) ? 1 : 0;
@@ -3280,8 +3523,10 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     // whitelist of GT_ADD / GT_NOT / GT_MUL / GT_LSH, which covers the
     // common LEA-foldable and single-use bit-op patterns on x86/x64. Not a
     // precise containment query -- treat as a rough hint only.
-    features[i++] = cse->csdTreeList.tslTree->OperIs(GT_ADD, GT_NOT, GT_MUL, GT_LSH) ? 1 : 0;
-    features[i++] = cse->csdTreeList.tslTree->GetCostEx();
+    const bool isContainable = cse->csdTreeList.tslTree->OperIs(GT_ADD, GT_NOT, GT_MUL, GT_LSH);
+    features[i++] = isContainable ? 1 : 0;
+    const unsigned char costEx = cse->csdTreeList.tslTree->GetCostEx();
+    features[i++] = costEx;
     features[i++] = cse->csdTreeList.tslTree->GetCostSz();
     features[i++] = cse->csdUseCount;
     features[i++] = cse->csdDefCount;
@@ -3301,6 +3546,55 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     features[i++] = enregCountSimd;
     features[i++] = enregCountMsk;
 
+    // Tier 1-2 additions: log-scale weights + joint features + normalized
+    // block-spread + LSRA-precise call liveness, mirroring what the JIT's
+    // internal parameterized heuristic (CSE_HeuristicParameterized) already
+    // uses. Kept as scaled fixed-point ints so the RLHook int-emit contract
+    // is preserved.
+    const double deMinimis    = 1e-3;
+    const double deMinimusAdj = -log(deMinimis);
+    // log-scale weights (non-negative). value = log(max(1e-3, wt) / 1e-3).
+    // Emit at x1000 fixed-point (~0..14000 for typical weight_t values).
+    features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->csdUseWtCnt))) * 1000.0 + 0.5);
+    features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->csdDefWtCnt))) * 1000.0 + 0.5);
+
+    // Joint booleans -- shortcuts that the hand-tuned heuristic and the
+    // parameterized heuristic both rely on. A small MLP can in principle
+    // synthesize these from primitives, but on-policy PPO tends to need
+    // many samples to discover 2-way conjunctions.
+    const bool isMinCost = (costEx == Compiler::MIN_CSE_COST);
+    const bool isLowCost = (costEx <= Compiler::MIN_CSE_COST + 1);
+    features[i++] = (isConst && isLiveAcrossCall) ? 1 : 0;
+    features[i++] = (isConst && isMinCost) ? 1 : 0;
+    features[i++] = (isMinCost && isLiveAcrossCall) ? 1 : 0;
+    features[i++] = (isContainable && isLowCost) ? 1 : 0;
+
+    // LSRA-style "is live across call" -- refines csdLiveAcrossCall by
+    // walking the blocks between the CSE's min/max postorder positions and
+    // checking BBF_HAS_CALL. Strictly more information than the coarser
+    // csdLiveAcrossCall flag.
+    bool isLiveAcrossCallLsra = isLiveAcrossCall;
+    if (!isLiveAcrossCallLsra && (minPostorderBlock != nullptr) && (maxPostorderBlock != nullptr))
+    {
+        unsigned count = 0;
+        for (BasicBlock* block                                                          = minPostorderBlock;
+             block != nullptr && block != maxPostorderBlock && count < blockSpread; block = block->Next(), count++)
+        {
+            if (block->HasFlag(BBF_HAS_CALL))
+            {
+                isLiveAcrossCallLsra = true;
+                break;
+            }
+        }
+    }
+    features[i++] = isLiveAcrossCallLsra ? 1 : 0;
+
+    // Normalized block spread: blockSpread as a fraction of bbCount, at
+    // x1000 fixed-point. This is what the parameterized heuristic feeds
+    // its model, and it removes the "large method vs small method" scale
+    // difference that raw block_spread carries.
+    features[i++] = (numBBs > 0) ? (int)(((double)blockSpread * 1000.0) / numBBs + 0.5) : 0;
+
     assert(i <= maxFeatures);
 
     for (; i < maxFeatures; i++)
@@ -3309,15 +3603,57 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     }
 }
 
+//------------------------------------------------------------------------
+// GetMethodFeatures: fill in the method-level feature array with the
+//   promotion-cutoff / frame-size class signals the hand-tuned CSE
+//   heuristic uses. The ordering must match s_methodFeatureNames.
+//
+// Arguments:
+//   features - int[maxMethodFeatures]
+//
+void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
+{
+    Initialize();
+
+    int i         = 0;
+    // Emit weighted ref-count cutoffs at x1000 fixed-point. weight_t is
+    // a double; typical values are in [0.5, ~10000]. x1000 buys ~3 fractional
+    // digits without overflowing int for realistic method sizes.
+    features[i++] = (int)(m_aggressiveRefCnt * 1000.0 + 0.5);
+    features[i++] = (int)(m_moderateRefCnt * 1000.0 + 0.5);
+    features[i++] = m_largeFrame ? 1 : 0;
+    features[i++] = m_hugeFrame ? 1 : 0;
+    // Compiler code-opt kind. Uses the raw enum values from
+    // Compiler::codeOptimize: 0=BLENDED_CODE, 1=SMALL_CODE, 2=FAST_CODE.
+    features[i++] = (int)CodeOptKind();
+
+    assert(i <= maxMethodFeatures);
+
+    for (; i < maxMethodFeatures; i++)
+    {
+        features[i] = 0;
+    }
+}
+
 // These need to match the features above, and match the field name of MethodContext
 // in jitml/method_context.py in dotnet/jitutils, under src/jit-rl-cse-py/.
 const char* const CSE_HeuristicRLHook::s_featureNameAndType[] = {
-    "type",             "viable",           "live_across_call",  "const",
-    "shared_const",     "make_cse",         "has_call",          "containable",
-    "cost_ex",          "cost_sz",          "use_count",         "def_count",
-    "use_wt_cnt_x100",  "def_wt_cnt_x100",  "distinct_locals",   "local_occurrences",
-    "bb_count",         "block_spread",
-    "enreg_count_int",  "enreg_count_float","enreg_count_simd",  "enreg_count_msk",
+    "type",                     "viable",             "live_across_call",         "const",
+    "shared_const",             "make_cse",           "has_call",                 "containable",
+    "cost_ex",                  "cost_sz",            "use_count",                "def_count",
+    "use_wt_cnt_x100",          "def_wt_cnt_x100",    "distinct_locals",          "local_occurrences",
+    "bb_count",                 "block_spread",
+    "enreg_count_int",          "enreg_count_float",  "enreg_count_simd",         "enreg_count_msk",
+    // Tier 1-2 additions (must stay in sync with GetFeatures ordering above).
+    "log_use_wt_x1000",         "log_def_wt_x1000",
+    "const_and_live",           "const_and_min_cost", "min_cost_and_live",        "containable_and_low_cost",
+    "live_across_call_lsra",    "block_spread_x1000_per_bb",
+};
+
+// Method-level features, emitted once per invocation on the ``method``
+// line. Ordering must match GetMethodFeatures.
+const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
+    "aggressive_ref_cnt_x1000", "moderate_ref_cnt_x1000", "large_frame", "huge_frame", "code_opt_kind",
 };
 
 //------------------------------------------------------------------------

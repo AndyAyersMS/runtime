@@ -260,12 +260,29 @@ class CSE_HeuristicRLHook : public CSE_HeuristicCommon
 {
 private:
     static const char* const s_featureNameAndType[];
+    static const char* const s_methodFeatureNames[];
 
+    void Initialize();
     void GetFeatures(CSEdsc* cse, int* features);
+    void GetMethodFeatures(int* features);
+
+    // Method-level state, mirrored from CSE_Heuristic so we can surface the
+    // same "aggressive/moderate promotion cutoff + frame-size class" signals
+    // the hand-tuned heuristic uses. Populated lazily by Initialize().
+    weight_t m_aggressiveRefCnt;
+    weight_t m_moderateRefCnt;
+    bool     m_largeFrame;
+    bool     m_hugeFrame;
+    bool     m_initialized;
 
     enum
     {
-        maxFeatures = 22,
+        // Per-candidate features emitted per CSEdsc. See s_featureNameAndType
+        // for the ordered list; keep the two in sync.
+        maxFeatures = 30,
+        // Method-level features emitted once per invocation on the ``method``
+        // line. See s_methodFeatureNames for the ordered list.
+        maxMethodFeatures = 5,
     };
 
     enum
