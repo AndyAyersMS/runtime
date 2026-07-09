@@ -3620,6 +3620,19 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->csdUseWtCnt))) * 1000.0 + 0.5);
     features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->csdDefWtCnt))) * 1000.0 + 0.5);
 
+    // Multiplicative log-interaction features mirroring
+    // CSE_HeuristicParameterized::GetFeatures() features[18] and [19]:
+    //   * log(useCount * useWtCnt)     -- total dynamic use pressure
+    //   * log(localOccurrences*useWtCnt) -- expected local pressure delta
+    // These are LINEARLY CORRELATED with the individual log_use_wt / log_def_wt
+    // features only if we already have log(use_count) and log(local_occ)
+    // separately -- we don't emit those, and log(A*B) = log(A) + log(B)
+    // isn't recoverable from raw use_count + log_use_wt by a small
+    // linear/attention model. Giving these to the network directly
+    // matches the hand-tuned parameterized heuristic's inductive bias.
+    features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->csdUseCount * cse->csdUseWtCnt))) * 1000.0 + 0.5);
+    features[i++] = (int)((deMinimusAdj + log(max(deMinimis, cse->numLocalOccurrences * cse->csdUseWtCnt))) * 1000.0 + 0.5);
+
     // Joint booleans -- shortcuts that the hand-tuned heuristic and the
     // parameterized heuristic both rely on. A small MLP can in principle
     // synthesize these from primitives, but on-policy PPO tends to need
@@ -3752,6 +3765,7 @@ const char* const CSE_HeuristicRLHook::s_featureNameAndType[] = {
     "enreg_count_int",          "enreg_count_float",  "enreg_count_simd",         "enreg_count_msk",
     // Tier 1-2 additions (must stay in sync with GetFeatures ordering above).
     "log_use_wt_x1000",         "log_def_wt_x1000",
+    "log_use_cnt_x_wt_x1000",   "log_local_occ_x_wt_x1000",
     "const_and_live",           "const_and_min_cost", "min_cost_and_live",        "containable_and_low_cost",
     "live_across_call_lsra",    "block_spread_x1000_per_bb",
 };

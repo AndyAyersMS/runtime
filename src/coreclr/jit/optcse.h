@@ -291,7 +291,7 @@ private:
     {
         // Per-candidate features emitted per CSEdsc. See s_featureNameAndType
         // for the ordered list; keep the two in sync.
-        maxFeatures = 30,
+        maxFeatures = 32,
         // Method-level features emitted once per invocation on the ``method``
         // line. See s_methodFeatureNames for the ordered list.
         maxMethodFeatures = 7,
