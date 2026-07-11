@@ -3848,6 +3848,23 @@ void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
     features[i++] = m_compiler->fgPgoHaveWeights ? 1 : 0;
     features[i++] = m_compiler->fgPgoDynamic ? 1 : 0;
 
+    // Target-ISA one-hot signals (is_x64, is_arm64). "Other" (arm32, wasm,
+    // loongarch64, riscv64) has both zero. Enables a unified imitation
+    // model to condition its predictions on per-ISA register-file /
+    // cost-model differences that the per-candidate features can't fully
+    // capture on their own (e.g. x64 has 16 int regs, arm64 has 32 --
+    // materially changes the CSE-vs-spill tradeoff).
+#if defined(TARGET_AMD64)
+    features[i++] = 1; // is_x64
+    features[i++] = 0; // is_arm64
+#elif defined(TARGET_ARM64)
+    features[i++] = 0; // is_x64
+    features[i++] = 1; // is_arm64
+#else
+    features[i++] = 0; // is_x64
+    features[i++] = 0; // is_arm64
+#endif
+
     assert(i <= maxMethodFeatures);
 
     for (; i < maxMethodFeatures; i++)
@@ -3883,6 +3900,9 @@ const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
     // PGO availability signals so a unified ML model can distinguish
     // dynamic-PGO Tier1 methods from statically-weighted ones.
     "has_pgo_weights",          "has_pgo_dynamic",
+    // Target-ISA one-hot: is_x64 / is_arm64. Both zero for other
+    // targets (arm32, wasm, loongarch64, riscv64).
+    "is_x64",                   "is_arm64",
 };
 
 //------------------------------------------------------------------------
@@ -4008,8 +4028,8 @@ static const FeatKind s_candKind[FEATURES_PER_CANDIDATE] = {
 };
 
 // Python METHOD_SCHEMA transform kinds, index 0..N-1 where N = METHOD_FEATURES.
-// Entries 12-13 (PGO signals) are only referenced when the baked model was
-// trained with the extended 14-slot schema.
+// Entries 12-15 (PGO + ISA one-hot) are only referenced when the baked model
+// was trained with the extended schema (v8 = 14 slots; v9 = 16 slots).
 static const FeatKind s_methodKind[] = {
     /* 0..4  bb_count, enreg_{int,float,simd,msk} */ KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
     /* 5..6  aggressive_/moderate_ref_cnt_x1000 */   KIND_COUNT, KIND_COUNT,
@@ -4019,6 +4039,8 @@ static const FeatKind s_methodKind[] = {
     /* 11    spill_at_weight_x1000              */   KIND_LOG1K,
     /* 12    has_pgo_weights                    */   KIND_IDENT,
     /* 13    has_pgo_dynamic                    */   KIND_IDENT,
+    /* 14    is_x64                             */   KIND_IDENT,
+    /* 15    is_arm64                           */   KIND_IDENT,
 };
 static_assert(sizeof(s_methodKind) / sizeof(s_methodKind[0]) >= METHOD_FEATURES,
               "s_methodKind must have at least METHOD_FEATURES entries");
@@ -4089,12 +4111,16 @@ static void LayerNorm(float* x, int rows, int dim,
 
 // Multi-head self-attention, single layer, batch=1.
 // input, output shape: [MAX_CSE][EMBED_DIM].
-// isPadding[t] == true means "row t is padding: mask out as a KEY."
+// numReal is the count of real (non-padded) rows; rows [numReal..MAX_CSE)
+// are padding and get skipped in per-row loops. Attention output for
+// padding rows is left unchanged (caller pre-zeros).
 static void Attention(const float* input,
-                      const bool*  isPadding,
+                      int          numReal,
                       float*       output)
 {
-    // Weights are laid out (3E, E): rows 0..E = Wq, E..2E = Wk, 2E..3E = Wv.
+    if (numReal <= 0) return;
+    if (numReal > MAX_CSE) numReal = MAX_CSE;
+
     const float* wIn = k_extractor_attn_layers_0_self_attn_in_proj_weight;
     const float* bIn = k_extractor_attn_layers_0_self_attn_in_proj_bias;
     const float* wq  = wIn + 0 * EMBED_DIM * EMBED_DIM;
@@ -4104,11 +4130,13 @@ static void Attention(const float* input,
     const float* bk  = bIn + EMBED_DIM;
     const float* bv  = bIn + 2 * EMBED_DIM;
 
-    // Project each row into Q, K, V.
+    // Project only real rows into Q, K, V. Padded rows would be masked
+    // out of attention anyway (their softmax weight is zero), so their
+    // K/V projections are never read; skip them.
     float q[MAX_CSE * EMBED_DIM];
     float k[MAX_CSE * EMBED_DIM];
     float v[MAX_CSE * EMBED_DIM];
-    for (int t = 0; t < MAX_CSE; t++)
+    for (int t = 0; t < numReal; t++)
     {
         Linear(input + t * EMBED_DIM, EMBED_DIM, wq, bq, q + t * EMBED_DIM, EMBED_DIM);
         Linear(input + t * EMBED_DIM, EMBED_DIM, wk, bk, k + t * EMBED_DIM, EMBED_DIM);
@@ -4117,14 +4145,15 @@ static void Attention(const float* input,
 
     const float scale = 1.0f / sqrtf((float)HEAD_DIM);
     float mhaOut[MAX_CSE * EMBED_DIM];
-    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) mhaOut[i] = 0.0f;
+    for (int i = 0; i < numReal * EMBED_DIM; i++) mhaOut[i] = 0.0f;
 
     for (int h = 0; h < NUM_HEADS; h++)
     {
+        // Scores are (numReal, numReal) instead of (MAX_CSE, MAX_CSE).
         float scores[MAX_CSE * MAX_CSE];
-        for (int s = 0; s < MAX_CSE; s++)
+        for (int s = 0; s < numReal; s++)
         {
-            for (int t = 0; t < MAX_CSE; t++)
+            for (int t = 0; t < numReal; t++)
             {
                 float dot = 0.0f;
                 for (int d = 0; d < HEAD_DIM; d++)
@@ -4132,37 +4161,33 @@ static void Attention(const float* input,
                     dot += q[s * EMBED_DIM + h * HEAD_DIM + d]
                          * k[t * EMBED_DIM + h * HEAD_DIM + d];
                 }
-                scores[s * MAX_CSE + t] = isPadding[t] ? -1e30f : dot * scale;
+                scores[s * MAX_CSE + t] = dot * scale;
             }
         }
 
         // Row softmax + weighted sum over V rows.
-        for (int s = 0; s < MAX_CSE; s++)
+        for (int s = 0; s < numReal; s++)
         {
             float m = -1e30f;
-            for (int t = 0; t < MAX_CSE; t++)
+            for (int t = 0; t < numReal; t++)
             {
                 float sc = scores[s * MAX_CSE + t];
                 if (sc > m) m = sc;
             }
             float weights[MAX_CSE];
             float sum = 0.0f;
-            for (int t = 0; t < MAX_CSE; t++)
+            for (int t = 0; t < numReal; t++)
             {
-                float e = (scores[s * MAX_CSE + t] > -1e29f) ? expf(scores[s * MAX_CSE + t] - m) : 0.0f;
+                float e = expf(scores[s * MAX_CSE + t] - m);
                 weights[t] = e;
                 sum += e;
             }
-            if (sum <= 0.0f)
-            {
-                // Query with no valid keys: contribute zero.
-                continue;
-            }
-            for (int t = 0; t < MAX_CSE; t++) weights[t] /= sum;
+            if (sum <= 0.0f) continue;
+            for (int t = 0; t < numReal; t++) weights[t] /= sum;
             for (int d = 0; d < HEAD_DIM; d++)
             {
                 float acc = 0.0f;
-                for (int t = 0; t < MAX_CSE; t++)
+                for (int t = 0; t < numReal; t++)
                 {
                     acc += weights[t] * v[t * EMBED_DIM + h * HEAD_DIM + d];
                 }
@@ -4171,8 +4196,8 @@ static void Attention(const float* input,
         }
     }
 
-    // Output projection.
-    for (int s = 0; s < MAX_CSE; s++)
+    // Output projection -- only for real rows.
+    for (int s = 0; s < numReal; s++)
     {
         Linear(mhaOut + s * EMBED_DIM, EMBED_DIM,
                k_extractor_attn_layers_0_self_attn_out_proj_weight,
@@ -4182,26 +4207,36 @@ static void Attention(const float* input,
 }
 
 // Full v7 forward pass. Emits MAX_CSE + 1 raw logits (last is stop score).
+// `numReal` is the count of real (non-padded) candidates; must be <= MAX_CSE.
+// Rows beyond numReal are assumed to be all-zero padding and skipped in
+// per-row loops. This gives near-linear speedup in numReal for small
+// methods (typical numReal is 5-10, MAX_CSE=32, so ~3-6x faster than the
+// naive full-MAX_CSE version).
 static void Forward(const float candidates[MAX_CSE * FEATURES_PER_CANDIDATE],
                     const float method[METHOD_FEATURES],
+                    int         numReal,
                     float       outLogits[MAX_CSE + 1])
 {
-    // Padding-row detection (row is padding iff all-zero).
-    bool isPadding[MAX_CSE];
-    for (int i = 0; i < MAX_CSE; i++)
-    {
-        float acc = 0.0f;
-        for (int j = 0; j < FEATURES_PER_CANDIDATE; j++)
-        {
-            float x = candidates[i * FEATURES_PER_CANDIDATE + j];
-            acc += (x < 0.0f) ? -x : x;
-        }
-        isPadding[i] = (acc == 0.0f);
-    }
+    // Fill outputs for padding rows with a large-negative logit so
+    // downstream threshold checks always skip them.
+    for (int i = 0; i < MAX_CSE + 1; i++) outLogits[i] = -1e30f;
 
-    // 1. candidate embed.
+    if (numReal <= 0)
+    {
+        // Only the stop score is meaningful.
+        float stopScore;
+        Linear(method, METHOD_FEATURES,
+               k_extractor_stop_scorer_weight,
+               k_extractor_stop_scorer_bias,
+               &stopScore, 1);
+        outLogits[MAX_CSE] = stopScore;
+        return;
+    }
+    if (numReal > MAX_CSE) numReal = MAX_CSE;
+
+    // 1. candidate embed -- only for real rows.
     float embed[MAX_CSE * EMBED_DIM];
-    for (int r = 0; r < MAX_CSE; r++)
+    for (int r = 0; r < numReal; r++)
     {
         Linear(candidates + r * FEATURES_PER_CANDIDATE, FEATURES_PER_CANDIDATE,
                k_extractor_candidate_embed_weight,
@@ -4211,27 +4246,31 @@ static void Forward(const float candidates[MAX_CSE * FEATURES_PER_CANDIDATE],
 
     // 2. Pre-norm transformer encoder layer.
     float x[MAX_CSE * EMBED_DIM];
-    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) x[i] = embed[i];
+    for (int i = 0; i < numReal * EMBED_DIM; i++) x[i] = embed[i];
+    for (int i = numReal * EMBED_DIM; i < MAX_CSE * EMBED_DIM; i++) x[i] = 0.0f;
 
     //   attention block
     float z1[MAX_CSE * EMBED_DIM];
-    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) z1[i] = x[i];
-    LayerNorm(z1, MAX_CSE, EMBED_DIM,
+    for (int i = 0; i < numReal * EMBED_DIM; i++) z1[i] = x[i];
+    for (int i = numReal * EMBED_DIM; i < MAX_CSE * EMBED_DIM; i++) z1[i] = 0.0f;
+    LayerNorm(z1, numReal, EMBED_DIM,
               k_extractor_attn_layers_0_norm1_weight,
               k_extractor_attn_layers_0_norm1_bias);
 
     float attn[MAX_CSE * EMBED_DIM];
-    Attention(z1, isPadding, attn);
-    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) x[i] += attn[i];
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) attn[i] = 0.0f;
+    Attention(z1, numReal, attn);
+    for (int i = 0; i < numReal * EMBED_DIM; i++) x[i] += attn[i];
 
     //   FFN block
     float z2[MAX_CSE * EMBED_DIM];
-    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) z2[i] = x[i];
-    LayerNorm(z2, MAX_CSE, EMBED_DIM,
+    for (int i = 0; i < numReal * EMBED_DIM; i++) z2[i] = x[i];
+    for (int i = numReal * EMBED_DIM; i < MAX_CSE * EMBED_DIM; i++) z2[i] = 0.0f;
+    LayerNorm(z2, numReal, EMBED_DIM,
               k_extractor_attn_layers_0_norm2_weight,
               k_extractor_attn_layers_0_norm2_bias);
 
-    for (int r = 0; r < MAX_CSE; r++)
+    for (int r = 0; r < numReal; r++)
     {
         float hidden[FFN_HIDDEN];
         Linear(z2 + r * EMBED_DIM, EMBED_DIM,
@@ -4250,8 +4289,8 @@ static void Forward(const float candidates[MAX_CSE * FEATURES_PER_CANDIDATE],
         for (int d = 0; d < EMBED_DIM; d++) x[r * EMBED_DIM + d] += ffn[d];
     }
 
-    // 3. Per-candidate score.
-    for (int r = 0; r < MAX_CSE; r++)
+    // 3. Per-candidate score (only for real rows; padding logits stay at -1e30f).
+    for (int r = 0; r < numReal; r++)
     {
         float score;
         Linear(x + r * EMBED_DIM, EMBED_DIM,
@@ -4348,10 +4387,16 @@ static void RemapMethod(const int* jitFeat0,        // first candidate's JIT fea
     methodFeat[10] = ApplyKind(jitMethodFeat[5],    s_methodKind[10]); // add_cse_count
     methodFeat[11] = ApplyKind(jitMethodFeat[6],    s_methodKind[11]); // spill_at_weight_x1000
     // PGO availability signals -- only present when METHOD_FEATURES >= 14
-    // (i.e. v8+ model trained on the extended schema).
+    // (v8+ trained on the extended schema).
 #if METHOD_FEATURES >= 14
     methodFeat[12] = ApplyKind(jitMethodFeat[7],    s_methodKind[12]); // has_pgo_weights
     methodFeat[13] = ApplyKind(jitMethodFeat[8],    s_methodKind[13]); // has_pgo_dynamic
+#endif
+    // ISA one-hot -- only present when METHOD_FEATURES >= 16
+    // (v9+ trained on the ISA-unified schema).
+#if METHOD_FEATURES >= 16
+    methodFeat[14] = ApplyKind(jitMethodFeat[9],    s_methodKind[14]); // is_x64
+    methodFeat[15] = ApplyKind(jitMethodFeat[10],   s_methodKind[15]); // is_arm64
 #endif
 }
 
@@ -4443,7 +4488,7 @@ void CSE_HeuristicImitation::ConsiderCandidates()
 
     // Run the model.
     float logits[MAX_CSE + 1];
-    Forward(candFeat, methodFeat, logits);
+    Forward(candFeat, methodFeat, (int)scoreCount, logits);
 
     const bool dump = (JitConfig.JitCseImitationDump() > 0);
     if (dump)
