@@ -297,7 +297,7 @@ protected:
         maxFeatures = 32,
         // Method-level features emitted once per invocation on the ``method``
         // line. See s_methodFeatureNames for the ordered list.
-        maxMethodFeatures = 7,
+        maxMethodFeatures = 9,
         // Maximum candidates whose features we can pre-capture when
         // JitRLHookEmitEarly=1. Kept in sync with MAX_CSE on the ML side.
         maxCapturedCandidates = 64,

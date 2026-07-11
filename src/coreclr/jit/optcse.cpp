@@ -3832,6 +3832,22 @@ void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
         features[i++] = (int)((deMinimusAdj + log(max(deMinimis, spillAtWeight))) * 1000.0 + 0.5);
     }
 
+    // PGO availability signals. Emitted as booleans so a unified ML
+    // model trained on mixed PGO / non-PGO methods can condition its
+    // predictions on whether the per-candidate weighted counts
+    // (csdUseWtCnt / csdDefWtCnt / features[12..13]) are calibrated by
+    // real runtime execution (dynamic PGO) or some other source
+    // (static profile, synthesized, purely-static JIT estimates).
+    //
+    //   has_pgo_weights=1 iff any profile weights were loaded (dynamic
+    //     PGO, static PGO, synthesized, or stress-mode). "Were the
+    //     weights data-driven at all?"
+    //   has_pgo_dynamic=1 iff weights came from runtime instrumentation
+    //     specifically. Excludes static and synthesized profiles.
+    //     "Trustworthy edge counts?"
+    features[i++] = m_compiler->fgPgoHaveWeights ? 1 : 0;
+    features[i++] = m_compiler->fgPgoDynamic ? 1 : 0;
+
     assert(i <= maxMethodFeatures);
 
     for (; i < maxMethodFeatures; i++)
@@ -3864,6 +3880,9 @@ const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
     // far, and the register-pressure-aware spill signal that shrinks
     // as more CSEs consume the budget.
     "add_cse_count",            "spill_at_weight_x1000",
+    // PGO availability signals so a unified ML model can distinguish
+    // dynamic-PGO Tier1 methods from statically-weighted ones.
+    "has_pgo_weights",          "has_pgo_dynamic",
 };
 
 //------------------------------------------------------------------------
