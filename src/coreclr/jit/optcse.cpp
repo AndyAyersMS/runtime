@@ -4007,15 +4007,21 @@ static const FeatKind s_candKind[FEATURES_PER_CANDIDATE] = {
                  KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
 };
 
-// Python METHOD_SCHEMA transform kinds, index 0..11.
-static const FeatKind s_methodKind[METHOD_FEATURES] = {
+// Python METHOD_SCHEMA transform kinds, index 0..N-1 where N = METHOD_FEATURES.
+// Entries 12-13 (PGO signals) are only referenced when the baked model was
+// trained with the extended 14-slot schema.
+static const FeatKind s_methodKind[] = {
     /* 0..4  bb_count, enreg_{int,float,simd,msk} */ KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
     /* 5..6  aggressive_/moderate_ref_cnt_x1000 */   KIND_COUNT, KIND_COUNT,
     /* 7..8  large_/huge_frame                  */   KIND_IDENT, KIND_IDENT,
     /* 9     code_opt_kind                      */   KIND_ENUM2,
     /* 10    add_cse_count                      */   KIND_COUNT,
     /* 11    spill_at_weight_x1000              */   KIND_LOG1K,
+    /* 12    has_pgo_weights                    */   KIND_IDENT,
+    /* 13    has_pgo_dynamic                    */   KIND_IDENT,
 };
+static_assert(sizeof(s_methodKind) / sizeof(s_methodKind[0]) >= METHOD_FEATURES,
+              "s_methodKind must have at least METHOD_FEATURES entries");
 
 static float ApplyKind(int raw, FeatKind kind)
 {
@@ -4341,6 +4347,12 @@ static void RemapMethod(const int* jitFeat0,        // first candidate's JIT fea
     methodFeat[9]  = ApplyKind(jitMethodFeat[4],    s_methodKind[9]);  // code_opt_kind
     methodFeat[10] = ApplyKind(jitMethodFeat[5],    s_methodKind[10]); // add_cse_count
     methodFeat[11] = ApplyKind(jitMethodFeat[6],    s_methodKind[11]); // spill_at_weight_x1000
+    // PGO availability signals -- only present when METHOD_FEATURES >= 14
+    // (i.e. v8+ model trained on the extended schema).
+#if METHOD_FEATURES >= 14
+    methodFeat[12] = ApplyKind(jitMethodFeat[7],    s_methodKind[12]); // has_pgo_weights
+    methodFeat[13] = ApplyKind(jitMethodFeat[8],    s_methodKind[13]); // has_pgo_dynamic
+#endif
 }
 
 static float Sigmoid(float x)
