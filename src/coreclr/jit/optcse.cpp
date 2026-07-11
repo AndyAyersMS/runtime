@@ -4320,15 +4320,19 @@ static float Sigmoid(float x)
 CSE_HeuristicImitation::CSE_HeuristicImitation(Compiler* pCompiler)
     : CSE_HeuristicRLHook(pCompiler)
 {
-    // JitCseImitationThreshold is in x1000 fixed-point (e.g. 300 -> 0.30)
-    // to fit the INTEGER-only JitConfig macro. Default 300 matches the
-    // best threshold measured on x64 test.mch during v7 training.
-    int rawThreshold = (int)JitConfig.JitCseImitationThreshold();
-    if (rawThreshold <= 0 || rawThreshold >= 1000)
+    // Default = 0.30 (best on x64 test.mch). Config is a STRING so users
+    // can pass a literal float like "0.30" without hitting the
+    // integer-parsed-as-hex JitConfig quirk.
+    m_threshold                = 0.30f;
+    const char* thresholdStr   = JitConfig.JitCseImitationThreshold();
+    if ((thresholdStr != nullptr) && (thresholdStr[0] != '\0'))
     {
-        rawThreshold = 300;
+        double parsed = atof(thresholdStr);
+        if (parsed > 0.0 && parsed < 1.0)
+        {
+            m_threshold = (float)parsed;
+        }
     }
-    m_threshold = (float)rawThreshold / 1000.0f;
 }
 
 //------------------------------------------------------------------------

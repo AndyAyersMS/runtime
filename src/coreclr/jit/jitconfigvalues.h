@@ -565,9 +565,15 @@ CONFIG_INTEGER(JitRLHookEmitEarly, "JitRLHookEmitEarly", 0)
 // src/coreclr/jit/cse_imitation_v7_weights.h.
 CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
 
-// Sigmoid threshold (x1000 fixed-point) for the imitation heuristic. Default
-// 300 (= 0.30) matches the best threshold measured on x64 test.mch.
-CONFIG_INTEGER(JitCseImitationThreshold, "JitCseImitationThreshold", 300)
+// Sigmoid threshold for the imitation heuristic. String-valued so users
+// can pass a literal float (e.g. "0.30"). Default 0.30 if unset or
+// unparseable, matching the best threshold measured on x64 test.mch.
+//
+// String rather than int because integer JitConfig values are parsed as
+// HEX, which made "300" mean threshold 0.768 (0x300 = 768 dec) --
+// surprising to anyone treating the config value as a decimal x1000
+// fixed-point. String parsing sidesteps the issue.
+CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
 
 // If nonzero, dump the per-candidate sigmoid probabilities and the
 // normalized feature/method vectors used at inference. Used for C++/Python
