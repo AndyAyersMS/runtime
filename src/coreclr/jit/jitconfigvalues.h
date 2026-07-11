@@ -552,6 +552,19 @@ CONFIG_INTEGER(JitRLHookEmitFeatureNames, "JitRLHookEmitFeatureNames", 0)
 // A list of CSEs to choose, in the order they should be applied.
 CONFIG_STRING(JitRLHookCSEDecisions, "JitRLHookCSEDecisions")
 
+// Enable the imitation-learning CSE heuristic (v7). Weights baked in at
+// src/coreclr/jit/cse_imitation_v7_weights.h.
+CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
+
+// Sigmoid threshold (x1000 fixed-point) for the imitation heuristic. Default
+// 300 (= 0.30) matches the best threshold measured on x64 test.mch.
+CONFIG_INTEGER(JitCseImitationThreshold, "JitCseImitationThreshold", 300)
+
+// If nonzero, dump the per-candidate sigmoid probabilities and the
+// normalized feature/method vectors used at inference. Used for C++/Python
+// parity debugging.
+CONFIG_INTEGER(JitCseImitationDump, "JitCseImitationDump", 0)
+
 #if !defined(DEBUG) && !defined(_DEBUG)
 RELEASE_CONFIG_INTEGER(JitEnableNoWayAssert, "JitEnableNoWayAssert", 0)
 #else  // defined(DEBUG) || defined(_DEBUG)

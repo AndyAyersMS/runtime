@@ -258,7 +258,7 @@ public:
 //
 class CSE_HeuristicRLHook : public CSE_HeuristicCommon
 {
-private:
+protected:
     static const char* const s_featureNameAndType[];
     static const char* const s_methodFeatureNames[];
 
@@ -321,6 +321,33 @@ public:
 #ifdef DEBUG
     virtual void DumpMetrics();
 #endif
+};
+
+// Imitation-learning CSE heuristic (v7).
+//
+// Loads a small transformer model (weights baked in at
+// cse_imitation_v7_weights.h) and scores every viable CSE candidate.
+// Candidates whose sigmoid score exceeds a threshold are applied.
+//
+// Reuses feature-emission code from CSE_HeuristicRLHook so the C++
+// inference sees the exact features the Python training pipeline saw.
+// This class is DEBUG-only for the initial prototype; promoting to
+// Release requires lifting the RLHook feature-gathering out of DEBUG
+// or duplicating it here.
+//
+class CSE_HeuristicImitation : public CSE_HeuristicRLHook
+{
+private:
+    float m_threshold;
+
+public:
+    CSE_HeuristicImitation(Compiler*);
+    void ConsiderCandidates();
+
+    const char* Name() const
+    {
+        return "Imitation CSE Heuristic (v7)";
+    }
 };
 
 // Reinforcement Learning CSE heuristic

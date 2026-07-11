@@ -3781,6 +3781,622 @@ const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
 };
 
 //------------------------------------------------------------------------
+// CSE_HeuristicImitation: imitation-learning CSE heuristic driven by a
+//   small transformer model with weights baked into
+//   cse_imitation_v7_weights.h.
+//
+// Extends CSE_HeuristicRLHook so we can reuse GetFeatures /
+// GetMethodFeatures / Initialize / CaptureLocalWeights. The C++
+// inference below is a direct port of scripts/inference_stub.py
+// (verified to match PyTorch to <4e-6 on 10 sample methods) using
+// only compile-time-sized stack buffers and basic float math.
+//
+// Selected when JitCseImitation != 0. Threshold defaults to 0.30
+// (best on x64 test.mch during training) but can be overridden with
+// JitCseImitationThreshold (x1000 fixed-point, e.g. 300 -> 0.30).
+//
+
+#include "cse_imitation_v7_weights.h"
+
+namespace
+{
+
+using namespace CseImitationV7;
+
+// -------- Feature normalization --------
+//
+// Mirrors _FeatureNormalizer in scripts/train_imitation.py. Each column
+// gets one of five transforms:
+//   COUNT       -> log1p(x)
+//   LOG_X1000   -> x / 1000.0
+//   RATIO_X1000 -> x / 1000.0
+//   ENUM_SMALL  -> x / 2.0
+//   BOOL/ONEHOT -> identity
+//
+// The ordering of columns MUST match PER_CANDIDATE_SCHEMA / METHOD_SCHEMA
+// in jitml/jit_cse.py AND the emission order in
+// CSE_HeuristicRLHook::GetFeatures / GetMethodFeatures below. Any drift
+// silently corrupts inputs to the model.
+//
+// The per-candidate 32-slot layout (see jit_cse.py PER_CANDIDATE_SCHEMA):
+//   0..5   type one-hot (6 slots)
+//   6..17  12 booleans (can_apply, live_across_call, const, shared_const,
+//          make_cse, has_call, containable, const_and_live,
+//          const_and_min_cost, min_cost_and_live, containable_and_low_cost,
+//          live_across_call_lsra)
+//   18..21 4 log_x1000 (log_use_wt, log_def_wt, log_use_cnt_x_wt,
+//          log_local_occ_x_wt)
+//   22     1 ratio_x1000 (block_spread_x1000_per_bb)
+//   23..31 9 counts (cost_ex, cost_sz, use_count, def_count, use_wt_cnt_x100,
+//          def_wt_cnt_x100, distinct_locals, local_occurrences, block_spread)
+//
+// BUT the JIT's RLHook::GetFeatures emits features in a DIFFERENT order
+// (see s_featureNameAndType at optcse.cpp:3759). The Python side reads
+// them via MethodContext getters that expose them by NAME, so re-mapping
+// only matters at the C++ inference site. Below we map JIT-emission
+// index -> Python-schema index explicitly.
+//
+// JIT candidate emission order (s_featureNameAndType, 32 slots):
+//   0: type                          --> Python one-hot 0..5 (dispatched below)
+//   1: viable         (can_apply)    --> Python 6
+//   2: live_across_call              --> Python 7
+//   3: const                         --> Python 8
+//   4: shared_const                  --> Python 9
+//   5: make_cse                      --> Python 10
+//   6: has_call                      --> Python 11
+//   7: containable                   --> Python 12
+//   8: cost_ex                       --> Python 23
+//   9: cost_sz                       --> Python 24
+//   10: use_count                    --> Python 25
+//   11: def_count                    --> Python 26
+//   12: use_wt_cnt_x100              --> Python 27
+//   13: def_wt_cnt_x100              --> Python 28
+//   14: distinct_locals              --> Python 29
+//   15: local_occurrences            --> Python 30
+//   16: bb_count                     --> (goes into METHOD features, not candidate)
+//   17: block_spread                 --> Python 31
+//   18..21: enreg_count_{int,float,simd,msk} --> (method features)
+//   22: log_use_wt_x1000             --> Python 18
+//   23: log_def_wt_x1000             --> Python 19
+//   24: log_use_cnt_x_wt_x1000       --> Python 20
+//   25: log_local_occ_x_wt_x1000     --> Python 21
+//   26: const_and_live               --> Python 13
+//   27: const_and_min_cost           --> Python 14
+//   28: min_cost_and_live            --> Python 15
+//   29: containable_and_low_cost     --> Python 16
+//   30: live_across_call_lsra        --> Python 17
+//   31: block_spread_x1000_per_bb    --> Python 22
+//
+// JIT method emission order (s_methodFeatureNames, 7 slots):
+//   0: aggressive_ref_cnt_x1000  --> Python 5
+//   1: moderate_ref_cnt_x1000    --> Python 6
+//   2: large_frame               --> Python 7
+//   3: huge_frame                --> Python 8
+//   4: code_opt_kind             --> Python 9
+//   5: add_cse_count             --> Python 10
+//   6: spill_at_weight_x1000     --> Python 11
+//
+// The Python method-features layout also has 5 leading slots read from
+// the FIRST candidate (bb_count + enreg_count_{int,float,simd,msk}). We
+// pull those from JIT candidate features slot 16 + 18..21 below.
+
+// Column-transform tags for the 32-slot normalized candidate vector
+// (Python-schema order, matches PER_CANDIDATE_SCHEMA in jit_cse.py).
+enum FeatKind
+{
+    KIND_IDENT,   // BOOL / ONEHOT
+    KIND_COUNT,   // log1p(x)
+    KIND_LOG1K,   // x / 1000.0
+    KIND_RATIO1K, // x / 1000.0
+    KIND_ENUM2,   // x / 2.0
+};
+
+// Python PER_CANDIDATE_SCHEMA transform kinds, index 0..31.
+static const FeatKind s_candKind[FEATURES_PER_CANDIDATE] = {
+    /* 0..5   */ KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT,
+    /* 6..17  */ KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT,
+                 KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT, KIND_IDENT,
+    /* 18..21 */ KIND_LOG1K, KIND_LOG1K, KIND_LOG1K, KIND_LOG1K,
+    /* 22     */ KIND_RATIO1K,
+    /* 23..31 */ KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
+                 KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
+};
+
+// Python METHOD_SCHEMA transform kinds, index 0..11.
+static const FeatKind s_methodKind[METHOD_FEATURES] = {
+    /* 0..4  bb_count, enreg_{int,float,simd,msk} */ KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
+    /* 5..6  aggressive_/moderate_ref_cnt_x1000 */   KIND_COUNT, KIND_COUNT,
+    /* 7..8  large_/huge_frame                  */   KIND_IDENT, KIND_IDENT,
+    /* 9     code_opt_kind                      */   KIND_ENUM2,
+    /* 10    add_cse_count                      */   KIND_COUNT,
+    /* 11    spill_at_weight_x1000              */   KIND_LOG1K,
+};
+
+static float ApplyKind(int raw, FeatKind kind)
+{
+    float x = (float)raw;
+    switch (kind)
+    {
+        case KIND_COUNT:
+            // log1p(max(x, 0))
+            if (x < 0.0f) x = 0.0f;
+            return logf(1.0f + x);
+        case KIND_LOG1K:
+        case KIND_RATIO1K:
+            return x / 1000.0f;
+        case KIND_ENUM2:
+            return x * 0.5f;
+        case KIND_IDENT:
+        default:
+            return x;
+    }
+}
+
+// -------- Linear algebra primitives (batch = 1) --------
+
+// y[i] = b[i] + sum_j x[j] * w[i * inDim + j]
+// w has shape (outDim, inDim), row-major.
+static void Linear(const float* x, int inDim,
+                   const float* w, const float* b,
+                   float* y, int outDim)
+{
+    for (int i = 0; i < outDim; i++)
+    {
+        float s = b[i];
+        for (int j = 0; j < inDim; j++)
+        {
+            s += x[j] * w[i * inDim + j];
+        }
+        y[i] = s;
+    }
+}
+
+// In-place per-row LayerNorm (PyTorch default: unbiased=false, eps=1e-5).
+static void LayerNorm(float* x, int rows, int dim,
+                      const float* gamma, const float* beta)
+{
+    const float eps = 1e-5f;
+    for (int r = 0; r < rows; r++)
+    {
+        float* row = x + r * dim;
+        float sum = 0.0f;
+        for (int i = 0; i < dim; i++) sum += row[i];
+        float mean = sum / (float)dim;
+        float ssq = 0.0f;
+        for (int i = 0; i < dim; i++)
+        {
+            float d = row[i] - mean;
+            ssq += d * d;
+        }
+        float invStd = 1.0f / sqrtf(ssq / (float)dim + eps);
+        for (int i = 0; i < dim; i++)
+        {
+            row[i] = gamma[i] * (row[i] - mean) * invStd + beta[i];
+        }
+    }
+}
+
+// Multi-head self-attention, single layer, batch=1.
+// input, output shape: [MAX_CSE][EMBED_DIM].
+// isPadding[t] == true means "row t is padding: mask out as a KEY."
+static void Attention(const float* input,
+                      const bool*  isPadding,
+                      float*       output)
+{
+    // Weights are laid out (3E, E): rows 0..E = Wq, E..2E = Wk, 2E..3E = Wv.
+    const float* wIn = k_extractor_attn_layers_0_self_attn_in_proj_weight;
+    const float* bIn = k_extractor_attn_layers_0_self_attn_in_proj_bias;
+    const float* wq  = wIn + 0 * EMBED_DIM * EMBED_DIM;
+    const float* wk  = wIn + 1 * EMBED_DIM * EMBED_DIM;
+    const float* wv  = wIn + 2 * EMBED_DIM * EMBED_DIM;
+    const float* bq  = bIn + 0;
+    const float* bk  = bIn + EMBED_DIM;
+    const float* bv  = bIn + 2 * EMBED_DIM;
+
+    // Project each row into Q, K, V.
+    float q[MAX_CSE * EMBED_DIM];
+    float k[MAX_CSE * EMBED_DIM];
+    float v[MAX_CSE * EMBED_DIM];
+    for (int t = 0; t < MAX_CSE; t++)
+    {
+        Linear(input + t * EMBED_DIM, EMBED_DIM, wq, bq, q + t * EMBED_DIM, EMBED_DIM);
+        Linear(input + t * EMBED_DIM, EMBED_DIM, wk, bk, k + t * EMBED_DIM, EMBED_DIM);
+        Linear(input + t * EMBED_DIM, EMBED_DIM, wv, bv, v + t * EMBED_DIM, EMBED_DIM);
+    }
+
+    const float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    float mhaOut[MAX_CSE * EMBED_DIM];
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) mhaOut[i] = 0.0f;
+
+    for (int h = 0; h < NUM_HEADS; h++)
+    {
+        float scores[MAX_CSE * MAX_CSE];
+        for (int s = 0; s < MAX_CSE; s++)
+        {
+            for (int t = 0; t < MAX_CSE; t++)
+            {
+                float dot = 0.0f;
+                for (int d = 0; d < HEAD_DIM; d++)
+                {
+                    dot += q[s * EMBED_DIM + h * HEAD_DIM + d]
+                         * k[t * EMBED_DIM + h * HEAD_DIM + d];
+                }
+                scores[s * MAX_CSE + t] = isPadding[t] ? -1e30f : dot * scale;
+            }
+        }
+
+        // Row softmax + weighted sum over V rows.
+        for (int s = 0; s < MAX_CSE; s++)
+        {
+            float m = -1e30f;
+            for (int t = 0; t < MAX_CSE; t++)
+            {
+                float sc = scores[s * MAX_CSE + t];
+                if (sc > m) m = sc;
+            }
+            float weights[MAX_CSE];
+            float sum = 0.0f;
+            for (int t = 0; t < MAX_CSE; t++)
+            {
+                float e = (scores[s * MAX_CSE + t] > -1e29f) ? expf(scores[s * MAX_CSE + t] - m) : 0.0f;
+                weights[t] = e;
+                sum += e;
+            }
+            if (sum <= 0.0f)
+            {
+                // Query with no valid keys: contribute zero.
+                continue;
+            }
+            for (int t = 0; t < MAX_CSE; t++) weights[t] /= sum;
+            for (int d = 0; d < HEAD_DIM; d++)
+            {
+                float acc = 0.0f;
+                for (int t = 0; t < MAX_CSE; t++)
+                {
+                    acc += weights[t] * v[t * EMBED_DIM + h * HEAD_DIM + d];
+                }
+                mhaOut[s * EMBED_DIM + h * HEAD_DIM + d] = acc;
+            }
+        }
+    }
+
+    // Output projection.
+    for (int s = 0; s < MAX_CSE; s++)
+    {
+        Linear(mhaOut + s * EMBED_DIM, EMBED_DIM,
+               k_extractor_attn_layers_0_self_attn_out_proj_weight,
+               k_extractor_attn_layers_0_self_attn_out_proj_bias,
+               output + s * EMBED_DIM, EMBED_DIM);
+    }
+}
+
+// Full v7 forward pass. Emits MAX_CSE + 1 raw logits (last is stop score).
+static void Forward(const float candidates[MAX_CSE * FEATURES_PER_CANDIDATE],
+                    const float method[METHOD_FEATURES],
+                    float       outLogits[MAX_CSE + 1])
+{
+    // Padding-row detection (row is padding iff all-zero).
+    bool isPadding[MAX_CSE];
+    for (int i = 0; i < MAX_CSE; i++)
+    {
+        float acc = 0.0f;
+        for (int j = 0; j < FEATURES_PER_CANDIDATE; j++)
+        {
+            float x = candidates[i * FEATURES_PER_CANDIDATE + j];
+            acc += (x < 0.0f) ? -x : x;
+        }
+        isPadding[i] = (acc == 0.0f);
+    }
+
+    // 1. candidate embed.
+    float embed[MAX_CSE * EMBED_DIM];
+    for (int r = 0; r < MAX_CSE; r++)
+    {
+        Linear(candidates + r * FEATURES_PER_CANDIDATE, FEATURES_PER_CANDIDATE,
+               k_extractor_candidate_embed_weight,
+               k_extractor_candidate_embed_bias,
+               embed + r * EMBED_DIM, EMBED_DIM);
+    }
+
+    // 2. Pre-norm transformer encoder layer.
+    float x[MAX_CSE * EMBED_DIM];
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) x[i] = embed[i];
+
+    //   attention block
+    float z1[MAX_CSE * EMBED_DIM];
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) z1[i] = x[i];
+    LayerNorm(z1, MAX_CSE, EMBED_DIM,
+              k_extractor_attn_layers_0_norm1_weight,
+              k_extractor_attn_layers_0_norm1_bias);
+
+    float attn[MAX_CSE * EMBED_DIM];
+    Attention(z1, isPadding, attn);
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) x[i] += attn[i];
+
+    //   FFN block
+    float z2[MAX_CSE * EMBED_DIM];
+    for (int i = 0; i < MAX_CSE * EMBED_DIM; i++) z2[i] = x[i];
+    LayerNorm(z2, MAX_CSE, EMBED_DIM,
+              k_extractor_attn_layers_0_norm2_weight,
+              k_extractor_attn_layers_0_norm2_bias);
+
+    for (int r = 0; r < MAX_CSE; r++)
+    {
+        float hidden[FFN_HIDDEN];
+        Linear(z2 + r * EMBED_DIM, EMBED_DIM,
+               k_extractor_attn_layers_0_linear1_weight,
+               k_extractor_attn_layers_0_linear1_bias,
+               hidden, FFN_HIDDEN);
+        for (int i = 0; i < FFN_HIDDEN; i++)
+        {
+            if (hidden[i] < 0.0f) hidden[i] = 0.0f;
+        }
+        float ffn[EMBED_DIM];
+        Linear(hidden, FFN_HIDDEN,
+               k_extractor_attn_layers_0_linear2_weight,
+               k_extractor_attn_layers_0_linear2_bias,
+               ffn, EMBED_DIM);
+        for (int d = 0; d < EMBED_DIM; d++) x[r * EMBED_DIM + d] += ffn[d];
+    }
+
+    // 3. Per-candidate score.
+    for (int r = 0; r < MAX_CSE; r++)
+    {
+        float score;
+        Linear(x + r * EMBED_DIM, EMBED_DIM,
+               k_extractor_candidate_scorer_weight,
+               k_extractor_candidate_scorer_bias,
+               &score, 1);
+        outLogits[r] = score;
+    }
+
+    // 4. Stop score from raw (normalized) method features.
+    float stopScore;
+    Linear(method, METHOD_FEATURES,
+           k_extractor_stop_scorer_weight,
+           k_extractor_stop_scorer_bias,
+           &stopScore, 1);
+    outLogits[MAX_CSE] = stopScore;
+}
+
+// Fills ``candFeat`` and ``methodFeat`` (Python-schema order, normalized)
+// from JIT features. See the mapping tables in the block comment above.
+//
+// jitFeat is per-candidate JIT features (32 slots, s_featureNameAndType order).
+// jitMethodFeat is method-level JIT features (7 slots, s_methodFeatureNames order).
+// bbCount / enregCount* come from candidate slot 16 / 18..21 (identical across
+// candidates for a given method).
+static void RemapCandidate(const int* jitFeat, float* candFeat)
+{
+    // Type one-hot from jitFeat[0] (JIT emits 1..6 for known types, 0 for other).
+    for (int i = 0; i < 6; i++) candFeat[i] = 0.0f;
+    int type = jitFeat[0];
+    if (type >= 1 && type <= 6)
+    {
+        candFeat[type - 1] = 1.0f;
+    }
+
+    // 12 booleans (Python 6..17 <- JIT 1..7 then 26..30).
+    candFeat[6]  = ApplyKind(jitFeat[1],  s_candKind[6]);   // can_apply
+    candFeat[7]  = ApplyKind(jitFeat[2],  s_candKind[7]);   // live_across_call
+    candFeat[8]  = ApplyKind(jitFeat[3],  s_candKind[8]);   // const
+    candFeat[9]  = ApplyKind(jitFeat[4],  s_candKind[9]);   // shared_const
+    candFeat[10] = ApplyKind(jitFeat[5],  s_candKind[10]);  // make_cse
+    candFeat[11] = ApplyKind(jitFeat[6],  s_candKind[11]);  // has_call
+    candFeat[12] = ApplyKind(jitFeat[7],  s_candKind[12]);  // containable
+    candFeat[13] = ApplyKind(jitFeat[26], s_candKind[13]);  // const_and_live
+    candFeat[14] = ApplyKind(jitFeat[27], s_candKind[14]);  // const_and_min_cost
+    candFeat[15] = ApplyKind(jitFeat[28], s_candKind[15]);  // min_cost_and_live
+    candFeat[16] = ApplyKind(jitFeat[29], s_candKind[16]);  // containable_and_low_cost
+    candFeat[17] = ApplyKind(jitFeat[30], s_candKind[17]);  // live_across_call_lsra
+
+    // 4 log_x1000 (Python 18..21 <- JIT 22..25).
+    candFeat[18] = ApplyKind(jitFeat[22], s_candKind[18]);  // log_use_wt_x1000
+    candFeat[19] = ApplyKind(jitFeat[23], s_candKind[19]);  // log_def_wt_x1000
+    candFeat[20] = ApplyKind(jitFeat[24], s_candKind[20]);  // log_use_cnt_x_wt_x1000
+    candFeat[21] = ApplyKind(jitFeat[25], s_candKind[21]);  // log_local_occ_x_wt_x1000
+
+    // 1 ratio_x1000 (Python 22 <- JIT 31).
+    candFeat[22] = ApplyKind(jitFeat[31], s_candKind[22]);  // block_spread_x1000_per_bb
+
+    // 9 counts (Python 23..31 <- JIT 8..15, 17).
+    candFeat[23] = ApplyKind(jitFeat[8],  s_candKind[23]);  // cost_ex
+    candFeat[24] = ApplyKind(jitFeat[9],  s_candKind[24]);  // cost_sz
+    candFeat[25] = ApplyKind(jitFeat[10], s_candKind[25]);  // use_count
+    candFeat[26] = ApplyKind(jitFeat[11], s_candKind[26]);  // def_count
+    candFeat[27] = ApplyKind(jitFeat[12], s_candKind[27]);  // use_wt_cnt_x100
+    candFeat[28] = ApplyKind(jitFeat[13], s_candKind[28]);  // def_wt_cnt_x100
+    candFeat[29] = ApplyKind(jitFeat[14], s_candKind[29]);  // distinct_locals
+    candFeat[30] = ApplyKind(jitFeat[15], s_candKind[30]);  // local_occurrences
+    candFeat[31] = ApplyKind(jitFeat[17], s_candKind[31]);  // block_spread
+}
+
+// Method features. Uses the first candidate's slot 16 (bb_count) +
+// slots 18..21 (enreg counts) for the leading 5 Python-schema slots;
+// the remaining 7 slots come from the JIT method-level array.
+static void RemapMethod(const int* jitFeat0,        // first candidate's JIT features (or nulls if no candidates)
+                        const int* jitMethodFeat,   // 7-slot method-level JIT features
+                        float*     methodFeat)
+{
+    int bbCount   = jitFeat0 ? jitFeat0[16] : 0;
+    int enregInt  = jitFeat0 ? jitFeat0[18] : 0;
+    int enregFlt  = jitFeat0 ? jitFeat0[19] : 0;
+    int enregSimd = jitFeat0 ? jitFeat0[20] : 0;
+    int enregMsk  = jitFeat0 ? jitFeat0[21] : 0;
+
+    methodFeat[0]  = ApplyKind(bbCount,             s_methodKind[0]);
+    methodFeat[1]  = ApplyKind(enregInt,            s_methodKind[1]);
+    methodFeat[2]  = ApplyKind(enregFlt,            s_methodKind[2]);
+    methodFeat[3]  = ApplyKind(enregSimd,           s_methodKind[3]);
+    methodFeat[4]  = ApplyKind(enregMsk,            s_methodKind[4]);
+    methodFeat[5]  = ApplyKind(jitMethodFeat[0],    s_methodKind[5]);  // aggressive_ref_cnt_x1000
+    methodFeat[6]  = ApplyKind(jitMethodFeat[1],    s_methodKind[6]);  // moderate_ref_cnt_x1000
+    methodFeat[7]  = ApplyKind(jitMethodFeat[2],    s_methodKind[7]);  // large_frame
+    methodFeat[8]  = ApplyKind(jitMethodFeat[3],    s_methodKind[8]);  // huge_frame
+    methodFeat[9]  = ApplyKind(jitMethodFeat[4],    s_methodKind[9]);  // code_opt_kind
+    methodFeat[10] = ApplyKind(jitMethodFeat[5],    s_methodKind[10]); // add_cse_count
+    methodFeat[11] = ApplyKind(jitMethodFeat[6],    s_methodKind[11]); // spill_at_weight_x1000
+}
+
+static float Sigmoid(float x)
+{
+    // Stable form.
+    if (x >= 0.0f)
+    {
+        float e = expf(-x);
+        return 1.0f / (1.0f + e);
+    }
+    float e = expf(x);
+    return e / (1.0f + e);
+}
+
+} // anonymous namespace
+
+CSE_HeuristicImitation::CSE_HeuristicImitation(Compiler* pCompiler)
+    : CSE_HeuristicRLHook(pCompiler)
+{
+    // JitCseImitationThreshold is in x1000 fixed-point (e.g. 300 -> 0.30)
+    // to fit the INTEGER-only JitConfig macro. Default 300 matches the
+    // best threshold measured on x64 test.mch during v7 training.
+    int rawThreshold = (int)JitConfig.JitCseImitationThreshold();
+    if (rawThreshold <= 0 || rawThreshold >= 1000)
+    {
+        rawThreshold = 300;
+    }
+    m_threshold = (float)rawThreshold / 1000.0f;
+}
+
+//------------------------------------------------------------------------
+// ConsiderCandidates: score every viable CSE with the imitation model and
+//   apply those above threshold.
+//
+// Feature emission uses the inherited GetFeatures / GetMethodFeatures so
+// the C++ inference sees the exact input distribution the Python model
+// was trained on.
+//
+void CSE_HeuristicImitation::ConsiderCandidates()
+{
+    // Initialize snapshots aggressive/moderate ref cnt, frame flags,
+    // m_registerPressure, m_localWeights just like RLHook.
+    Initialize();
+
+    const unsigned cnt = m_compiler->optCSECandidateCount;
+    if (cnt == 0)
+    {
+        return;
+    }
+
+    // Buffers.
+    float candFeat[MAX_CSE * FEATURES_PER_CANDIDATE];
+    for (int i = 0; i < MAX_CSE * FEATURES_PER_CANDIDATE; i++) candFeat[i] = 0.0f;
+    float methodFeat[METHOD_FEATURES];
+
+    // Gather JIT features per candidate + method.
+    // Note: we only score up to MAX_CSE candidates; beyond that we simply
+    // don't apply (model was trained with that assumption).
+    int firstJitFeat[maxFeatures];
+    bool haveFirst = false;
+    const unsigned scoreCount = (cnt < (unsigned)MAX_CSE) ? cnt : (unsigned)MAX_CSE;
+
+    for (unsigned i = 0; i < scoreCount; i++)
+    {
+        int jitFeat[maxFeatures];
+        GetFeatures(m_compiler->optCSEtab[i], jitFeat);
+        if (!haveFirst)
+        {
+            for (int j = 0; j < maxFeatures; j++) firstJitFeat[j] = jitFeat[j];
+            haveFirst = true;
+        }
+        RemapCandidate(jitFeat, candFeat + i * FEATURES_PER_CANDIDATE);
+    }
+
+    int jitMethodFeat[maxMethodFeatures];
+    GetMethodFeatures(jitMethodFeat);
+    RemapMethod(haveFirst ? firstJitFeat : nullptr, jitMethodFeat, methodFeat);
+
+    // Run the model.
+    float logits[MAX_CSE + 1];
+    Forward(candFeat, methodFeat, logits);
+
+    const bool dump = (JitConfig.JitCseImitationDump() > 0);
+    if (dump)
+    {
+        printf("IMIT_METHOD_FEAT");
+        for (int i = 0; i < METHOD_FEATURES; i++)
+        {
+            printf(",%.6f", methodFeat[i]);
+        }
+        printf("\n");
+        for (unsigned i = 0; i < scoreCount; i++)
+        {
+            printf("IMIT_CAND_FEAT #%u", i);
+            for (int j = 0; j < FEATURES_PER_CANDIDATE; j++)
+            {
+                printf(",%.6f", candFeat[i * FEATURES_PER_CANDIDATE + j]);
+            }
+            printf("\n");
+        }
+        printf("IMIT_LOGITS");
+        for (int i = 0; i < MAX_CSE + 1; i++)
+        {
+            printf(",%.6f", logits[i]);
+        }
+        printf("\n");
+        printf("IMIT_PROBS");
+        for (int i = 0; i < MAX_CSE + 1; i++)
+        {
+            printf(",%.6f", Sigmoid(logits[i]));
+        }
+        printf("\n");
+    }
+
+#ifdef DEBUG
+    if (m_compiler->verbose)
+    {
+        printf("\nImitation v7 CSE inference (threshold=%.3f):\n", m_threshold);
+        printf("  stop_score=%.4f (sigmoid=%.4f)\n",
+               logits[MAX_CSE], Sigmoid(logits[MAX_CSE]));
+    }
+#endif
+
+    // Apply candidates with sigmoid(logit) > threshold, in candidate-index
+    // order (matches the labeling protocol: JitRLHookCSEDecisions is a
+    // list of candidate indices, order doesn't affect final subset).
+    for (unsigned i = 0; i < scoreCount; i++)
+    {
+        CSEdsc* const dsc = m_compiler->optCSEtab[i];
+        if (!dsc->IsViable())
+        {
+            continue;
+        }
+
+        float prob = Sigmoid(logits[i]);
+
+#ifdef DEBUG
+        if (m_compiler->verbose)
+        {
+            printf("  cand #%d: logit=%.4f sigmoid=%.4f %s\n",
+                   dsc->csdIndex, logits[i], prob,
+                   (prob > m_threshold) ? "APPLY" : "skip");
+        }
+#endif
+
+        if (prob <= m_threshold)
+        {
+            continue;
+        }
+
+        const int     attempt = m_compiler->optCSEattempt++;
+        CSE_Candidate candidate(this, dsc);
+
+        JITDUMP("\nImitation v7 attempting " FMT_CSE " (p=%.3f)\n",
+                candidate.CseIndex(), prob);
+        PerformCSE(&candidate);
+        madeChanges = true;
+    }
+}
+
+//------------------------------------------------------------------------
 // CSE_HeuristicRL: construct RL CSE heuristic
 //
 // Arguments;
@@ -6084,7 +6700,18 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
 
     // Enable optional policies
     //
-    // RL hook takes precedence
+    // Imitation-learning takes precedence (subsumes RLHook selection).
+    //
+    if (optCSEheuristic == nullptr)
+    {
+        bool useImitation = (JitConfig.JitCseImitation() > 0);
+        if (useImitation)
+        {
+            optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicImitation(this);
+        }
+    }
+
+    // RL hook (raw feature-emission + externally-supplied CSE decisions)
     //
     if (optCSEheuristic == nullptr)
     {
