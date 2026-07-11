@@ -266,6 +266,7 @@ protected:
     void CaptureLocalWeights();
     void GetFeatures(CSEdsc* cse, int* features);
     void GetMethodFeatures(int* features);
+    void CaptureFeaturesForEarlyEmit();
 
     // Method-level state, mirrored from CSE_Heuristic so we can surface the
     // same "aggressive/moderate promotion cutoff + frame-size class" signals
@@ -295,7 +296,25 @@ protected:
         // Method-level features emitted once per invocation on the ``method``
         // line. See s_methodFeatureNames for the ordered list.
         maxMethodFeatures = 7,
+        // Maximum candidates whose features we can pre-capture when
+        // JitRLHookEmitEarly=1. Kept in sync with MAX_CSE on the ML side.
+        maxCapturedCandidates = 64,
     };
+
+    // When JitRLHookEmitEarly=1, ConsiderCandidates() captures features
+    // at CSE-phase entry (BEFORE any PerformCSE) into these member
+    // arrays, and DumpMetrics() prints them from here instead of
+    // re-querying GetFeatures() at codegen time. This closes the
+    // late-stage feature drift gap: many post-CSE JIT phases modify
+    // fgBBcount / enreg-eligibility / block-spread etc., so features
+    // read at codegen time (default) reflect a different flowgraph
+    // state than the CSE heuristic actually saw. For training a model
+    // that will run inside CSE, capture-at-CSE-entry is the correct
+    // timing.
+    bool     m_earlyCaptured;
+    unsigned m_earlyCandCount;
+    int      m_earlyMethodFeatures[maxMethodFeatures];
+    int      m_earlyCandFeatures[maxCapturedCandidates * maxFeatures];
 
     enum
     {

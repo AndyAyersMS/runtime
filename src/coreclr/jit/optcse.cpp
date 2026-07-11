@@ -3022,7 +3022,11 @@ CSE_HeuristicRLHook::CSE_HeuristicRLHook(Compiler* pCompiler)
     , m_initialized(false)
     , m_registerPressure(CNT_CALLEE_TRASH_FOR_CSE + CNT_CALLEE_SAVED_FOR_CSE)
     , m_localWeights(nullptr)
+    , m_earlyCaptured(false)
+    , m_earlyCandCount(0)
 {
+    memset(m_earlyMethodFeatures, 0, sizeof(m_earlyMethodFeatures));
+    memset(m_earlyCandFeatures, 0, sizeof(m_earlyCandFeatures));
 }
 
 //------------------------------------------------------------------------
@@ -3319,6 +3323,18 @@ void CSE_HeuristicRLHook::ConsiderCandidates()
     // sequencing exactly.
     Initialize();
 
+    // If early-emit is requested, snapshot per-candidate + method-level
+    // features NOW (at CSE-phase entry, before any PerformCSE). Later
+    // JIT phases (morph, lowering, block layout, ...) can inflate
+    // fgBBcount / enreg-eligible-count / block_spread, so a feature
+    // read at codegen time (default) reflects a different flowgraph
+    // state than the CSE heuristic actually saw. For imitation-learning
+    // training, capture-at-CSE-entry is the correct timing.
+    if (JitConfig.JitRLHookEmitEarly() > 0)
+    {
+        CaptureFeaturesForEarlyEmit();
+    }
+
     if (JitConfig.JitRLHookCSEDecisions() != nullptr)
     {
         ConfigIntArray JitRLHookCSEDecisions;
@@ -3368,6 +3384,33 @@ void CSE_HeuristicRLHook::ConsiderCandidates()
 //   seq is a comma separated list of CSE indices that were applied, or
 //      omitted if none were selected
 //
+
+//------------------------------------------------------------------------
+// CaptureFeaturesForEarlyEmit: snapshot per-candidate + method-level
+//   features at CSE-phase entry. Later JIT phases can perturb some
+//   feature inputs (fgBBcount, enreg-eligible count, block spread), so
+//   a feature emit at codegen time (default DumpMetrics behavior)
+//   reflects a different flowgraph than the CSE heuristic actually
+//   saw. Called from ConsiderCandidates when JitRLHookEmitEarly=1.
+//
+void CSE_HeuristicRLHook::CaptureFeaturesForEarlyEmit()
+{
+    if (m_earlyCaptured)
+    {
+        return;
+    }
+    m_earlyCaptured = true;
+
+    GetMethodFeatures(m_earlyMethodFeatures);
+
+    const unsigned cnt = m_compiler->optCSECandidateCount;
+    m_earlyCandCount   = (cnt > (unsigned)maxCapturedCandidates) ? (unsigned)maxCapturedCandidates : cnt;
+    for (unsigned i = 0; i < m_earlyCandCount; i++)
+    {
+        GetFeatures(m_compiler->optCSEtab[i], m_earlyCandFeatures + i * maxFeatures);
+    }
+}
+
 void CSE_HeuristicRLHook::DumpMetrics()
 {
     // Populate m_aggressiveRefCnt / m_moderateRefCnt / m_largeFrame /
@@ -3392,13 +3435,26 @@ void CSE_HeuristicRLHook::DumpMetrics()
     // Method-level features (one row per method, always emitted so the
     // consuming ML side sees the same schema regardless of whether feature
     // names were requested).
+    //
+    // If we captured features at CSE-phase entry (JitRLHookEmitEarly=1),
+    // print them from the cached array rather than re-querying now. This
+    // gives ML training data that matches the state the CSE heuristic saw.
     {
-        int methodFeatures[maxMethodFeatures];
-        GetMethodFeatures(methodFeatures);
+        int  methodFeaturesLocal[maxMethodFeatures];
+        int* methodFeaturesToEmit;
+        if (m_earlyCaptured)
+        {
+            methodFeaturesToEmit = m_earlyMethodFeatures;
+        }
+        else
+        {
+            GetMethodFeatures(methodFeaturesLocal);
+            methodFeaturesToEmit = methodFeaturesLocal;
+        }
         printf(" method");
         for (int j = 0; j < maxMethodFeatures; j++)
         {
-            printf(",%d", methodFeatures[j]);
+            printf(",%d", methodFeaturesToEmit[j]);
         }
     }
 
@@ -3407,13 +3463,22 @@ void CSE_HeuristicRLHook::DumpMetrics()
     {
         CSEdsc* const cse = m_compiler->optCSEtab[i];
 
-        int features[maxFeatures];
-        GetFeatures(cse, features);
+        int  featuresLocal[maxFeatures];
+        int* featuresToEmit;
+        if (m_earlyCaptured && (i < m_earlyCandCount))
+        {
+            featuresToEmit = m_earlyCandFeatures + i * maxFeatures;
+        }
+        else
+        {
+            GetFeatures(cse, featuresLocal);
+            featuresToEmit = featuresLocal;
+        }
 
         printf(" features #%i", cse->csdIndex);
         for (int j = 0; j < maxFeatures; j++)
         {
-            printf(",%d", features[j]);
+            printf(",%d", featuresToEmit[j]);
         }
     }
 
@@ -4279,6 +4344,12 @@ void CSE_HeuristicImitation::ConsiderCandidates()
     // Initialize snapshots aggressive/moderate ref cnt, frame flags,
     // m_registerPressure, m_localWeights just like RLHook.
     Initialize();
+
+    // We ALWAYS capture features early here (before any PerformCSE),
+    // regardless of JitRLHookEmitEarly, since the imitation heuristic
+    // inference runs at CSE-phase entry and any subsequent DumpMetrics
+    // emission should reflect what the model actually saw.
+    CaptureFeaturesForEarlyEmit();
 
     const unsigned cnt = m_compiler->optCSECandidateCount;
     if (cnt == 0)

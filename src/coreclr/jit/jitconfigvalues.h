@@ -552,6 +552,15 @@ CONFIG_INTEGER(JitRLHookEmitFeatureNames, "JitRLHookEmitFeatureNames", 0)
 // A list of CSEs to choose, in the order they should be applied.
 CONFIG_STRING(JitRLHookCSEDecisions, "JitRLHookCSEDecisions")
 
+// If 1, emit RLHook features (both per-candidate and method-level) captured
+// at CSE-phase entry rather than at codegen time. Fixes the "late-stage
+// feature drift" observed when using DumpMetrics-time features for
+// training an ML model that must run at CSE-phase entry: post-CSE JIT
+// phases (morph, lowering, layout, ...) can inflate fgBBcount /
+// enreg-eligible count / block spread, so DumpMetrics-time features
+// reflect a different flowgraph state than the CSE heuristic saw.
+CONFIG_INTEGER(JitRLHookEmitEarly, "JitRLHookEmitEarly", 0)
+
 // Enable the imitation-learning CSE heuristic (v7). Weights baked in at
 // src/coreclr/jit/cse_imitation_v7_weights.h.
 CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
