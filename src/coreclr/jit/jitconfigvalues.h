@@ -544,13 +544,13 @@ CONFIG_STRING(JitRLCSEAlpha, "JitRLCSEAlpha")
 CONFIG_INTEGER(JitRLCSECandidateFeatures, "JitRLCSECandidateFeatures", 0)
 
 // Enable CSE_HeuristicRLHook
-CONFIG_INTEGER(JitRLHook, "JitRLHook", 0) // If 1, emit RL callbacks
+RELEASE_CONFIG_INTEGER(JitRLHook, "JitRLHook", 0) // If 1, emit RL callbacks
 
 // If 1, emit feature column names
-CONFIG_INTEGER(JitRLHookEmitFeatureNames, "JitRLHookEmitFeatureNames", 0)
+RELEASE_CONFIG_INTEGER(JitRLHookEmitFeatureNames, "JitRLHookEmitFeatureNames", 0)
 
 // A list of CSEs to choose, in the order they should be applied.
-CONFIG_STRING(JitRLHookCSEDecisions, "JitRLHookCSEDecisions")
+RELEASE_CONFIG_STRING(JitRLHookCSEDecisions, "JitRLHookCSEDecisions")
 
 // If 1, emit RLHook features (both per-candidate and method-level) captured
 // at CSE-phase entry rather than at codegen time. Fixes the "late-stage
@@ -559,11 +559,11 @@ CONFIG_STRING(JitRLHookCSEDecisions, "JitRLHookCSEDecisions")
 // phases (morph, lowering, layout, ...) can inflate fgBBcount /
 // enreg-eligible count / block spread, so DumpMetrics-time features
 // reflect a different flowgraph state than the CSE heuristic saw.
-CONFIG_INTEGER(JitRLHookEmitEarly, "JitRLHookEmitEarly", 0)
+RELEASE_CONFIG_INTEGER(JitRLHookEmitEarly, "JitRLHookEmitEarly", 0)
 
 // Enable the imitation-learning CSE heuristic (v7). Weights baked in at
 // src/coreclr/jit/cse_imitation_v7_weights.h.
-CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
+RELEASE_CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
 
 // Sigmoid threshold for the imitation heuristic. String-valued so users
 // can pass a literal float (e.g. "0.30"). Default 0.30 if unset or
@@ -573,12 +573,12 @@ CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
 // HEX, which made "300" mean threshold 0.768 (0x300 = 768 dec) --
 // surprising to anyone treating the config value as a decimal x1000
 // fixed-point. String parsing sidesteps the issue.
-CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
+RELEASE_CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
 
 // If nonzero, dump the per-candidate sigmoid probabilities and the
 // normalized feature/method vectors used at inference. Used for C++/Python
 // parity debugging.
-CONFIG_INTEGER(JitCseImitationDump, "JitCseImitationDump", 0)
+RELEASE_CONFIG_INTEGER(JitCseImitationDump, "JitCseImitationDump", 0)
 
 #if !defined(DEBUG) && !defined(_DEBUG)
 RELEASE_CONFIG_INTEGER(JitEnableNoWayAssert, "JitEnableNoWayAssert", 0)

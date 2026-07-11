@@ -2993,8 +2993,6 @@ void CSE_HeuristicParameterized::DumpChoices(ArrayStack<Choice>& choices, CSEdsc
 
 #endif // DEBUG
 
-#ifdef DEBUG
-
 //------------------------------------------------------------------------
 // CSE_HeuristicRLHook: a generic 'hook' for driving CSE decisions out of
 //                      process using reinforcement learning
@@ -3010,8 +3008,9 @@ void CSE_HeuristicParameterized::DumpChoices(ArrayStack<Choice>& choices, CSEdsc
 //  control the CSE decisions, set JitRLHookCSEDecisions with a sequence
 //  of CSE indices to apply.
 //
-//  This hook is only available in debug/checked builds, and does not
-//  contain any machine learning code.
+//  Available in both Release and Checked/Debug builds so the imitation
+//  heuristic (CSE_HeuristicImitation) below can also ship in Release.
+//  DumpMetrics remains DEBUG-only.
 //
 CSE_HeuristicRLHook::CSE_HeuristicRLHook(Compiler* pCompiler)
     : CSE_HeuristicCommon(pCompiler)
@@ -3337,13 +3336,33 @@ void CSE_HeuristicRLHook::ConsiderCandidates()
 
     if (JitConfig.JitRLHookCSEDecisions() != nullptr)
     {
-        ConfigIntArray JitRLHookCSEDecisions;
-        JitRLHookCSEDecisions.EnsureInit(JitConfig.JitRLHookCSEDecisions());
-
-        unsigned cnt = m_compiler->optCSECandidateCount;
-        for (unsigned i = 0; i < JitRLHookCSEDecisions.GetLength(); i++)
+        // Parse comma/space-separated decimal integer list inline (avoid
+        // ConfigIntArray which is DEBUG-only). Format matches
+        // ConfigIntArray::Init: signed integers separated by any
+        // non-digit / non-minus character.
+        const char* p    = JitConfig.JitRLHookCSEDecisions();
+        unsigned    cnt  = m_compiler->optCSECandidateCount;
+        while (*p != 0)
         {
-            const int index = JitRLHookCSEDecisions.GetData()[i];
+            // Skip separators.
+            while (*p != 0 && *p != '-' && !((*p >= '0') && (*p <= '9')))
+            {
+                p++;
+            }
+            if (*p == 0)
+            {
+                break;
+            }
+
+            char* endPtr = nullptr;
+            long  parsed = strtol(p, &endPtr, 10);
+            if (endPtr == p)
+            {
+                break;
+            }
+            p = endPtr;
+
+            const int index = (int)parsed;
             if ((index < 0) || (index >= (int)cnt))
             {
                 JITDUMP("Invalid candidate number %d\n", index + 1);
@@ -3411,6 +3430,7 @@ void CSE_HeuristicRLHook::CaptureFeaturesForEarlyEmit()
     }
 }
 
+#ifdef DEBUG
 void CSE_HeuristicRLHook::DumpMetrics()
 {
     // Populate m_aggressiveRefCnt / m_moderateRefCnt / m_largeFrame /
@@ -3498,6 +3518,7 @@ void CSE_HeuristicRLHook::DumpMetrics()
         }
     }
 }
+#endif // DEBUG
 
 //------------------------------------------------------------------------
 // GetFeatures: extract features for this CSE
@@ -4470,6 +4491,8 @@ void CSE_HeuristicImitation::ConsiderCandidates()
         madeChanges = true;
     }
 }
+
+#ifdef DEBUG
 
 //------------------------------------------------------------------------
 // CSE_HeuristicRL: construct RL CSE heuristic
@@ -6771,11 +6794,10 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
         return optCSEheuristic;
     }
 
-#ifdef DEBUG
-
     // Enable optional policies
     //
     // Imitation-learning takes precedence (subsumes RLHook selection).
+    // Available in Release + Checked.
     //
     if (optCSEheuristic == nullptr)
     {
@@ -6786,7 +6808,8 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
         }
     }
 
-    // RL hook (raw feature-emission + externally-supplied CSE decisions)
+    // RL hook (raw feature-emission + externally-supplied CSE decisions).
+    // Available in Release + Checked.
     //
     if (optCSEheuristic == nullptr)
     {
@@ -6797,6 +6820,8 @@ CSE_HeuristicCommon* Compiler::optGetCSEheuristic()
             optCSEheuristic = new (this, CMK_CSE) CSE_HeuristicRLHook(this);
         }
     }
+
+#ifdef DEBUG
 
     // then RL
     if (optCSEheuristic == nullptr)

@@ -241,8 +241,6 @@ public:
 #endif
 };
 
-#ifdef DEBUG
-
 // NOTE: The Parameterized CSE heuristic (CSE_HeuristicParameterized /
 // CSE_HeuristicRL) still classifies SIMD and mask locals under the
 // integer register budget; the relevant training scripts should be
@@ -255,6 +253,10 @@ public:
 //
 // Produces a wide set of data to train a RL model.
 // Consumes the decisions made by a model to perform CSEs.
+//
+// Available in both Release and Checked/Debug builds so the imitation
+// heuristic below (which reuses its feature-emission machinery) can
+// ship in Release. DumpMetrics remains DEBUG-only.
 //
 class CSE_HeuristicRLHook : public CSE_HeuristicCommon
 {
@@ -350,9 +352,7 @@ public:
 //
 // Reuses feature-emission code from CSE_HeuristicRLHook so the C++
 // inference sees the exact features the Python training pipeline saw.
-// This class is DEBUG-only for the initial prototype; promoting to
-// Release requires lifting the RLHook feature-gathering out of DEBUG
-// or duplicating it here.
+// Available in Release; DumpMetrics remains DEBUG-only.
 //
 class CSE_HeuristicImitation : public CSE_HeuristicRLHook
 {
@@ -369,10 +369,14 @@ public:
     }
 };
 
+#ifdef DEBUG
+
 // Reinforcement Learning CSE heuristic
 //
 // Uses a "linear" feature model with
-// softmax policy.
+// softmax policy. DEBUG-only because it depends on
+// CSE_HeuristicParameterized private machinery for softmax /
+// parameter-update paths that aren't stable enough for Release.
 //
 class CSE_HeuristicRL : public CSE_HeuristicParameterized
 {
