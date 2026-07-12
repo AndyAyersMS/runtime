@@ -3683,8 +3683,18 @@ void CSE_HeuristicRLHook::GetFeatures(CSEdsc* cse, int* features)
     // 100x resolution (so 0.5 becomes 50, 1.25 becomes 125, etc.) and let
     // the ML side divide by 100.0 to recover the true weight. The old
     // truncating ``(int)`` cast dropped all fractional weight information.
-    features[i++] = (int)(cse->csdUseWtCnt * 100.0 + 0.5);
-    features[i++] = (int)(cse->csdDefWtCnt * 100.0 + 0.5);
+    //
+    // Saturate to INT_MAX for very hot loops (weight * 100 > 2.1B) so we
+    // don't wrap to INT_MIN and corrupt downstream feature normalization.
+    // Observed on Benchstone.MDBenchF.MDSqMtx:Inner (Tier1) where the
+    // Tier1-PGO weight was ~ 4.5e9 * 100, wrapping to -2147483648 and
+    // then feeding NaN/garbage into the imitation model's log1p pipeline.
+    {
+        const double scaledUse = cse->csdUseWtCnt * 100.0 + 0.5;
+        const double scaledDef = cse->csdDefWtCnt * 100.0 + 0.5;
+        features[i++] = (scaledUse >= (double)INT32_MAX) ? INT32_MAX : (int)scaledUse;
+        features[i++] = (scaledDef >= (double)INT32_MAX) ? INT32_MAX : (int)scaledDef;
+    }
     features[i++] = cse->numDistinctLocals;
     features[i++] = cse->numLocalOccurrences;
     features[i++] = numBBs;
@@ -3780,8 +3790,16 @@ void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
     // Emit weighted ref-count cutoffs at x1000 fixed-point. weight_t is
     // a double; typical values are in [0.5, ~10000]. x1000 buys ~3 fractional
     // digits without overflowing int for realistic method sizes.
-    features[i++] = (int)(m_aggressiveRefCnt * 1000.0 + 0.5);
-    features[i++] = (int)(m_moderateRefCnt * 1000.0 + 0.5);
+    //
+    // Saturate to INT_MAX for very hot loops (weight * 1000 > 2.1B).
+    // Same overflow issue as csdUseWtCnt in per-candidate features
+    // (observed on Benchstone.MDBenchF.MDSqMtx:Inner Tier1-PGO).
+    {
+        const double scaledAgg = m_aggressiveRefCnt * 1000.0 + 0.5;
+        const double scaledMod = m_moderateRefCnt * 1000.0 + 0.5;
+        features[i++] = (scaledAgg >= (double)INT32_MAX) ? INT32_MAX : (int)scaledAgg;
+        features[i++] = (scaledMod >= (double)INT32_MAX) ? INT32_MAX : (int)scaledMod;
+    }
     features[i++] = m_largeFrame ? 1 : 0;
     features[i++] = m_hugeFrame ? 1 : 0;
     // Compiler code-opt kind. Uses the raw enum values from
