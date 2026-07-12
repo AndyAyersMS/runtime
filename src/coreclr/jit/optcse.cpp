@@ -4435,12 +4435,17 @@ static float Sigmoid(float x)
 CSE_HeuristicImitation::CSE_HeuristicImitation(Compiler* pCompiler)
     : CSE_HeuristicRLHook(pCompiler)
 {
-    // Default = 0.40 (best on x64 test.mch AND best BDN wall-clock across
-    // an 8-benchmark real-world sample: arith mean -1.554 pct at t=0.40 vs
-    // +0.687 pct at t=0.30). Config is a STRING so users can pass a literal
-    // float like "0.40" without hitting the integer-parsed-as-hex JitConfig
+    // Default = 0.50 -- optimal for real BDN wall-clock across an
+    // 8-benchmark real-world sample: 6 wins / 0 losses / 2 same at
+    // t=0.50 vs 6/1/1 at t=0.40 and 3/4/1 at t=0.30. Arith mean
+    // wall-clock delta improves monotonically: +0.687 -> -1.554 -> -2.372.
+    //
+    // Perfscore is slightly off-peak at t=0.50 (0.01-0.12pp worse than
+    // the sweep peak on each of 4 test slices) but wall-clock is what
+    // matters. Config is a STRING so users can pass a literal float
+    // like "0.50" without hitting the integer-parsed-as-hex JitConfig
     // quirk.
-    m_threshold                = 0.40f;
+    m_threshold                = 0.50f;
     const char* thresholdStr   = JitConfig.JitCseImitationThreshold();
     if ((thresholdStr != nullptr) && (thresholdStr[0] != '\0'))
     {
