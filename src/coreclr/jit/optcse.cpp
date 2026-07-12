@@ -3883,6 +3883,17 @@ void CSE_HeuristicRLHook::GetMethodFeatures(int* features)
     features[i++] = 0; // is_arm64
 #endif
 
+    // OSR flag. Tier1-OSR methods enter mid-loop with locals inherited
+    // from the interpreter frame; the register file is under substantial
+    // pressure from the interpreter-preserved state, so CSE promotion
+    // that would be beneficial in a normal Tier1 compile can trigger
+    // spills instead of enregistration. Empirically ~100% of the
+    // imitation-heuristic's perfscore regressions concentrate on
+    // Tier1-OSR (see docs/mdbench_deepdive.md). Give the model this
+    // signal directly rather than hoping it learns it from correlated
+    // frame-size / spill features.
+    features[i++] = m_compiler->opts.IsOSR() ? 1 : 0;
+
     assert(i <= maxMethodFeatures);
 
     for (; i < maxMethodFeatures; i++)
@@ -3921,6 +3932,10 @@ const char* const CSE_HeuristicRLHook::s_methodFeatureNames[] = {
     // Target-ISA one-hot: is_x64 / is_arm64. Both zero for other
     // targets (arm32, wasm, loongarch64, riscv64).
     "is_x64",                   "is_arm64",
+    // Compile-mode signal: on-stack-replacement flag. Tier1-OSR methods
+    // have a distinct register-pressure profile and need more
+    // conservative CSE selection than plain Tier1 -- see docs/mdbench_deepdive.md.
+    "is_osr",
 };
 
 //------------------------------------------------------------------------
@@ -4010,7 +4025,7 @@ using namespace CseImitationV7;
 //   30: live_across_call_lsra        --> Python 17
 //   31: block_spread_x1000_per_bb    --> Python 22
 //
-// JIT method emission order (s_methodFeatureNames, 7 slots):
+// JIT method emission order (s_methodFeatureNames, 12 slots):
 //   0: aggressive_ref_cnt_x1000  --> Python 5
 //   1: moderate_ref_cnt_x1000    --> Python 6
 //   2: large_frame               --> Python 7
@@ -4018,6 +4033,11 @@ using namespace CseImitationV7;
 //   4: code_opt_kind             --> Python 9
 //   5: add_cse_count             --> Python 10
 //   6: spill_at_weight_x1000     --> Python 11
+//   7: has_pgo_weights           --> Python 12
+//   8: has_pgo_dynamic           --> Python 13
+//   9: is_x64                    --> Python 14
+//  10: is_arm64                  --> Python 15
+//  11: is_osr                    --> Python 16
 //
 // The Python method-features layout also has 5 leading slots read from
 // the FIRST candidate (bb_count + enreg_count_{int,float,simd,msk}). We
@@ -4048,6 +4068,8 @@ static const FeatKind s_candKind[FEATURES_PER_CANDIDATE] = {
 // Python METHOD_SCHEMA transform kinds, index 0..N-1 where N = METHOD_FEATURES.
 // Entries 12-15 (PGO + ISA one-hot) are only referenced when the baked model
 // was trained with the extended schema (v8 = 14 slots; v9 = 16 slots).
+// Entry 16 (is_osr) is only referenced when the baked model was trained with
+// the v11+ schema (17 slots).
 static const FeatKind s_methodKind[] = {
     /* 0..4  bb_count, enreg_{int,float,simd,msk} */ KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT, KIND_COUNT,
     /* 5..6  aggressive_/moderate_ref_cnt_x1000 */   KIND_COUNT, KIND_COUNT,
@@ -4059,6 +4081,7 @@ static const FeatKind s_methodKind[] = {
     /* 13    has_pgo_dynamic                    */   KIND_IDENT,
     /* 14    is_x64                             */   KIND_IDENT,
     /* 15    is_arm64                           */   KIND_IDENT,
+    /* 16    is_osr                             */   KIND_IDENT,
 };
 static_assert(sizeof(s_methodKind) / sizeof(s_methodKind[0]) >= METHOD_FEATURES,
               "s_methodKind must have at least METHOD_FEATURES entries");
@@ -4331,7 +4354,7 @@ static void Forward(const float candidates[MAX_CSE * FEATURES_PER_CANDIDATE],
 // from JIT features. See the mapping tables in the block comment above.
 //
 // jitFeat is per-candidate JIT features (32 slots, s_featureNameAndType order).
-// jitMethodFeat is method-level JIT features (7 slots, s_methodFeatureNames order).
+// jitMethodFeat is method-level JIT features (12 slots, s_methodFeatureNames order).
 // bbCount / enregCount* come from candidate slot 16 / 18..21 (identical across
 // candidates for a given method).
 static void RemapCandidate(const int* jitFeat, float* candFeat)
@@ -4415,6 +4438,10 @@ static void RemapMethod(const int* jitFeat0,        // first candidate's JIT fea
 #if METHOD_FEATURES >= 16
     methodFeat[14] = ApplyKind(jitMethodFeat[9],    s_methodKind[14]); // is_x64
     methodFeat[15] = ApplyKind(jitMethodFeat[10],   s_methodKind[15]); // is_arm64
+#endif
+    // is_osr -- only present when METHOD_FEATURES >= 17 (v11+).
+#if METHOD_FEATURES >= 17
+    methodFeat[16] = ApplyKind(jitMethodFeat[11],   s_methodKind[16]); // is_osr
 #endif
 }
 
