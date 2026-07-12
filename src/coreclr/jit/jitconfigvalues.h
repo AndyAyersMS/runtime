@@ -566,11 +566,12 @@ RELEASE_CONFIG_INTEGER(JitRLHookEmitEarly, "JitRLHookEmitEarly", 0)
 RELEASE_CONFIG_INTEGER(JitCseImitation, "JitCseImitation", 0)
 
 // Sigmoid threshold for the imitation heuristic. String-valued so users
-// can pass a literal float (e.g. "0.30"). Default 0.30 if unset or
-// unparseable, matching the best threshold measured on x64 test.mch.
+// can pass a literal float (e.g. "0.40"). Default 0.40 if unset or
+// unparseable -- best BDN wall-clock across an 8-benchmark real-world
+// sample: -1.554 pct arith mean at t=0.40 vs +0.687 pct at t=0.30.
 //
 // String rather than int because integer JitConfig values are parsed as
-// HEX, which made "300" mean threshold 0.768 (0x300 = 768 dec) --
+// HEX, which made "400" mean threshold 1.024 (0x400 = 1024 dec) --
 // surprising to anyone treating the config value as a decimal x1000
 // fixed-point. String parsing sidesteps the issue.
 RELEASE_CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
