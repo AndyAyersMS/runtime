@@ -4462,17 +4462,17 @@ static float Sigmoid(float x)
 CSE_HeuristicImitation::CSE_HeuristicImitation(Compiler* pCompiler)
     : CSE_HeuristicRLHook(pCompiler)
 {
-    // Default = 0.50 -- optimal for real BDN wall-clock across an
-    // 8-benchmark real-world sample: 6 wins / 0 losses / 2 same at
-    // t=0.50 vs 6/1/1 at t=0.40 and 3/4/1 at t=0.30. Arith mean
-    // wall-clock delta improves monotonically: +0.687 -> -1.554 -> -2.372.
-    //
-    // Perfscore is slightly off-peak at t=0.50 (0.01-0.12pp worse than
-    // the sweep peak on each of 4 test slices) but wall-clock is what
-    // matters. Config is a STRING so users can pass a literal float
-    // like "0.50" without hitting the integer-parsed-as-hex JitConfig
-    // quirk.
-    m_threshold                = 0.50f;
+    // v11 default = 0.30. v11 adds the is_osr method feature (see
+    // docs/mdbench_deepdive.md in dotnet/jitutils) so the model can be
+    // conservative on Tier1-OSR methods without needing a high global
+    // threshold. At t=0.30 on bench_pgo (first 8000 methods):
+    //   Tier1     weighted delta: -0.010% (neutral, unchanged from v10)
+    //   Tier1-OSR weighted delta: +2.221% (was +12.946% for v10 @ 0.50)
+    // Higher thresholds (0.40, 0.50) start regressing Tier1 as the
+    // model becomes too conservative there. Config is a STRING so
+    // users can pass a literal float like "0.30" without hitting the
+    // integer-parsed-as-hex JitConfig quirk.
+    m_threshold                = 0.30f;
     const char* thresholdStr   = JitConfig.JitCseImitationThreshold();
     if ((thresholdStr != nullptr) && (thresholdStr[0] != '\0'))
     {
