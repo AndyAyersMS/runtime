@@ -5709,6 +5709,26 @@ bool CSE_Heuristic::PromotionCheck(CSE_Candidate* candidate)
     }
 #endif
 
+    // ------------------------------------------------------------------
+    // Live-across-call oversize veto (LACO).
+    //
+    // MCMC-vs-heuristic corpus analysis (July 2026) shows the default
+    // heuristic over-selects CSEs that are live across a call AND have
+    // both a code-size footprint >= size threshold AND a use count
+    // <= use-count max. Low-use CSEs across calls have the worst
+    // trade-off (spill cost paid for little amortization benefit).
+    // Guarded by JitCseLacoVeto; off by default while we validate.
+    // Skip for SMALL_CODE (different tradeoffs).
+    if ((JitConfig.JitCseLacoVeto() != 0) &&
+        (CodeOptKind() != Compiler::SMALL_CODE) &&
+        candidate->LiveAcrossCall() &&
+        (candidate->Size() >= (unsigned)JitConfig.JitCseLacoVetoSizeThreshold()) &&
+        (candidate->UseCount() <= (weight_t)JitConfig.JitCseLacoVetoUseCountMax()))
+    {
+        return false;
+    }
+    // ------------------------------------------------------------------
+
     /*
       Our calculation is based on the following cost estimate formula
 

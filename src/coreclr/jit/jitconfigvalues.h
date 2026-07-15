@@ -581,6 +581,17 @@ RELEASE_CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
 // parity debugging.
 RELEASE_CONFIG_INTEGER(JitCseImitationDump, "JitCseImitationDump", 0)
 
+// Veto CSE promotion for candidates that are live across a call AND have
+// code-size cost >= JitCseLacoVetoSizeThreshold AND use-count
+// <= JitCseLacoVetoUseCountMax. Discovered via MCMC-vs-heuristic corpus
+// analysis (July 2026): the default heuristic over-selects such CSEs.
+// The use-count bound restricts the veto to CSEs where losing them costs
+// least (low amortization of the load cost). Set JitCseLacoVeto=0 to
+// disable. Default off pending validation.
+RELEASE_CONFIG_INTEGER(JitCseLacoVeto, "JitCseLacoVeto", 0)
+RELEASE_CONFIG_INTEGER(JitCseLacoVetoSizeThreshold, "JitCseLacoVetoSizeThreshold", 8)
+RELEASE_CONFIG_INTEGER(JitCseLacoVetoUseCountMax, "JitCseLacoVetoUseCountMax", 3)
+
 #if !defined(DEBUG) && !defined(_DEBUG)
 RELEASE_CONFIG_INTEGER(JitEnableNoWayAssert, "JitEnableNoWayAssert", 0)
 #else  // defined(DEBUG) || defined(_DEBUG)
