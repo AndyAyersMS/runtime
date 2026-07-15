@@ -4614,21 +4614,36 @@ void CSE_HeuristicImitation::ConsiderCandidates()
         CSE_Candidate candidate(this, dsc);
 
         // Apply the LACO veto (same rule as in the default heuristic path).
-        // Discovered via corpus analysis: the imitation model, like the
-        // default heuristic, over-selects CSEs that are live across a
-        // call AND have a large code-size footprint AND few uses.
         // Guarded by JitCseLacoVeto (default off).
         if ((JitConfig.JitCseLacoVeto() != 0) &&
             (CodeOptKind() != Compiler::SMALL_CODE))
         {
             candidate.InitializeCounts();
-            if (candidate.LiveAcrossCall() &&
-                (candidate.Size() >= (unsigned)JitConfig.JitCseLacoVetoSizeThreshold()) &&
-                (candidate.UseCount() <= (weight_t)JitConfig.JitCseLacoVetoUseCountMax()))
+            if (candidate.LiveAcrossCall())
             {
-                JITDUMP("\nImitation v7 vetoing " FMT_CSE " via LACO rule\n",
-                        candidate.CseIndex());
-                continue;
+                const char* sSize = JitConfig.JitCseLacoVetoSizeThreshold();
+                const char* sUC   = JitConfig.JitCseLacoVetoUseCountMax();
+                unsigned sizeMin  = (sSize != nullptr) ? (unsigned)atoi(sSize) : 8;
+                weight_t ucMax    = (sUC   != nullptr) ? (weight_t)atoi(sUC)   : (weight_t)3;
+                if (sizeMin == 0) sizeMin = 8;
+
+                if (candidate.Size() >= sizeMin)
+                {
+                    weight_t uc = (JitConfig.JitCseLacoVetoUseCountKind() != 0)
+                                      ? (weight_t)dsc->csdUseCount
+                                      : candidate.UseCount();
+                    bool useCountFires = uc <= ucMax;
+
+                    bool notContainable = !candidate.Expr()->OperIs(GT_ADD, GT_NOT, GT_MUL, GT_LSH);
+                    bool containableFires = (JitConfig.JitCseLacoVetoRequireNotContainable() == 0) || notContainable;
+
+                    if (useCountFires && containableFires)
+                    {
+                        JITDUMP("\nImitation v7 vetoing " FMT_CSE " via LACO rule\n",
+                                candidate.CseIndex());
+                        continue;
+                    }
+                }
             }
         }
 
@@ -5740,11 +5755,29 @@ bool CSE_Heuristic::PromotionCheck(CSE_Candidate* candidate)
     // Skip for SMALL_CODE (different tradeoffs).
     if ((JitConfig.JitCseLacoVeto() != 0) &&
         (CodeOptKind() != Compiler::SMALL_CODE) &&
-        candidate->LiveAcrossCall() &&
-        (candidate->Size() >= (unsigned)JitConfig.JitCseLacoVetoSizeThreshold()) &&
-        (candidate->UseCount() <= (weight_t)JitConfig.JitCseLacoVetoUseCountMax()))
+        candidate->LiveAcrossCall())
     {
-        return false;
+        const char* sSize = JitConfig.JitCseLacoVetoSizeThreshold();
+        const char* sUC   = JitConfig.JitCseLacoVetoUseCountMax();
+        unsigned sizeMin  = (sSize != nullptr) ? (unsigned)atoi(sSize) : 8;
+        weight_t ucMax    = (sUC   != nullptr) ? (weight_t)atoi(sUC)   : (weight_t)3;
+        if (sizeMin == 0) sizeMin = 8;
+
+        if (candidate->Size() >= sizeMin)
+        {
+            weight_t uc = (JitConfig.JitCseLacoVetoUseCountKind() != 0)
+                              ? (weight_t)candidate->CseDsc()->csdUseCount
+                              : candidate->UseCount();
+            bool useCountFires = uc <= ucMax;
+
+            bool notContainable = !candidate->Expr()->OperIs(GT_ADD, GT_NOT, GT_MUL, GT_LSH);
+            bool containableFires = (JitConfig.JitCseLacoVetoRequireNotContainable() == 0) || notContainable;
+
+            if (useCountFires && containableFires)
+            {
+                return false;
+            }
+        }
     }
     // ------------------------------------------------------------------
 

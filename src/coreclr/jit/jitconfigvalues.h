@@ -582,15 +582,22 @@ RELEASE_CONFIG_STRING(JitCseImitationThreshold, "JitCseImitationThreshold")
 RELEASE_CONFIG_INTEGER(JitCseImitationDump, "JitCseImitationDump", 0)
 
 // Veto CSE promotion for candidates that are live across a call AND have
-// code-size cost >= JitCseLacoVetoSizeThreshold AND use-count
-// <= JitCseLacoVetoUseCountMax. Discovered via MCMC-vs-heuristic corpus
-// analysis (July 2026): the default heuristic over-selects such CSEs.
-// The use-count bound restricts the veto to CSEs where losing them costs
-// least (low amortization of the load cost). Set JitCseLacoVeto=0 to
-// disable. Default off pending validation.
+// code-size cost >= threshold AND use-count <= max. Discovered via
+// MCMC-vs-heuristic corpus analysis (July 2026): the default heuristic
+// over-selects such CSEs. Off by default; string-valued so users can
+// pass decimal values without the JitConfig hex parse.
 RELEASE_CONFIG_INTEGER(JitCseLacoVeto, "JitCseLacoVeto", 0)
-RELEASE_CONFIG_INTEGER(JitCseLacoVetoSizeThreshold, "JitCseLacoVetoSizeThreshold", 8)
-RELEASE_CONFIG_INTEGER(JitCseLacoVetoUseCountMax, "JitCseLacoVetoUseCountMax", 3)
+RELEASE_CONFIG_STRING(JitCseLacoVetoSizeThreshold, "JitCseLacoVetoSizeThreshold")
+RELEASE_CONFIG_STRING(JitCseLacoVetoUseCountMax, "JitCseLacoVetoUseCountMax")
+// Use-count basis for the veto: 0 = weighted (csdUseWtCnt, default),
+// 1 = raw static count (csdUseCount). Weighted is more restrictive on
+// Tier1 hot code (>= BB_UNITY_WEIGHT per use); raw catches any low-use
+// CSE regardless of BB frequency.
+RELEASE_CONFIG_INTEGER(JitCseLacoVetoUseCountKind, "JitCseLacoVetoUseCountKind", 0)
+// Additional constraint: only veto if the expression is NOT containable
+// (not GT_ADD/GT_NOT/GT_MUL/GT_LSH). Containable ops may fold into a
+// downstream containment slot and not need their own register. 0 = off.
+RELEASE_CONFIG_INTEGER(JitCseLacoVetoRequireNotContainable, "JitCseLacoVetoRequireNotContainable", 0)
 
 #if !defined(DEBUG) && !defined(_DEBUG)
 RELEASE_CONFIG_INTEGER(JitEnableNoWayAssert, "JitEnableNoWayAssert", 0)
