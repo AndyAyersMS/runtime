@@ -4613,6 +4613,25 @@ void CSE_HeuristicImitation::ConsiderCandidates()
         const int     attempt = m_compiler->optCSEattempt++;
         CSE_Candidate candidate(this, dsc);
 
+        // Apply the LACO veto (same rule as in the default heuristic path).
+        // Discovered via corpus analysis: the imitation model, like the
+        // default heuristic, over-selects CSEs that are live across a
+        // call AND have a large code-size footprint AND few uses.
+        // Guarded by JitCseLacoVeto (default off).
+        if ((JitConfig.JitCseLacoVeto() != 0) &&
+            (CodeOptKind() != Compiler::SMALL_CODE))
+        {
+            candidate.InitializeCounts();
+            if (candidate.LiveAcrossCall() &&
+                (candidate.Size() >= (unsigned)JitConfig.JitCseLacoVetoSizeThreshold()) &&
+                (candidate.UseCount() <= (weight_t)JitConfig.JitCseLacoVetoUseCountMax()))
+            {
+                JITDUMP("\nImitation v7 vetoing " FMT_CSE " via LACO rule\n",
+                        candidate.CseIndex());
+                continue;
+            }
+        }
+
         JITDUMP("\nImitation v7 attempting " FMT_CSE " (p=%.3f)\n",
                 candidate.CseIndex(), prob);
         PerformCSE(&candidate);
