@@ -2544,6 +2544,9 @@ void Compiler::fgRemoveConditionalJump(BasicBlock* block)
 
     noway_assert(target->countOfInEdges() > 1);
     fgRemoveRefPred(block->GetTargetEdge());
+
+    // The block is now a BBJ_ALWAYS, so its single edge must carry likelihood 1.0.
+    block->GetTargetEdge()->setLikelihood(1.0);
 }
 
 //-------------------------------------------------------------
