@@ -4854,6 +4854,8 @@ bool Compiler::fgDebugCheckProfileWeights(ProfileChecks checks, bool dump)
             const bool wasVerbose = verbose;
             verbose               = true;
             fgDebugCheckProfileWeights(checks, /* dump */ true);
+            printf("=== TEMP-PINPOINT: full flowgraph at inconsistency in %s ===\n", info.compFullName);
+            fgDispBasicBlocks(/* dumpTrees */ false);
             verbose = wasVerbose;
 
             assert(!"Inconsistent profile data");
