@@ -2789,6 +2789,24 @@ GenTree* Lowering::LowerCall(GenTree* node)
 {
     GenTreeCall* call = node->AsCall();
 
+#ifdef TARGET_WASM
+    // Record that this block (and method) emits a call, so we know a shadow frame
+    // and Virtual IP updates are required (the call may be a GC/EH safepoint).
+    // A throw helper that will be tail-called (return_call) is excluded: it tears down
+    // the frame before throwing, so it does not force a frame here. A throw helper that
+    // is NOT tail-called still needs a frame and is counted like any other call.
+    //
+    // m_block is always the current block during lowering: the main pass sets it in
+    // LowerBlock before lowering any node, and the out-of-pass LowerRange(block, ...)
+    // entry sets it on its fresh Lowering instance. It is never null here.
+    assert(m_block != nullptr);
+    if (!m_compiler->fgWasmIsTailCalledThrowHelper(call, m_block))
+    {
+        m_block->SetFlags(BBF_HAS_CALL);
+        m_compiler->compWasmHasCall = true;
+    }
+#endif
+
     JITDUMP("lowering call (before):\n");
     DISPTREERANGE(BlockRange(), call);
     JITDUMP("\n");
@@ -9608,6 +9626,12 @@ void Lowering::LowerBlock(BasicBlock* block)
     assert(block->isEmpty() || block->IsLIR());
 
     m_block = block;
+#ifdef TARGET_WASM
+    // We re-derive BBF_HAS_CALL during lowering so it reflects the post-lowering
+    // call set (including helper calls materialized here). Clear it before lowering
+    // any node in the block; LowerCall / write-barrier lowering set it back.
+    block->RemoveFlags(BBF_HAS_CALL);
+#endif
 #ifdef TARGET_ARM64
     m_blockIndirs.Reset();
     m_ffrTrashed = true;
@@ -11496,6 +11520,10 @@ GenTree* Lowering::LowerStoreIndirCommon(GenTreeStoreInd* ind)
     if (m_compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(ind))
     {
 #if defined(TARGET_WASM)
+        // A GC write barrier lowers to a noGC, non-throwing helper call (RhpAssignRef /
+        // RhpCheckedAssignRef) at codegen. It is not a GC or EH safepoint, so it does not
+        // force an unwindable shadow frame (see genEmitHelperCall) and we do not mark the
+        // block/method as having a frame-forcing call.
         return LowerStoreIndir(ind);
 #else
         return ind->gtNext;

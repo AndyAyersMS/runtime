@@ -7463,6 +7463,13 @@ public:
     bool fgHasAddCodeDscMap() const { return fgAddCodeDscMap != nullptr; }
     AddCodeDsc* fgGetExcptnTarget(SpecialCodeKind kind, BasicBlock* fromBlock, bool createIfNeeded = false);
     bool fgUseThrowHelperBlocks();
+#ifdef TARGET_WASM
+    // Wasm: whether no-return throw helpers are emitted as tail calls (return_call), which
+    // lets the method's shadow frame be torn down before the throw propagates, so the method
+    // needs no unwindable frame for its throw helpers.
+    bool fgWasmThrowHelpersAreTailCalled(BasicBlock* block);
+    bool fgWasmIsTailCalledThrowHelper(GenTreeCall* call, BasicBlock* block);
+#endif
     void fgCreateThrowHelperBlockCode(AddCodeDsc* add);
     void fgSetThrowHelpBlockLiveness(BasicBlock* block);
     void fgSequenceLocals(Statement* stmt);
@@ -10994,6 +11001,9 @@ public:
     bool compSuppressedZeroInit       = false; // There are vars with lvSuppressedZeroInit set
     bool compMaskConvertUsed          = false; // Does the method have Convert Mask To Vector nodes.
     bool compUsesThrowHelper          = false; // There is a call to a THROW_HELPER for the compiled method.
+#ifdef TARGET_WASM
+    bool compWasmHasCall              = false; // Wasm: lowering emitted a call (user call or write barrier) into some block.
+#endif
 
     // NOTE: These values are only reliable after
     //       the importing is completely finished.

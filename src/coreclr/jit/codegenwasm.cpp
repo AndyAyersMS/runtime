@@ -2911,12 +2911,25 @@ void CodeGen::genCall(GenTreeCall* call)
 //
 void CodeGen::genCallInstruction(GenTreeCall* call)
 {
-    ensureCurrentFuncIsUnwindable();
+    // A no-return throw helper can be tail-called (return_call) when this method's frame
+    // does not need to be walkable for it (see fgWasmThrowHelpersAreTailCalled). In that
+    // case we must not force an unwindable frame here.
+    const bool tailCallThrow = m_compiler->fgWasmIsTailCalledThrowHelper(call, m_compiler->compCurBB);
+    if (!tailCallThrow)
+    {
+        ensureCurrentFuncIsUnwindable();
+    }
 
     EmitCallParams params;
-    params.isJump          = call->IsFastTailCall();
+    params.isJump          = call->IsFastTailCall() || tailCallThrow;
     params.hasAsyncRet     = call->IsAsync();
     params.returnValueCall = call;
+
+    if (tailCallThrow)
+    {
+        // Emitting a return_call leaves the function; mark the block so the epilog knows.
+        m_compiler->compCurBB->SetFlags(BBF_HAS_JMP);
+    }
 
 #ifdef DEBUG
     // Pass the call signature information down into the emitter so the emitter can associate
@@ -3071,9 +3084,34 @@ void CodeGen::genCallInstruction(GenTreeCall* call)
 //
 void CodeGen::genEmitHelperCall(unsigned helper, int argSize, emitAttr retSize, regNumber callTargetReg /*= REG_NA */)
 {
-    ensureCurrentFuncIsUnwindable();
+    // A no-return throw helper can be tail-called (return_call) so this method needs no
+    // unwindable frame on its account (see fgWasmThrowHelpersAreTailCalled). This is the
+    // inline throw path (genJumpToThrowHlpBlk without throw-helper blocks); the
+    // throw-helper-block path is handled in genCallInstruction.
+    const bool tailCallThrow = Compiler::s_helperCallProperties.AlwaysThrow((CorInfoHelpFunc)helper) &&
+                               m_compiler->fgWasmThrowHelpersAreTailCalled(m_compiler->compCurBB);
+
+    // On wasm the GC write barriers (RhpAssignRef / RhpCheckedAssignRef) are simple unmanaged,
+    // noGC helpers that do not raise a managed exception, so a method whose only frame reason is
+    // a write barrier needs no unwindable frame. The destination null check is emitted separately
+    // (see genCodeForStoreInd) and a faulting wasm store traps rather than unwinding, so nothing
+    // walks the caller on the barrier's account.
+    //
+    // We deliberately do NOT use the shared HelperCallProperties.NoThrow here: on native targets
+    // these barriers are conservatively modeled as possibly-throwing because a faulting store can
+    // be translated into a managed exception (hardware fault -> NRE/AV), which does not happen on
+    // wasm. So we name the wasm barrier helpers explicitly instead.
+    //
+    // In debuggable code we keep the frame anyway (fgWasmVirtualIP forces it) so methods stay walkable.
+    const bool noGCWriteBarrier = !m_compiler->opts.compDbgCode &&
+                                  ((helper == CORINFO_HELP_ASSIGN_REF) || (helper == CORINFO_HELP_CHECKED_ASSIGN_REF));
+    if (!tailCallThrow && !noGCWriteBarrier)
+    {
+        ensureCurrentFuncIsUnwindable();
+    }
 
     EmitCallParams params;
+    params.isJump = tailCallThrow;
 
     CORINFO_CONST_LOOKUP helperFunction = m_compiler->compGetHelperFtn((CorInfoHelpFunc)helper);
     params.ireg                         = callTargetReg;

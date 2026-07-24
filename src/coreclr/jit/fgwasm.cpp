@@ -1877,10 +1877,12 @@ PhaseStatus Compiler::fgWasmSpillRefs()
 
         for (GenTree* tree : LIR::AsRange(block))
         {
-            if (tree->IsCall())
+            if (tree->IsCall() && !fgWasmIsTailCalledThrowHelper(tree->AsCall(), block))
             {
                 // For any ref/byref values live at the point of a call, spill them into pinned slots
                 //  on the stack where the GC can see them so it won't move them.
+                //  (A tail-called no-return throw helper never returns and needs no live refs
+                //   preserved across it, so we skip spilling for those.)
                 if (!defs.empty())
                 {
                     if (m_wasmSpillSlots == nullptr)
@@ -2868,6 +2870,60 @@ void Compiler::fgWasmEhTransformTry(ArrayStack<BasicBlock*>* catchRetBlocks,
     }
 }
 
+//------------------------------------------------------------------------
+// fgWasmThrowHelpersAreTailCalled: whether a no-return throw helper reached from the
+//   given block is emitted as a tail call (return_call), so the method needs no
+//   unwindable frame on its account.
+//
+// Arguments:
+//   block - the block from which the throw helper is reached
+//
+// Notes:
+//   Tail-calling a no-return throw helper tears down the method's activation before
+//   the throw propagates, so the method is never on the stack during unwind and needs
+//   no unwindable shadow frame. This is valid only when:
+//     - we are not generating debuggable code: a tail-called throw removes the throwing
+//       method's frame, so a debugger cannot inspect it during the throw. In debuggable
+//       code we keep the frame and call the helper normally.
+//     - the throw site's block is not in a try region: tail-calling out of a protected
+//       region would bypass the enclosing catch/finally.
+//     - the return_call result type matches the enclosing wasm function's result type.
+//       The shared throw helpers return void, so this is currently limited two ways:
+//         * to void-returning methods (the main function's result type is void), and
+//         * to the method's main body, excluding handler regions (!hasHndIndex): a throw
+//           in a handler is emitted into a funclet, a separate wasm function whose result
+//           type is not this method's return type, so a void return_call would fail wasm's
+//           tail-call result-type check.
+//       Both restrictions are crutches for the missing per-return-type throw thunks
+//       (workstream C). Once those exist, a value-returning method (and a throw in a
+//       non-void funclet) can tail-call a thunk whose result type matches the enclosing
+//       function, and the TYP_VOID / !hasHndIndex conditions can be lifted.
+//
+bool Compiler::fgWasmThrowHelpersAreTailCalled(BasicBlock* block)
+{
+    // Do not tail-call throw helpers in debuggable code: dropping the frame impairs
+    // debugging of the throwing method.
+    //
+    // TODO: lift the TYP_VOID and !hasHndIndex restrictions once per-return-type throw
+    // thunks exist (workstream C); both exist only because the shared throw helpers
+    // return void and so can only be return_call'd from a void-result wasm function.
+    return !opts.compDbgCode && (info.compRetType == TYP_VOID) && !block->hasTryIndex() && !block->hasHndIndex();
+}
+
+//------------------------------------------------------------------------
+// fgWasmIsTailCalledThrowHelper: whether the given call is a no-return throw helper that
+//   will be emitted as a tail call from the given block.
+//
+// Arguments:
+//   call  - the call to check
+//   block - the block containing the call
+//
+bool Compiler::fgWasmIsTailCalledThrowHelper(GenTreeCall* call, BasicBlock* block)
+{
+    return call->IsHelperCall() && s_helperCallProperties.AlwaysThrow(call->GetHelperNum()) &&
+           fgWasmThrowHelpersAreTailCalled(block);
+}
+
 //-----------------------------------------------------------------------------
 // fgWasmVirtualIP: set up virtual IP mapping for EH and calls
 //
@@ -2988,6 +3044,28 @@ PhaseStatus Compiler::fgWasmVirtualIP()
         updatesAdded++;
     };
 
+    // A method only needs Virtual IP updates (and hence an unwindable shadow frame)
+    // if it can be walked while on the stack: at a call, at a throw helper, or within
+    // an EH region. A leaf method that emits none of these is never walked from below,
+    // so we can skip creating the Virtual IP / function index slots entirely, which in
+    // turn lets frame allocation drop the shadow frame setup for such methods.
+    //
+    // Both this frame elision and the tail-call throw optimization are release-only: in
+    // debuggable code we always keep the frame so every method remains walkable/inspectable
+    // (matching the original always-framed behavior), and because debuggable code emits
+    // throws inline (fgUseThrowHelperBlocks() == false), which forces an unwindable frame
+    // at codegen that this method-level analysis would otherwise not predict.
+    //
+    // A throw helper does not force a frame when it is tail-called (return_call): that
+    // requires non-debuggable code, a void return type, and a throw site outside any try
+    // region (see fgWasmThrowHelpersAreTailCalled). Any method with EH regions already
+    // forces a frame via compHndBBtabCount, so at the method level a throw helper forces a
+    // frame when the method is non-void.
+    //
+    const bool throwHelpersForceFrame = compUsesThrowHelper && (info.compRetType != TYP_VOID);
+    const bool methodNeedsVirtualIP =
+        opts.compDbgCode || compWasmHasCall || (compHndBBtabCount > 0) || throwHelpersForceFrame;
+
     for (FuncInfoDsc* const func : Funcs())
     {
         func->startVirtualIP = virtualIP;
@@ -3059,7 +3137,7 @@ PhaseStatus Compiler::fgWasmVirtualIP()
             // would otherwise see the stale try-region virtualIP and re-dispatch the
             // same finally during unwind.
             //
-            if (!block->isEmpty() || block->KindIs(BBJ_CALLFINALLY))
+            if (methodNeedsVirtualIP && (!block->isEmpty() || block->KindIs(BBJ_CALLFINALLY)))
             {
                 updateVirtualIPOnFrame(func, block);
             }
