@@ -220,7 +220,8 @@ internal partial class MockDescriptors
             [
                 new(nameof(Data.CodeHeapListNode.Next), DataType.pointer),
                 new(nameof(Data.CodeHeapListNode.StartAddress), DataType.pointer),
-                new(nameof(Data.CodeHeapListNode.EndAddress), DataType.pointer),
+                new(nameof(Data.CodeHeapListNode.BottomEndAddress), DataType.pointer),
+                new(nameof(Data.CodeHeapListNode.TopStartAddress), DataType.pointer),
                 new(nameof(Data.CodeHeapListNode.MapBase), DataType.pointer),
                 new(nameof(Data.CodeHeapListNode.HeaderMap), DataType.pointer),
             ]
@@ -395,7 +396,8 @@ internal partial class MockDescriptors
             Span<byte> chln = Builder.BorrowAddressRange(codeHeapListNode.Address, (int)codeHeapListNodeSize);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.Next)].Offset, pointerSize), next);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.StartAddress)].Offset, pointerSize), startAddress);
-            Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.EndAddress)].Offset, pointerSize), endAddress);
+            Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.BottomEndAddress)].Offset, pointerSize), endAddress);
+            Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.TopStartAddress)].Offset, pointerSize), endAddress);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.MapBase)].Offset, pointerSize), mapBase);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.HeaderMap)].Offset, pointerSize), headerMap);
             return codeHeapListNode.Address;

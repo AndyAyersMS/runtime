@@ -3215,6 +3215,14 @@ PhaseStatus Compiler::fgDetermineFirstColdBlock()
     }
 #endif // DEBUG
 
+    for (EHblkDsc* const HBtab : EHClauses(this))
+    {
+        if (HBtab->HasFilter())
+        {
+            return PhaseStatus::MODIFIED_NOTHING;
+        }
+    }
+
     BasicBlock* firstColdBlock       = nullptr;
     BasicBlock* prevToFirstColdBlock = nullptr;
     BasicBlock* block;

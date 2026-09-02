@@ -602,8 +602,8 @@ protected:
                         );
 
     EECodeGenManager*       m_jitManager;   // responsible for allocating memory
-    void*                   m_CodeHeader;   // descriptor for JITTED code - read/execute address
-    void*                   m_CodeHeaderRW; // descriptor for JITTED code - code write scratch buffer address
+    void*                   m_CodeHeader;   // descriptor for hot JITTED code - read/execute address
+    void*                   m_CodeHeaderRW; // descriptor for hot JITTED code - code write scratch buffer address
     size_t                  m_codeWriteBufferSize;
     BYTE*                   m_pRealCodeHeader;
     HeapList*               m_pCodeHeap;
@@ -719,6 +719,13 @@ public:
 
         CEECodeGenInfo::ResetForJitRetry();
 
+        if (m_ColdCodeHeaderRW != m_ColdCodeHeader)
+            freeArrayInternal(m_ColdCodeHeaderRW);
+
+        m_ColdCodeHeader = NULL;
+        m_ColdCodeHeaderRW = NULL;
+        m_coldCodeWriteBufferSize = 0;
+
 #ifdef FEATURE_ON_STACK_REPLACEMENT
         if (m_pPatchpointInfoFromJit != NULL)
             freeArrayInternal(m_pPatchpointInfoFromJit);
@@ -814,6 +821,9 @@ public:
     CEEJitInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header,
                EECodeGenManager* jm)
         : CEECodeGenInfo(config, fd, header, jm)
+        , m_ColdCodeHeader(NULL),
+          m_ColdCodeHeaderRW(NULL),
+          m_coldCodeWriteBufferSize(0)
 #ifdef FEATURE_EH_FUNCLETS
         , m_moduleBase(0),
           m_totalUnwindSize(0),
@@ -852,6 +862,9 @@ public:
             GC_NOTRIGGER;
             MODE_ANY;
         } CONTRACTL_END;
+
+        if (m_ColdCodeHeaderRW != m_ColdCodeHeader)
+            freeArrayInternal(m_ColdCodeHeaderRW);
 
 #ifdef FEATURE_ON_STACK_REPLACEMENT
         if (m_pPatchpointInfoFromJit != NULL)
@@ -907,6 +920,10 @@ protected :
     ComputedPgoData*        m_foundPgoData = nullptr;
 #endif
 
+    // Members needed for hot/cold splitting
+    void*                   m_ColdCodeHeader;   // descriptor for cold JITTED code - read/execute address
+    void*                   m_ColdCodeHeaderRW; // descriptor for cold JITTED code - code write scratch buffer address
+    size_t                  m_coldCodeWriteBufferSize;
 
 #ifdef FEATURE_EH_FUNCLETS
     TADDR                   m_moduleBase;       // Base for unwind Infos
