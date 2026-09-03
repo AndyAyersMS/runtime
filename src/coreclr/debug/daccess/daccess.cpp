@@ -5977,6 +5977,7 @@ ClrDataAccess::GetMethodVarInfo(MethodDesc* methodDesc,
     COUNT_T countNativeVarInfo;
     NewArrayHolder<ICorDebugInfo::NativeVarInfo> nativeVars(NULL);
     TADDR nativeCodeStartAddr;
+    ULONG32 relativeOffset = 0;
     if (address != (TADDR)NULL)
     {
         NativeCodeVersion requestedNativeCodeVersion = ExecutionManager::GetNativeCodeVersion(address);
@@ -5985,6 +5986,13 @@ ClrDataAccess::GetMethodVarInfo(MethodDesc* methodDesc,
             return E_INVALIDARG;
         }
         nativeCodeStartAddr = PCODEToPINSTR(requestedNativeCodeVersion.GetNativeCode());
+
+        EECodeInfo codeInfo(address);
+        if (!codeInfo.IsValid())
+        {
+            return E_INVALIDARG;
+        }
+        relativeOffset = codeInfo.GetRelOffset();
     }
     else
     {
@@ -6017,7 +6025,7 @@ ClrDataAccess::GetMethodVarInfo(MethodDesc* methodDesc,
 
     if (codeOffset)
     {
-        *codeOffset = (ULONG32)(address - nativeCodeStartAddr);
+        *codeOffset = relativeOffset;
     }
     return S_OK;
 }
@@ -6036,6 +6044,7 @@ ClrDataAccess::GetMethodNativeMap(MethodDesc* methodDesc,
     // Use the DebugInfoStore to get IL->Native maps.
     // It doesn't matter whether we're jitted, ngenned etc.
     TADDR nativeCodeStartAddr;
+    ULONG32 relativeOffset = 0;
     if (address != (TADDR)NULL)
     {
         NativeCodeVersion requestedNativeCodeVersion = ExecutionManager::GetNativeCodeVersion(address);
@@ -6044,6 +6053,13 @@ ClrDataAccess::GetMethodNativeMap(MethodDesc* methodDesc,
             return E_INVALIDARG;
         }
         nativeCodeStartAddr = PCODEToPINSTR(requestedNativeCodeVersion.GetNativeCode());
+
+        EECodeInfo codeInfo(address);
+        if (!codeInfo.IsValid())
+        {
+            return E_INVALIDARG;
+        }
+        relativeOffset = codeInfo.GetRelOffset();
     }
     else
     {
@@ -6102,7 +6118,7 @@ ClrDataAccess::GetMethodNativeMap(MethodDesc* methodDesc,
     }
     if (codeOffset)
     {
-        *codeOffset = (ULONG32)(address - nativeCodeStartAddr);
+        *codeOffset = relativeOffset;
     }
 
     *mapAllocated = true;

@@ -10711,10 +10711,10 @@ static CORJIT_FLAGS GetCompileFlags(PrepareCodeConfig* prepareConfig, MethodDesc
 
 #endif
 
-    if (flags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_BBOPT) /*&& flags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_SPEED_OPT)*/)
+    // The HostCodeHeap used by dynamic methods does not support separate cold code allocations.
+    if (flags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_BBOPT) && !ftn->IsDynamicMethod())
     {
         flags.Set(CORJIT_FLAGS::CORJIT_FLAG_PROCSPLIT);
-        flags.Set(CORJIT_FLAGS::CORJIT_FLAG_RELOC);
     }
 
     return flags;
@@ -11065,6 +11065,40 @@ void CEEJitInfo::WriteCode(EECodeGenManager * jitMgr)
     _ASSERTE(m_usedUnwindInfos == m_totalUnwindInfos);
     UnwindInfoTable::PublishUnwindInfoForMethod(m_moduleBase, ((CodeHeader*)m_CodeHeader)->GetUnwindInfo(0), m_totalUnwindInfos);
 #endif // defined(FEATURE_EH_FUNCLETS)
+}
+
+/*********************************************************************/
+void CEECodeGenInfo::FlushInstructionCaches(PBYTE nativeEntry, size_t sizeOfCode)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // Dynamic code memory can be reused, so always flush as if the code ran before.
+    ClrFlushInstructionCache(nativeEntry, sizeOfCode, /* hasCodeExecutedBefore */ true);
+}
+
+/*********************************************************************/
+void CEEJitInfo::FlushInstructionCaches(PBYTE nativeEntry, size_t sizeOfCode)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    if (m_ColdCodeHeader == NULL)
+    {
+        CEECodeGenInfo::FlushInstructionCaches(nativeEntry, sizeOfCode);
+        return;
+    }
+
+    _ASSERTE(m_codeWriteBufferSize >= sizeof(CodeHeader));
+    _ASSERTE(m_coldCodeWriteBufferSize >= sizeof(ColdCodeHeader));
+    size_t hotCodeAllocationSize  = m_codeWriteBufferSize - sizeof(CodeHeader);
+    size_t coldCodeAllocationSize = m_coldCodeWriteBufferSize - sizeof(ColdCodeHeader);
+    _ASSERTE(sizeOfCode <= hotCodeAllocationSize + coldCodeAllocationSize);
+
+    ClrFlushInstructionCache(nativeEntry, hotCodeAllocationSize, /* hasCodeExecutedBefore */ true);
+
+    ColdCodeHeader* pColdCodeHeader = static_cast<ColdCodeHeader*>(m_ColdCodeHeader);
+    ClrFlushInstructionCache(reinterpret_cast<LPCVOID>(pColdCodeHeader->GetCodeStartAddress()),
+                             coldCodeAllocationSize,
+                             /* hasCodeExecutedBefore */ true);
 }
 
 /*********************************************************************/
@@ -11597,22 +11631,26 @@ void CEEJitInfo::allocUnwindInfo (
 
     CodeHeader *pCodeHeaderRW = (CodeHeader *)m_CodeHeaderRW;
 
+    if (m_usedUnwindInfos == 0)
+    {
+        // The JIT emits all root fragments before any funclet records. The first
+        // record is always the hot root host record, but ARM64 can emit additional
+        // hot and cold root fragments before the first funclet.
+        _ASSERTE(funcKind == CORJIT_FUNC_ROOT);
+        _ASSERTE(pColdCode == NULL);
+        _ASSERTE(startOffset == 0);
+    }
+
+#ifdef _DEBUG
     if (funcKind == CORJIT_FUNC_ROOT)
     {
-        if (pColdCode != NULL)
-        {
-            _ASSERTE(m_usedUnwindInfos == 1);
-        }
-        else
-        {
-            _ASSERTE(m_usedUnwindInfos == 0);
-        }
+        _ASSERTE(!m_allocatedUnwindFunclet);
     }
     else
     {
-        // The main method should be emitted before funclets and cold code
-        _ASSERTE(m_usedUnwindInfos > 0);
+        m_allocatedUnwindFunclet = true;
     }
+#endif
 
     PT_RUNTIME_FUNCTION pRuntimeFunction = pCodeHeaderRW->GetUnwindInfo(m_usedUnwindInfos);
 
@@ -12563,6 +12601,8 @@ void CEEJitInfo::allocMem (AllocMemArgs *pArgs)
     void **codeBlock    = &pArgs->hotCodeBlock;
     void **codeBlockRW  = &pArgs->hotCodeBlockRW;
 
+    _ASSERTE((coldCodeSize == 0) || !m_pMethodBeingCompiled->IsDynamicMethod());
+
     S_SIZE_T totalSize = S_SIZE_T(hotCodeSize);
 
     size_t roDataAlignment = sizeof(void*);
@@ -13231,8 +13271,7 @@ static TADDR UnsafeJitFunctionWorker(
     LPCUTF8 pszDebugMethodSignature = "";
 #endif
 
-    // For dynamic method, the code memory may be reused, thus we are passing in the hasCodeExecutedBefore set to true
-    ClrFlushInstructionCache(nativeEntry, sizeOfCode, /* hasCodeExecutedBefore */ true);
+    pJitInfo->FlushInstructionCaches(nativeEntry, sizeOfCode);
 
     // We are done
     return (TADDR)nativeEntry;

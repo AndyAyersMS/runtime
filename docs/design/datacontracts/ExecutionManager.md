@@ -63,10 +63,12 @@ Data descriptors used:
 | `RangeSection` | `R2RModule` | ReadyToRun module |
 | `CodeHeapListNode` | `Next` | Next node |
 | `CodeHeapListNode` | `StartAddress` | Start address of the used portion of the code heap |
-| `CodeHeapListNode` | `EndAddress` | End address of the used portion of the code heap |
+| `CodeHeapListNode` | `BottomEndAddress` | End address of the lower portion of the code heap containing hot code and stubs |
+| `CodeHeapListNode` | `TopStartAddress` | Start address of the upper portion of the code heap containing cold code |
 | `CodeHeapListNode` | `MapBase` | Start of the map - start address rounded down based on OS page size |
 | `CodeHeapListNode` | `HeaderMap` | Bit array used to find the start of methods - relative to `MapBase` |
 | `RealCodeHeader` | `MethodDesc` | Pointer to the corresponding `MethodDesc` |
+| `RealCodeHeader` | `ColdCodeHeader` | Optional pointer to the cold code header |
 | `RealCodeHeader` | `NumUnwindInfos` | Number of Unwind Infos |
 | `RealCodeHeader` | `UnwindInfos` | Start address of Unwind Infos |
 | `RealCodeHeader` | `GCInfo` | Pointer to the GCInfo encoding |
@@ -131,27 +133,35 @@ The bulk of the work is done by the `GetCodeBlockHandle` API that maps a code po
 
 There are two JIT managers: the "EE JitManager" for jitted code and "R2R JitManager" for ReadyToRun code.
 
-The EE JitManager `GetMethodInfo` implements the nibble map lookup, summarized below, followed by returning the `RealCodeHeader` data:
+The EE JitManager `GetMethodInfo` implements the nibble map lookup. The nibble map can return either the hot or cold code start. The hot code start is preceded by a `CodeHeader` that points to the `RealCodeHeader`; the cold code start is preceded by a `ColdCodeHeader` that points back to the hot `CodeHeader`. The code-heap boundary distinguishes the two forms.
 
 ```csharp
 bool GetMethodInfo(TargetPointer rangeSection, TargetCodePointer jittedCodeAddress, [NotNullWhen(true)] out CodeBlock? info)
 {
     info = default;
-    TargetPointer start = // look up jittedCodeAddress in nibble map for rangeSection - see NibbleMap below
-    if (start == TargetPointer.Null)
+    TargetPointer codeStart = // look up jittedCodeAddress in nibble map for rangeSection - see NibbleMap below
+    if (codeStart == TargetPointer.Null)
         return false;
 
-    TargetNUInt relativeOffset = jittedCodeAddress - start;
-    int codeHeaderOffset = Target.PointerSize;
-    TargetPointer codeHeaderIndirect = start - codeHeaderOffset;
+    TargetPointer codeHeaderAddress = codeStart - Target.PointerSize;
+    if (/* codeHeaderAddress is in the upper, cold-code portion of the heap */)
+        codeHeaderAddress = Target.ReadPointer(codeHeaderAddress);
 
-    // Check if address is in a stub code block
-    if (codeHeaderIndirect < Target.ReadGlobal<byte>("StubCodeBlockLast"))
+    TargetPointer realCodeHeaderAddress = Target.ReadPointer(codeHeaderAddress);
+    if (/* realCodeHeaderAddress identifies a stub code block */)
         return false;
 
-    TargetPointer codeHeaderAddress = Target.ReadPointer(codeHeaderIndirect);
-    TargetPointer methodDesc = Target.ReadPointer(codeHeaderAddress + /* RealCodeHeader::MethodDesc offset */);
-    info = new CodeBlock(jittedCodeAddress, realCodeHeader.MethodDesc, relativeOffset);
+    RealCodeHeader realCodeHeader = Target.Read<RealCodeHeader>(realCodeHeaderAddress);
+    TargetPointer hotCodeStart = codeHeaderAddress + Target.PointerSize;
+    TargetNUInt relativeOffset = jittedCodeAddress - codeStart;
+    if (codeStart != hotCodeStart)
+    {
+        uint hotSize = /* total code size minus cold code size */;
+        TargetPointer coldStart = realCodeHeader.ColdCodeHeader + Target.PointerSize;
+        relativeOffset = hotSize + jittedCodeAddress - coldStart;
+    }
+
+    info = new CodeBlock(hotCodeStart, realCodeHeader.MethodDesc, relativeOffset);
     return true;
 }
 ```
@@ -275,7 +285,7 @@ Unwind info (`RUNTIME_FUNCTION`) use relative addressing. For managed code, thes
         * MajorVersion >= 11 and MajorVersion < 15 => 4
 
 
-`IExecutionManager.GetFuncletStartAddress` finds the start of the code blocks funclet. This will be different than the methods start address `GetStartAddress` if the current code block is inside of a funclet. To find the funclet start address, we get the unwind info corresponding to the code block using `IExecutionManager.GetUnwindInfo`. We then parse the unwind info to find the begin address (relative to the unwind info base address) and return the unwind info base address + unwind info begin address.
+`IExecutionManager.GetFuncletStartAddress` finds the start of the code block's funclet. This will be different than the method's start address `GetStartAddress` if the current code block is inside of a funclet. On ARM64, secondary function fragments are identified by an `end_c` phantom prolog; the implementation walks backward through those fragments to the host root or funclet record. Other platforms return the begin address of the matching unwind record.
 
 `IsFunclet` is implemented in terms of `IExecutionManager.GetStartAddress` and `IExecutionManager.GetFuncletStartAddress`. If the values are the same, the code block handle is not a funclet. If they are different, it is a funclet.
 

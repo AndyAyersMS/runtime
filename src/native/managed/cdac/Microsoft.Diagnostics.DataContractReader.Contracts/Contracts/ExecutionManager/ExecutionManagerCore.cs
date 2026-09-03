@@ -66,6 +66,16 @@ internal sealed partial class ExecutionManagerCore<T> : IExecutionManager
 
         public abstract bool GetMethodInfo(RangeSection rangeSection, TargetCodePointer jittedCodeAddress, [NotNullWhen(true)] out CodeBlock? info);
         public abstract TargetPointer GetUnwindInfo(RangeSection rangeSection, TargetCodePointer jittedCodeAddress);
+        public virtual TargetPointer GetFuncletStartAddress(RangeSection rangeSection, TargetCodePointer jittedCodeAddress)
+        {
+            TargetPointer runtimeFunctionPtr = GetUnwindInfo(rangeSection, jittedCodeAddress);
+            if (runtimeFunctionPtr == TargetPointer.Null || rangeSection.Data is null)
+                return TargetPointer.Null;
+
+            Data.RuntimeFunction runtimeFunction = Target.ProcessedData.GetOrAdd<Data.RuntimeFunction>(runtimeFunctionPtr);
+            return CodePointerUtils.AddressFromCodePointer(
+                new TargetCodePointer(rangeSection.Data.RangeBegin + runtimeFunction.BeginAddress), Target);
+        }
         public abstract void GetGCInfo(RangeSection rangeSection, TargetCodePointer jittedCodeAddress, out TargetPointer gcInfo, out uint gcVersion);
     }
 
@@ -191,17 +201,11 @@ internal sealed partial class ExecutionManagerCore<T> : IExecutionManager
             throw new InvalidOperationException("Unable to get runtime function address");
 
         JitManager jitManager = GetJitManager(range.Data);
-        TargetPointer runtimeFunctionPtr = jitManager.GetUnwindInfo(range, codeInfoHandle.Address.Value);
-
-        if (runtimeFunctionPtr == TargetPointer.Null)
+        TargetPointer funcletStartAddress = jitManager.GetFuncletStartAddress(range, codeInfoHandle.Address.Value);
+        if (funcletStartAddress == TargetPointer.Null)
             throw new InvalidOperationException("Unable to get runtime function address");
 
-        Data.RuntimeFunction runtimeFunction = _target.ProcessedData.GetOrAdd<Data.RuntimeFunction>(runtimeFunctionPtr);
-
-        // TODO(cdac): EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS, implement iterating over fragments until finding
-        // non-fragment RuntimeFunction
-
-        return range.Data.RangeBegin + runtimeFunction.BeginAddress;
+        return CodePointerUtils.CodePointerFromAddress(funcletStartAddress, _target);
     }
 
     TargetPointer IExecutionManager.GetUnwindInfo(CodeBlockHandle codeInfoHandle)

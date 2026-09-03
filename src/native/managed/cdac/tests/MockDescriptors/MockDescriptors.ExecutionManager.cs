@@ -17,7 +17,7 @@ internal partial class MockDescriptors
     {
         public const ulong ExecutionManagerCodeRangeMapAddress = 0x000a_fff0;
 
-        const int RealCodeHeaderSize = 0x20; // must be big enough for the offsets of RealCodeHeader size in ExecutionManagerTestTarget, below
+        const int RealCodeHeaderSize = 0x30; // must be big enough for the offsets of RealCodeHeader size in ExecutionManagerTestTarget, below
 
         public struct AllocationRange
         {
@@ -234,6 +234,7 @@ internal partial class MockDescriptors
             [
                 new(nameof(Data.RealCodeHeader.MethodDesc), DataType.pointer),
                 new(nameof(Data.RealCodeHeader.GCInfo), DataType.pointer),
+                new(nameof(Data.RealCodeHeader.ColdCodeHeader), DataType.pointer),
                 new(nameof(Data.RealCodeHeader.NumUnwindInfos), DataType.uint32),
                 new(nameof(Data.RealCodeHeader.UnwindInfos), DataType.pointer),
             ]
@@ -386,7 +387,13 @@ internal partial class MockDescriptors
             return rangeSectionFragment.Address;
         }
 
-        public TargetPointer AddCodeHeapListNode(TargetPointer next, TargetPointer startAddress, TargetPointer endAddress, TargetPointer mapBase, TargetPointer headerMap)
+        public TargetPointer AddCodeHeapListNode(
+            TargetPointer next,
+            TargetPointer startAddress,
+            TargetPointer endAddress,
+            TargetPointer mapBase,
+            TargetPointer headerMap,
+            TargetPointer? topStartAddress = null)
         {
             var tyInfo = Types[DataType.CodeHeapListNode];
             uint codeHeapListNodeSize = tyInfo.Size.Value;
@@ -397,7 +404,9 @@ internal partial class MockDescriptors
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.Next)].Offset, pointerSize), next);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.StartAddress)].Offset, pointerSize), startAddress);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.BottomEndAddress)].Offset, pointerSize), endAddress);
-            Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.TopStartAddress)].Offset, pointerSize), endAddress);
+            Builder.TargetTestHelpers.WritePointer(
+                chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.TopStartAddress)].Offset, pointerSize),
+                topStartAddress ?? endAddress);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.MapBase)].Offset, pointerSize), mapBase);
             Builder.TargetTestHelpers.WritePointer(chln.Slice(tyInfo.Fields[nameof(Data.CodeHeapListNode.HeaderMap)].Offset, pointerSize), headerMap);
             return codeHeapListNode.Address;
@@ -433,10 +442,104 @@ internal partial class MockDescriptors
 
             // fields are not used in the test, but we still need to write them
             Builder.TargetTestHelpers.WritePointer(chf.Slice(tyInfo.Fields[nameof(Data.RealCodeHeader.GCInfo)].Offset, Builder.TargetTestHelpers.PointerSize), TargetPointer.Null);
+            Builder.TargetTestHelpers.WritePointer(chf.Slice(tyInfo.Fields[nameof(Data.RealCodeHeader.ColdCodeHeader)].Offset, Builder.TargetTestHelpers.PointerSize), TargetPointer.Null);
             Builder.TargetTestHelpers.Write(chf.Slice(tyInfo.Fields[nameof(Data.RealCodeHeader.NumUnwindInfos)].Offset, sizeof(uint)), 0u);
             Builder.TargetTestHelpers.WritePointer(chf.Slice(tyInfo.Fields[nameof(Data.RealCodeHeader.UnwindInfos)].Offset, Builder.TargetTestHelpers.PointerSize), TargetPointer.Null);
 
             return codeStart;
+        }
+
+        internal readonly struct HotColdJittedMethod
+        {
+            public ulong HotCodeAddress { get; init; }
+            public ulong ColdCodeAddress { get; init; }
+            public ulong ColdFuncletAddress { get; init; }
+        }
+
+        public HotColdJittedMethod AddHotColdJittedMethod(
+            JittedCodeRange jittedCodeRange,
+            uint hotSize,
+            uint coldSize,
+            ulong methodDescAddress,
+            ulong moduleBase,
+            ulong gcInfoAddress)
+        {
+            const uint FragmentSize = 0x10;
+            const uint NumUnwindInfos = 4;
+
+            if (coldSize < FragmentSize * 3)
+                throw new ArgumentOutOfRangeException(nameof(coldSize));
+
+            (MockMemorySpace.HeapFragment hotFragment, TargetCodePointer hotCodeStart) =
+                AllocateJittedMethod(jittedCodeRange, hotSize, "Hot Method Header & Code");
+            (MockMemorySpace.HeapFragment coldFragment, TargetCodePointer coldCodeStart) =
+                AllocateJittedMethod(jittedCodeRange, coldSize, "Cold Method Header & Code");
+
+            Target.TypeInfo realCodeHeaderType = Types[DataType.RealCodeHeader];
+            Target.TypeInfo runtimeFunctionType = Types[DataType.RuntimeFunction];
+            int unwindInfosOffset = realCodeHeaderType.Fields[nameof(Data.RealCodeHeader.UnwindInfos)].Offset;
+            ulong headerSize = checked(
+                (ulong)unwindInfosOffset + (ulong)NumUnwindInfos * runtimeFunctionType.Size.Value);
+            headerSize = Math.Max(headerSize, (ulong)RealCodeHeaderSize);
+            MockMemorySpace.HeapFragment headerFragment = _allocator.Allocate(headerSize, "Hot/Cold RealCodeHeader");
+            Builder.AddHeapFragment(headerFragment);
+
+            ulong hotCodeHeaderAddress = hotCodeStart.Value - CodeHeaderSize;
+            ulong coldCodeHeaderAddress = coldCodeStart.Value - CodeHeaderSize;
+            Builder.TargetTestHelpers.WritePointer(hotFragment.Data.AsSpan(0, (int)CodeHeaderSize), headerFragment.Address);
+            Builder.TargetTestHelpers.WritePointer(coldFragment.Data.AsSpan(0, (int)CodeHeaderSize), hotCodeHeaderAddress);
+
+            Span<byte> header = headerFragment.Data;
+            int pointerSize = Builder.TargetTestHelpers.PointerSize;
+            Builder.TargetTestHelpers.WritePointer(
+                header.Slice(realCodeHeaderType.Fields[nameof(Data.RealCodeHeader.MethodDesc)].Offset, pointerSize),
+                methodDescAddress);
+            Builder.TargetTestHelpers.WritePointer(
+                header.Slice(realCodeHeaderType.Fields[nameof(Data.RealCodeHeader.GCInfo)].Offset, pointerSize),
+                gcInfoAddress);
+            Builder.TargetTestHelpers.WritePointer(
+                header.Slice(realCodeHeaderType.Fields[nameof(Data.RealCodeHeader.ColdCodeHeader)].Offset, pointerSize),
+                coldCodeHeaderAddress);
+            Builder.TargetTestHelpers.Write(
+                header.Slice(realCodeHeaderType.Fields[nameof(Data.RealCodeHeader.NumUnwindInfos)].Offset, sizeof(uint)),
+                NumUnwindInfos);
+
+            (ulong Begin, ulong End, bool IsFragment)[] functions =
+            [
+                (hotCodeStart.Value, hotCodeStart.Value + hotSize, false),
+                (coldCodeStart.Value, coldCodeStart.Value + FragmentSize, true),
+                (coldCodeStart.Value + FragmentSize, coldCodeStart.Value + 2 * FragmentSize, false),
+                (coldCodeStart.Value + 2 * FragmentSize, coldCodeStart.Value + coldSize, true),
+            ];
+
+            for (int i = 0; i < functions.Length; i++)
+            {
+                Span<byte> runtimeFunction = header.Slice(
+                    unwindInfosOffset + i * (int)runtimeFunctionType.Size.Value,
+                    (int)runtimeFunctionType.Size.Value);
+                Builder.TargetTestHelpers.Write(
+                    runtimeFunction.Slice(runtimeFunctionType.Fields[nameof(Data.RuntimeFunction.BeginAddress)].Offset, sizeof(uint)),
+                    checked((uint)(functions[i].Begin - moduleBase)));
+                Builder.TargetTestHelpers.Write(
+                    runtimeFunction.Slice(runtimeFunctionType.Fields[nameof(Data.RuntimeFunction.EndAddress)].Offset, sizeof(uint)),
+                    checked((uint)(functions[i].End - moduleBase)));
+
+                MockMemorySpace.HeapFragment unwindInfo =
+                    jittedCodeRange.Allocator.Allocate(2 * sizeof(uint), $"UnwindInfo {i}");
+                Builder.AddHeapFragment(unwindInfo);
+                Builder.TargetTestHelpers.Write(unwindInfo.Data.AsSpan(0, sizeof(uint)), 1u << 27);
+                unwindInfo.Data[sizeof(uint)] = functions[i].IsFragment ? (byte)0xe5 : (byte)0xe4;
+                Builder.TargetTestHelpers.Write(
+                    runtimeFunction.Slice(runtimeFunctionType.Fields[nameof(Data.RuntimeFunction.UnwindData)].Offset, sizeof(uint)),
+                    checked((uint)(unwindInfo.Address - moduleBase)));
+            }
+
+            return new HotColdJittedMethod
+            {
+                HotCodeAddress = hotCodeStart.Value,
+                ColdCodeAddress = coldCodeStart.Value,
+                ColdFuncletAddress = coldCodeStart.Value + FragmentSize,
+            };
         }
 
         public TargetPointer AddReadyToRunInfo(uint[] runtimeFunctions, uint[] hotColdMap)
