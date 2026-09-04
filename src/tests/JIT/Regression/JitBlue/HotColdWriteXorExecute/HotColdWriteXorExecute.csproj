@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Optimize>True</Optimize>
+    <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <CLRTestPriority>1</CLRTestPriority>
+    <CrossGenTest>false</CrossGenTest>
+    <NativeAotIncompatible>true</NativeAotIncompatible>
+    <CLRTestTargetUnsupported Condition="'$(TargetArchitecture)' != 'x64' and '$(TargetArchitecture)' != 'arm64'">true</CLRTestTargetUnsupported>
+    <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' != 'coreclr'">true</CLRTestTargetUnsupported>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildProjectName).cs" />
+    <CLRTestEnvironmentVariable Include="DOTNET_EnableWriteXorExecute" Value="1" />
+    <CLRTestEnvironmentVariable Include="DOTNET_JitSplitFunctionSize" Value="48" />
+    <CLRTestEnvironmentVariable Include="DOTNET_JitStressProcedureSplitting" Value="1" />
+    <CLRTestEnvironmentVariable Include="DOTNET_ReadyToRun" Value="0" />
+    <CLRTestEnvironmentVariable Include="DOTNET_TieredCompilation" Value="0" />
+  </ItemGroup>
+</Project>

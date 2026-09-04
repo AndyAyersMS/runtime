@@ -7557,6 +7557,7 @@ unsigned emitter::emitEndCodeGen(Compiler*         comp,
 
     if (emitConsDsc.dsdOffs != 0)
     {
+        writeableOffset = consBlockRW - consBlock;
         emitOutputDataSec(&emitConsDsc, consBlock);
     }
 
