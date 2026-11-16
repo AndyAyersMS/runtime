@@ -217,6 +217,10 @@ class Scc
 {
 private:
 
+    // Map from an Scc block to the set (by postorder number) of Scc headers it
+    // can keep branching to directly, rather than via the dispatcher.
+    typedef JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BitVec> DirectEdgeMap;
+
     FgWasm*              m_fgWasm;
     Compiler*            m_compiler;
     FlowGraphDfsTree*    m_dfsTree;
@@ -224,6 +228,7 @@ private:
     BitVec               m_blocks;
     BitVec               m_entries;
     jitstd::vector<Scc*> m_nested;
+    DirectEdgeMap*       m_directEdges;
     BasicBlock*          m_tryEntry;
     unsigned             m_numIrr;
 
@@ -233,6 +238,8 @@ private:
     unsigned m_enclosingHndIndex;
     // total weight of all entry blocks
     weight_t m_entryWeight;
+    // weight of the internal header edges that bypass the dispatcher
+    weight_t m_directWeight;
     // scc number
     unsigned m_num;
 
@@ -248,11 +255,13 @@ public:
         , m_blocks(BitVecOps::UninitVal())
         , m_entries(BitVecOps::UninitVal())
         , m_nested(fgWasm->Comp()->getAllocator(CMK_WasmSccTransform))
+        , m_directEdges(nullptr)
         , m_tryEntry(nullptr)
         , m_numIrr(0)
         , m_enclosingTryIndex(0)
         , m_enclosingHndIndex(0)
         , m_entryWeight(0)
+        , m_directWeight(0)
         , m_num(fgWasm->GetNextSccNum())
     {
         m_blocks  = BitVecOps::MakeEmpty(m_traits);
@@ -398,6 +407,13 @@ public:
     weight_t TotalEntryWeight()
     {
         return m_entryWeight;
+    }
+
+    // Weight of the flow into entry blocks that goes via the dispatcher
+    //
+    weight_t DispatchWeight()
+    {
+        return max(0.0, m_entryWeight - m_directWeight);
     }
 
 #ifdef DEBUG
@@ -589,6 +605,161 @@ public:
         return m_tryEntry;
     }
 
+    bool IsMember(BasicBlock* block, BitVec set)
+    {
+        return m_dfsTree->Contains(block) && BitVecOps::IsMember(m_traits, set, block->bbPostorderNum);
+    }
+
+    bool IsDirectEdge(BasicBlock* pred, BasicBlock* header)
+    {
+        BitVec directHeaders = BitVecOps::UninitVal();
+        return (m_directEdges != nullptr) && m_directEdges->Lookup(pred, &directHeaders) &&
+               BitVecOps::IsMember(m_traits, directHeaders, header->bbPostorderNum);
+    }
+
+    //-----------------------------------------------------------------------------
+    // HeaderReaches: see if header can reach target via Scc blocks, using only
+    //   the edges into headers currently marked as direct.
+    //
+    bool HeaderReaches(BasicBlock* header, BasicBlock* target, BitVec& visited, ArrayStack<BasicBlock*>& stack)
+    {
+        BitVecOps::ClearD(m_traits, visited);
+        stack.Reset();
+        BitVecOps::AddElemD(m_traits, visited, header->bbPostorderNum);
+        stack.Push(header);
+
+        while (!stack.Empty())
+        {
+            BasicBlock* const block = stack.Pop();
+
+            if (block == target)
+            {
+                return true;
+            }
+
+            WasmSuccessorEnumerator successors(m_compiler, block, /* useProfile */ true);
+            for (BasicBlock* const succ : successors)
+            {
+                if (!IsMember(succ, m_blocks))
+                {
+                    continue;
+                }
+
+                if (IsMember(succ, m_entries) && !IsDirectEdge(block, succ))
+                {
+                    continue;
+                }
+
+                if (BitVecOps::TryAddElemD(m_traits, visited, succ->bbPostorderNum))
+                {
+                    stack.Push(succ);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    //-----------------------------------------------------------------------------
+    // FindDirectEdges: find edges from within a multi-entry Scc to its headers
+    //   that need not be routed through the dispatcher.
+    //
+    // Notes:
+    //   After the transform the dispatcher is the only way into the Scc, so it
+    //   dominates all the Scc blocks. An internal edge into a header can bypass the
+    //   dispatcher as long as no cycle passes through a header without also passing
+    //   through the dispatcher. Then every remaining cycle either is headed by the
+    //   dispatcher or lies wholly within the non-header blocks, which is the domain
+    //   of the nested Sccs.
+    //
+    //   We greedily keep edges, hottest first, when the header cannot reach the
+    //   edge source using only Scc internal edges and the direct edges kept so far.
+    //
+    //   This must run before any Scc is transformed, as transformation creates
+    //   blocks that are not in the dfs tree, and alters header pred lists.
+    //
+    void FindDirectEdges()
+    {
+        if (NumEntries() > 1)
+        {
+            struct Candidate
+            {
+                FlowEdge* m_edge;
+                weight_t  m_weight;
+            };
+
+            CompAllocator             allocator = m_compiler->getAllocator(CMK_WasmSccTransform);
+            jitstd::vector<Candidate> candidates(allocator);
+            BitVecOps::Iter           iterator(m_traits, m_entries);
+            unsigned                  poHeaderNumber = 0;
+
+            while (iterator.NextElem(&poHeaderNumber))
+            {
+                BasicBlock* const header = m_dfsTree->GetPostOrder(poHeaderNumber);
+
+                // Entry into a try header must still dispatch from within the try.
+                //
+                if (header == TryHeader())
+                {
+                    continue;
+                }
+
+                for (FlowEdge* const edge : header->PredEdges())
+                {
+                    BasicBlock* const pred = edge->getSourceBlock();
+
+                    if (pred->KindIs(BBJ_EHCATCHRET) || !IsMember(pred, m_blocks))
+                    {
+                        continue;
+                    }
+
+                    candidates.push_back({edge, edge->getLikelyWeight()});
+                }
+            }
+
+            jitstd::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+                return a.m_weight > b.m_weight;
+            });
+
+            BitVec                  visited = BitVecOps::MakeEmpty(m_traits);
+            ArrayStack<BasicBlock*> stack(allocator);
+
+            for (const Candidate& candidate : candidates)
+            {
+                BasicBlock* const pred   = candidate.m_edge->getSourceBlock();
+                BasicBlock* const header = candidate.m_edge->getDestinationBlock();
+
+                if (HeaderReaches(header, pred, visited, stack))
+                {
+                    continue;
+                }
+
+                JITDUMP("Scc %u: edge " FMT_BB " -> " FMT_BB " can bypass the dispatcher\n", m_num, pred->bbNum,
+                        header->bbNum);
+
+                if (m_directEdges == nullptr)
+                {
+                    m_directEdges = new (allocator) DirectEdgeMap(allocator);
+                }
+
+                BitVec directHeaders = BitVecOps::UninitVal();
+                if (!m_directEdges->Lookup(pred, &directHeaders))
+                {
+                    directHeaders = BitVecOps::MakeEmpty(m_traits);
+                }
+
+                BitVecOps::AddElemD(m_traits, directHeaders, header->bbPostorderNum);
+                m_directEdges->Set(pred, directHeaders, DirectEdgeMap::SetKind::Overwrite);
+                m_directWeight += candidate.m_weight;
+            }
+        }
+
+        for (Scc* const nested : m_nested)
+        {
+            nested->FindDirectEdges();
+        }
+    }
+
     //-----------------------------------------------------------------------------
     // TransformViaSwitchDispatch: modify Scc into a reducible loop
     //
@@ -606,8 +777,8 @@ public:
     //   ** if we have an edge pred->header such that pred has no other successors
     //      we hoist the assignment into pred.
     //
-    //   TODO: if the source of an edge to a header is dominated by that header,
-    //   the edge can be left as is. (requires dominators)
+    //   Edges from within the Scc that FindDirectEdges has shown cannot
+    //   introduce irreducibility are left as is.
     //
     bool TransformViaSwitchDispatch()
     {
@@ -699,7 +870,7 @@ public:
                     }
 
                     dispatcher = m_compiler->fgNewBBinRegion(BBJ_SWITCH, dispatchTryIndex, dispatchHndIndex, nearBlk);
-                    dispatcher->setBBProfileWeight(TotalEntryWeight());
+                    dispatcher->setBBProfileWeight(DispatchWeight());
                 }
 
                 JITDUMP("\nFixing flow for preds of header " FMT_BB "\n", header->bbNum);
@@ -743,8 +914,16 @@ public:
 
                     // Processing an earlier header may have removed this original edge.
                     //
-                    if (m_compiler->fgGetPredForBlock(header, pred) == nullptr)
+                    FlowEdge* const predEdge = m_compiler->fgGetPredForBlock(header, pred);
+                    if (predEdge == nullptr)
                     {
+                        continue;
+                    }
+
+                    if (IsDirectEdge(pred, header))
+                    {
+                        JITDUMP("Leaving " FMT_BB " -> " FMT_BB " as is\n", pred->bbNum, header->bbNum);
+                        headerWeight = max(0.0, headerWeight - predEdge->getLikelyWeight());
                         continue;
                     }
 
@@ -835,9 +1014,9 @@ public:
                 {
                     dispatchToOutboundTargetEdge->setLikelihood(max(0.0, (1.0 - netLikelihood)));
                 }
-                else if (TotalEntryWeight() > 0)
+                else if (DispatchWeight() > 0)
                 {
-                    dispatchToOutboundTargetEdge->setLikelihood(headerWeight / TotalEntryWeight());
+                    dispatchToOutboundTargetEdge->setLikelihood(min(1.0, headerWeight / DispatchWeight()));
                 }
                 else
                 {
@@ -855,7 +1034,7 @@ public:
             // All entry flow now passes through the try header before reaching the dispatcher.
             if (tryHeader != nullptr)
             {
-                tryHeader->setBBProfileWeight(TotalEntryWeight());
+                tryHeader->setBBProfileWeight(DispatchWeight());
             }
 
             // Create the dispatch switch... really there should be no default but for now we'll have one.
@@ -1097,6 +1276,13 @@ void FgWasm::AssignBlockToScc(BasicBlock* block, BasicBlock* root, BitVec& subse
 bool FgWasm::WasmTransformSccs(ArrayStack<Scc*>& sccs)
 {
     bool modified = false;
+
+    // Decide which edges can bypass dispatchers before transforming anything.
+    //
+    for (Scc* const scc : sccs.BottomUpOrder())
+    {
+        scc->FindDirectEdges();
+    }
 
     for (Scc* const scc : sccs.BottomUpOrder())
     {
