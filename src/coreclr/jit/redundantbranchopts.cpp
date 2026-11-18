@@ -1226,6 +1226,7 @@ bool Compiler::optRedundantBranch(BasicBlock* const block)
         relopValue = (treeNormVN == vnStore->VNZeroForType(TYP_INT)) ? 0 : 1;
         JITDUMP("Relop [%06u] " FMT_BB " has known value %s\n ", dspTreeID(tree), block->bbNum,
                 relopValue == 0 ? "false" : "true");
+        optAssertionPropFoldedJTrue = true;
     }
     else
     {

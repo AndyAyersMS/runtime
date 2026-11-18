@@ -5887,6 +5887,26 @@ ValueNum ValueNumStore::EvalUsingMathIdentity(var_types typ, VNFunc func, ValueN
                     break;
                 }
 
+                // Use the bits that may be set in `x` to fold `x & cns` to 0 or to `x`.
+                if ((cnsVN != NoVN) && ((JitConfig.JitVNPossiblySetBits() & 1) != 0) && varTypeIsIntegral(typ) &&
+                    !IsVNHandle(cnsVN) && (TypeOfVN(opVN) == typ))
+                {
+                    uint64_t const cnsBits = GetVNPossiblySetBits(cnsVN);
+                    uint64_t const opBits  = GetVNPossiblySetBits(opVN);
+
+                    if ((cnsBits & opBits) == 0)
+                    {
+                        resultVN = ZeroVN;
+                        break;
+                    }
+
+                    if ((opBits & ~cnsBits) == 0)
+                    {
+                        resultVN = opVN;
+                        break;
+                    }
+                }
+
                 // Handle `x & x == x`
                 if (arg0VN == arg1VN)
                 {
@@ -6329,6 +6349,125 @@ ValueNum ValueNumStore::EvalUsingMathIdentity(var_types typ, VNFunc func, ValueN
         }
     }
     return resultVN;
+}
+
+//------------------------------------------------------------------------
+// EvalRelopUsingPossiblySetBits: Try to fold an integral comparison of a VN
+//    against a constant using the bits that may be set in the VN.
+//
+// Arguments:
+//    typ       - The type of the comparison result
+//    func      - The comparison function
+//    cnsVN     - The constant operand
+//    opVN      - The other operand
+//    opIsFirst - True if "opVN" is the first operand of the comparison
+//
+// Return Value:
+//    The VN for true or false if the comparison has a known result; otherwise NoVN.
+//
+ValueNum ValueNumStore::EvalRelopUsingPossiblySetBits(
+    var_types typ, VNFunc func, ValueNum cnsVN, ValueNum opVN, bool opIsFirst)
+{
+    unsigned const size = genTypeSize(TypeOfVN(opVN));
+    if ((size != 4) && (size != 8))
+    {
+        return NoVN;
+    }
+
+    uint64_t const allBits = (size == 8) ? UINT64_MAX : UINT32_MAX;
+    uint64_t const signBit = 1ULL << ((size * BITS_PER_BYTE) - 1);
+
+    // `x == 0` and `x != 0` are common and the possibly-set bits can never decide them.
+    if (((func == VNFunc(GT_EQ)) || (func == VNFunc(GT_NE))) && (cnsVN == VNZeroForType(TypeOfVN(cnsVN))))
+    {
+        return NoVN;
+    }
+
+    uint64_t const opBits = GetVNPossiblySetBits(opVN);
+
+    if (opBits == allBits)
+    {
+        return NoVN;
+    }
+
+    genTreeOps oper;
+    bool       isUnsigned = true;
+    switch (func)
+    {
+        case VNF_LT_UN:
+            oper = GT_LT;
+            break;
+        case VNF_LE_UN:
+            oper = GT_LE;
+            break;
+        case VNF_GE_UN:
+            oper = GT_GE;
+            break;
+        case VNF_GT_UN:
+            oper = GT_GT;
+            break;
+        case VNFunc(GT_EQ):
+        case VNFunc(GT_NE):
+        case VNFunc(GT_LT):
+        case VNFunc(GT_LE):
+        case VNFunc(GT_GE):
+        case VNFunc(GT_GT):
+            oper       = genTreeOps(func);
+            isUnsigned = false;
+            break;
+        default:
+            return NoVN;
+    }
+
+    // Normalize to "op <oper> cns".
+    if (!opIsFirst)
+    {
+        oper = GenTree::SwapRelop(oper);
+    }
+
+    uint64_t const cns     = GetVNPossiblySetBits(cnsVN);
+    ValueNum const trueVN  = VNOneForType(typ);
+    ValueNum const falseVN = VNZeroForType(typ);
+
+    if ((oper == GT_EQ) || (oper == GT_NE))
+    {
+        // The constant has a bit set that the operand never has.
+        if ((cns & ~opBits) != 0)
+        {
+            return (oper == GT_EQ) ? falseVN : trueVN;
+        }
+        return NoVN;
+    }
+
+    if (!isUnsigned)
+    {
+        // Signed comparisons need the operand to be never negative.
+        if ((opBits & signBit) != 0)
+        {
+            return NoVN;
+        }
+
+        // A never negative operand compared against a negative constant.
+        if ((cns & signBit) != 0)
+        {
+            return ((oper == GT_GT) || (oper == GT_GE)) ? trueVN : falseVN;
+        }
+    }
+
+    // The operand is in [0, opBits] and the constant is non-negative, so compare as unsigned.
+    switch (oper)
+    {
+        case GT_GT:
+            return (opBits <= cns) ? falseVN : NoVN;
+        case GT_GE:
+            return (opBits < cns) ? falseVN : NoVN;
+        case GT_LT:
+            return (opBits < cns) ? trueVN : NoVN;
+        case GT_LE:
+            return (opBits <= cns) ? trueVN : NoVN;
+        default:
+            return NoVN;
+    }
 }
 
 //------------------------------------------------------------------------
@@ -7374,6 +7513,258 @@ bool ValueNumStore::IsVNNeverNegative(ValueNum vn)
         return VNVisit::Abort;
     };
     return VNVisitReachingVNs(vn, vnVisitor) == VNVisit::Continue;
+}
+
+//------------------------------------------------------------------------
+// GetVNPossiblySetBits: Compute a conservative mask of the bits that may be
+//    set in the value represented by an integral VN.
+//
+// Parameters:
+//    vn     - Value number to query
+//    budget - Remaining recursion depth
+//
+// Returns:
+//    A mask, in the width of the VN's type, with a 1 in every bit position
+//    that may be set. When nothing is known all bits of the type are set.
+//
+// Notes:
+//    The mask also bounds the value: interpreted as unsigned, the value can
+//    never exceed the mask.
+//
+uint64_t ValueNumStore::GetVNPossiblySetBits(ValueNum vn, unsigned budget)
+{
+    if (vn == NoVN)
+    {
+        return UINT64_MAX;
+    }
+
+    var_types const type = TypeOfVN(vn);
+    if (!varTypeIsIntegral(type))
+    {
+        return UINT64_MAX;
+    }
+
+    unsigned const size = genTypeSize(type);
+    if ((size != 4) && (size != 8))
+    {
+        return UINT64_MAX;
+    }
+
+    uint64_t const allBits  = (size == 8) ? UINT64_MAX : UINT32_MAX;
+    unsigned const bitWidth = size * BITS_PER_BYTE;
+
+    if (budget == 0)
+    {
+        return allBits;
+    }
+
+    bool const isConstant = IsVNConstant(vn);
+
+    // Quickly reject VNs whose root operation cannot limit the set bits, without touching the cache.
+    if (!isConstant && !IsPhiDef(vn))
+    {
+        VNFuncApp rootApp;
+        if (!GetVNFunc(vn, &rootApp))
+        {
+            return allBits;
+        }
+
+        switch (rootApp.GetFunc())
+        {
+            case VNF_Cast:
+            case VNF_CastOvf:
+            case VNFunc(GT_AND):
+            case VNFunc(GT_OR):
+            case VNFunc(GT_XOR):
+            case VNFunc(GT_RSZ):
+            case VNFunc(GT_RSH):
+            case VNFunc(GT_LSH):
+            case VNFunc(GT_EQ):
+            case VNFunc(GT_NE):
+            case VNFunc(GT_LT):
+            case VNFunc(GT_LE):
+            case VNFunc(GT_GE):
+            case VNFunc(GT_GT):
+            case VNF_LT_UN:
+            case VNF_LE_UN:
+            case VNF_GE_UN:
+            case VNF_GT_UN:
+            case VNF_LeadingZeroCount:
+            case VNF_PopCount:
+            case VNF_TrailingZeroCount:
+            case VNF_ARR_LENGTH:
+            case VNF_MDArrLength:
+                break;
+
+            default:
+                return allBits;
+        }
+    }
+
+    auto shiftAmount = [this, bitWidth](ValueNum shiftVN, unsigned* amount) -> bool {
+        if (!IsVNConstant(shiftVN) || (TypeOfVN(shiftVN) != TYP_INT))
+        {
+            return false;
+        }
+        *amount = static_cast<unsigned>(GetConstantInt32(shiftVN)) & (bitWidth - 1);
+        return true;
+    };
+
+    auto bitsForNonPhi = [=](ValueNum vn) -> uint64_t {
+        if (IsVNHandle(vn))
+        {
+            return allBits;
+        }
+
+        if (IsVNConstant(vn))
+        {
+            var_types const cnsType = TypeOfVN(vn);
+            if (cnsType == TYP_INT)
+            {
+                return static_cast<uint32_t>(GetConstantInt32(vn));
+            }
+            if (cnsType == TYP_LONG)
+            {
+                return static_cast<uint64_t>(GetConstantInt64(vn));
+            }
+            return allBits;
+        }
+
+        if (IsVNArrLen(vn))
+        {
+            return INT32_MAX;
+        }
+
+        VNFuncApp funcApp;
+        if (!GetVNFunc(vn, &funcApp))
+        {
+            return allBits;
+        }
+
+        switch (funcApp.GetFunc())
+        {
+            case VNF_Cast:
+            case VNF_CastOvf:
+            {
+                ValueNum const  srcVN   = funcApp.GetArg(0);
+                var_types const srcType = TypeOfVN(srcVN);
+                if (!varTypeIsIntegral(srcType))
+                {
+                    return allBits;
+                }
+
+                var_types castToType;
+                bool      srcIsUnsigned;
+                GetCastOperFromVN(funcApp.GetArg(1), &castToType, &srcIsUnsigned);
+
+                uint64_t const srcBits = GetVNPossiblySetBits(srcVN, budget - 1);
+
+                switch (castToType)
+                {
+                    case TYP_UBYTE:
+                        return srcBits & 0xFF;
+
+                    case TYP_USHORT:
+                        return srcBits & 0xFFFF;
+
+                    case TYP_BYTE:
+                        return ((srcBits & 0x80) == 0) ? (srcBits & 0x7F) : allBits;
+
+                    case TYP_SHORT:
+                        return ((srcBits & 0x8000) == 0) ? (srcBits & 0x7FFF) : allBits;
+
+                    case TYP_INT:
+                    case TYP_UINT:
+                        return srcBits & 0xFFFFFFFF;
+
+                    case TYP_LONG:
+                    case TYP_ULONG:
+                        if ((genTypeSize(srcType) == 8) || srcIsUnsigned)
+                        {
+                            return srcBits & allBits;
+                        }
+                        // Sign extension of an int that is never negative leaves the upper bits clear.
+                        return ((srcBits & 0x80000000) == 0) ? srcBits : allBits;
+
+                    default:
+                        return allBits;
+                }
+            }
+
+            case VNFunc(GT_AND):
+                return GetVNPossiblySetBits(funcApp.GetArg(0), budget - 1) &
+                       GetVNPossiblySetBits(funcApp.GetArg(1), budget - 1);
+
+            case VNFunc(GT_OR):
+            case VNFunc(GT_XOR):
+                return (GetVNPossiblySetBits(funcApp.GetArg(0), budget - 1) |
+                        GetVNPossiblySetBits(funcApp.GetArg(1), budget - 1)) &
+                       allBits;
+
+            case VNFunc(GT_RSZ):
+            {
+                unsigned amount;
+                if (shiftAmount(funcApp.GetArg(1), &amount))
+                {
+                    return GetVNPossiblySetBits(funcApp.GetArg(0), budget - 1) >> amount;
+                }
+                return allBits;
+            }
+
+            case VNFunc(GT_RSH):
+            {
+                unsigned amount;
+                if (shiftAmount(funcApp.GetArg(1), &amount))
+                {
+                    uint64_t const opBits  = GetVNPossiblySetBits(funcApp.GetArg(0), budget - 1);
+                    uint64_t const signBit = 1ULL << (bitWidth - 1);
+                    if ((opBits & signBit) == 0)
+                    {
+                        return opBits >> amount;
+                    }
+                }
+                return allBits;
+            }
+
+            case VNFunc(GT_LSH):
+            {
+                unsigned amount;
+                if (shiftAmount(funcApp.GetArg(1), &amount))
+                {
+                    return (GetVNPossiblySetBits(funcApp.GetArg(0), budget - 1) << amount) & allBits;
+                }
+                return allBits;
+            }
+
+            case VNFunc(GT_EQ):
+            case VNFunc(GT_NE):
+            case VNFunc(GT_LT):
+            case VNFunc(GT_LE):
+            case VNFunc(GT_GE):
+            case VNFunc(GT_GT):
+            case VNF_LT_UN:
+            case VNF_LE_UN:
+            case VNF_GE_UN:
+            case VNF_GT_UN:
+                return 1;
+
+            case VNF_LeadingZeroCount:
+            case VNF_PopCount:
+            case VNF_TrailingZeroCount:
+                // The actual range is [0..32] or [0..64]
+                return 0x7F;
+
+            default:
+                return allBits;
+        }
+    };
+
+    // Do not look through phis.
+    bool const     visitedAny = !IsPhiDef(vn);
+    uint64_t const result     = visitedAny ? bitsForNonPhi(vn) : allBits;
+
+    uint64_t const bits = visitedAny ? (result & allBits) : allBits;
+    return bits;
 }
 
 GenTreeFlags ValueNumStore::GetHandleFlags(ValueNum vn)

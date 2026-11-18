@@ -1150,6 +1150,13 @@ public:
     // Returns true if the VN represents a node that is never negative.
     bool IsVNNeverNegative(ValueNum vn);
 
+    // Returns a conservative mask of the bits that may be set in an integral VN.
+    static const unsigned PossiblySetBitsBudget = 4;
+    uint64_t              GetVNPossiblySetBits(ValueNum vn, unsigned budget = PossiblySetBitsBudget);
+
+    // Fold an integral comparison of "opVN" against a constant using the bits that may be set in "opVN".
+    ValueNum EvalRelopUsingPossiblySetBits(var_types typ, VNFunc vnf, ValueNum cnsVN, ValueNum opVN, bool opIsFirst);
+
     // Returns true if the VN represents BitOperations.Log2 pattern
     bool IsVNLog2(ValueNum vn, int* upperBound = nullptr);
 

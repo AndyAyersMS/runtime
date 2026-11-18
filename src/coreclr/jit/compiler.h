@@ -9355,6 +9355,9 @@ protected:
     bool optLocalAssertionProp;  // indicates that we are performing local assertion prop
     bool optAssertionPropagated; // set to true if we modified the trees
     bool optAssertionPropagatedCurrentStmt;
+    // Set when a JTRUE's relop with a constant VN is folded (by RBO or global assertion prop);
+    // consumed and cleared by optAssertionPropMain.
+    bool optAssertionPropFoldedJTrue = false;
 #ifdef DEBUG
     GenTree* optAssertionPropCurrentTree;
 #endif

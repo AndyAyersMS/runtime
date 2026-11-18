@@ -102,6 +102,10 @@ CONFIG_INTEGER(JitHideAlignBehindJmp, "JitHideAlignBehindJmp", 1)
 CONFIG_INTEGER(JitOptimizeStructHiddenBuffer, "JitOptimizeStructHiddenBuffer", 1)
 RELEASE_CONFIG_INTEGER(JitEnableStoreLclFldCoalescing, "JitEnableStoreLclFldCoalescing", 1)
 
+// Fold ANDs (bit 0) and comparisons (bit 1) against constants using the bits that may be set in a VN.
+// Bit 2 runs global assertion propagation without assertions after a JTRUE was folded.
+RELEASE_CONFIG_INTEGER(JitVNPossiblySetBits, "JitVNPossiblySetBits", 7)
+
 CONFIG_INTEGER(JitUnrollLoopMaxIterationCount,
                "JitUnrollLoopMaxIterationCount",
                DEFAULT_UNROLL_LOOP_MAX_ITERATION_COUNT)

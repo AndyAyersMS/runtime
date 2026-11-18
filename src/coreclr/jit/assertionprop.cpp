@@ -4689,6 +4689,31 @@ GenTree* Compiler::optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions,
         }
     }
 
+    // Can we fold "X relop CNS" from the bits that may be set in X?
+    if (((JitConfig.JitVNPossiblySetBits() & 2) != 0) && tree->OperIsCmpCompare() && op2->IsIntegralConst() &&
+        !op2->IsIconHandle() && !(tree->OperIs(GT_EQ, GT_NE) && op2->IsIntegralConst(0)))
+    {
+        ValueNum const bitsOpVN  = optConservativeNormalVN(op1);
+        ValueNum const bitsCnsVN = optConservativeNormalVN(op2);
+
+        if ((bitsOpVN != ValueNumStore::NoVN) && (bitsCnsVN != ValueNumStore::NoVN) &&
+            vnStore->IsVNConstant(bitsCnsVN) && !vnStore->IsVNHandle(bitsCnsVN) &&
+            varTypeIsIntegral(vnStore->TypeOfVN(bitsOpVN)) &&
+            (vnStore->TypeOfVN(bitsCnsVN) == vnStore->TypeOfVN(bitsOpVN)))
+        {
+            ValueNum const resultVN =
+                vnStore->EvalRelopUsingPossiblySetBits(TYP_INT, GetVNFuncForNode(tree), bitsCnsVN, bitsOpVN,
+                                                       /* opIsFirst */ true);
+            if (resultVN != ValueNumStore::NoVN)
+            {
+                JITDUMP("Folding relop [%06u] using the bits that may be set in its first operand\n", dspTreeID(tree));
+                newTree = (resultVN == vnStore->VNOneForType(TYP_INT)) ? gtNewTrue() : gtNewFalse();
+                newTree = gtWrapWithSideEffects(newTree, tree, GTF_ALL_EFFECT);
+                return optAssertionProp_Update(newTree, tree, stmt);
+            }
+        }
+    }
+
     // Check if we have an assertion that exactly matches the relop.
     ValueNum relopVN = optConservativeNormalVN(tree);
     ValueNum op1VN   = optConservativeNormalVN(op1);
@@ -6520,6 +6545,7 @@ GenTree* Compiler::optVNConstantPropOnJTrue(BasicBlock* block, GenTree* test)
     // and if we have side effects, we wrap one of the operands with them, not the relop.
     const bool evalsToTrue = (vnStore->CoercedConstantValue<INT64>(vnCns) != 0);
     test->AsOp()->gtOp1    = gtNewOperNode(evalsToTrue ? GT_EQ : GT_NE, relop->TypeGet(), gtNewFalse(), gtNewFalse());
+    optAssertionPropFoldedJTrue = true;
     return test;
 }
 
@@ -6823,7 +6849,12 @@ PhaseStatus Compiler::optAssertionPropMain()
     // All assertions are created, size the bit vectors accordingly.
     optAssertionTraitsInit(max(optAssertionCount, (AssertionIndex)1));
 
-    if (optAssertionCount == 0)
+    // Folding a JTRUE (here or in RBO) may have removed the only source of assertions. The
+    // propagation pass below can still fold relops using ranges, so run it in that case.
+    const bool runWithoutAssertions = optAssertionPropFoldedJTrue && ((JitConfig.JitVNPossiblySetBits() & 4) != 0);
+    optAssertionPropFoldedJTrue     = false;
+
+    if ((optAssertionCount == 0) && !runWithoutAssertions)
     {
         // Zero out the bbAssertionIn values, as these can be referenced in RangeCheck::MergeAssertion
         // and this is sharedstate with the CSE phase: bbCseIn
